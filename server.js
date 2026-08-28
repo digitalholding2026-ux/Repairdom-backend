@@ -65,7 +65,18 @@ function verifyPassword(stored, provided) {
    Les generateurs d'ID sont laissés à la base (uuid auto).
    ═══════════════════════════════════════════════════════════ */
 
+// Techniciens considérés comme vérifiés (jusqu'à ce que la colonne
+// `verifie` soit renseignée en base). Permet d'afficher le badge "Vérifié".
+const VERIFIED_TECHNICIANS = ['Moussa', 'Ibrahima', 'Fatou', 'Ousmane'];
+
 function mapTechnician(row) {
+  // La base (Supabase, colonnes FR) peut fournir `row.verifie` (booléen).
+  let verified = row.verifie === true || row.verifie === 'true' || row.verified === true || row.verified === 'true';
+  if (!verified && row.nom) {
+    verified = VERIFIED_TECHNICIANS.some(function (n) {
+      return String(row.nom).toLowerCase().includes(n.toLowerCase());
+    });
+  }
   return {
     id: row.id,
     email: row.email,
@@ -75,6 +86,7 @@ function mapTechnician(row) {
     rate: row.tarif,
     location: row.localisation,
     available: row.disponible,
+    verified: !!verified,
     avatar: row.avatar,
     languages: row.languages,
     rating: row.rating,
