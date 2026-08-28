@@ -445,6 +445,12 @@ app.post('/api/login', async (req, res) => {
   res.status(404).json({ error: 'Aucun compte associé à cet email.' });
 });
 
+// POST /api/logout — déconnexion (stateless, aucun token à vérifier).
+// Le frontend gère la suppression du token/session côté client.
+app.post('/api/logout', (req, res) => {
+  res.json({ message: 'Déconnexion réussie' });
+});
+
 /* ═══════════════════════════════════════════════════════════
    GESTIONNAIRE D'ERREURS GLOBAL
    ═══════════════════════════════════════════════════════════ */
