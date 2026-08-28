@@ -1,0 +1,137 @@
+[
+  {
+    "id": 1,
+    "nom": "Écran cassé",
+    "description": "Remplacement écran tactile",
+    "prix_min": 15000,
+    "prix_max": 25000,
+    "type": "téléphone",
+    "duree_estimee": 45
+  },
+  {
+    "id": 2,
+    "nom": "Batterie usée",
+    "description": "Remplacement batterie lithium",
+    "prix_min": 8000,
+    "prix_max": 15000,
+    "type": "téléphone",
+    "duree_estimee": 30
+  },
+  {
+    "id": 3,
+    "nom": "Port de charge défectueux",
+    "description": "Réparation connecteur USB / charge",
+    "prix_min": 10000,
+    "prix_max": 18000,
+    "type": "téléphone",
+    "duree_estimee": 40
+  },
+  {
+    "id": 4,
+    "nom": "Clavier endommagé",
+    "description": "Remplacement clavier PC portable",
+    "prix_min": 12000,
+    "prix_max": 22000,
+    "type": "ordinateur",
+    "duree_estimee": 60
+  },
+  {
+    "id": 5,
+    "nom": "Disque dur défaillant",
+    "description": "Remplacement disque dur / SSD",
+    "prix_min": 20000,
+    "prix_max": 45000,
+    "type": "ordinateur",
+    "duree_estimee": 90
+  },
+  {
+    "id": 6,
+    "nom": "Écran ordinateur fissuré",
+    "description": "Remplacement écran LCD / LED laptop",
+    "prix_min": 25000,
+    "prix_max": 50000,
+    "type": "ordinateur",
+    "duree_estimee": 75
+  },
+  {
+    "id": 7,
+    "nom": "Problème de surchauffe",
+    "description": "Nettoyage ventilateur et pâte thermique",
+    "prix_min": 8000,
+    "prix_max": 15000,
+    "type": "ordinateur",
+    "duree_estimee": 50
+  },
+  {
+    "id": 8,
+    "nom": "Caméra avant défectueuse",
+    "description": "Remplacement module caméra selfie",
+    "prix_min": 10000,
+    "prix_max": 20000,
+    "type": "téléphone",
+    "duree_estimee": 35
+  },
+  {
+    "id": 9,
+    "nom": "Hinge cassé",
+    "description": "Réparation charnière écran laptop",
+    "prix_min": 15000,
+    "prix_max": 30000,
+    "type": "ordinateur",
+    "duree_estimee": 80
+  },
+  {
+    "id": 10,
+    "nom": "Son défaillant",
+    "description": "Remplacement haut-parleur ou module audio",
+    "prix_min": 7000,
+    "prix_max": 14000,
+    "type": "téléphone",
+    "duree_estimee": 30
+  },
+  {
+    "id": 11,
+    "nom": "Afficheur Itel",
+    "description": "Remplacement écran afficheur Itel",
+    "prix_min": 8500,
+    "prix_max": 8500,
+    "type": "téléphone",
+    "duree_estimee": 40
+  },
+  {
+    "id": 12,
+    "nom": "Afficheur Tecno",
+    "description": "Remplacement écran afficheur Tecno",
+    "prix_min": 8500,
+    "prix_max": 8500,
+    "type": "téléphone",
+    "duree_estimee": 40
+  },
+  {
+    "id": 13,
+    "nom": "Écran cassé Tecno",
+    "description": "Remplacement écran cassé Tecno",
+    "prix_min": 9000,
+    "prix_max": 9000,
+    "type": "téléphone",
+    "duree_estimee": 45
+  },
+  {
+    "id": 14,
+    "nom": "Écran cassé Itel",
+    "description": "Remplacement écran cassé Itel",
+    "prix_min": 9000,
+    "prix_max": 9000,
+    "type": "téléphone",
+    "duree_estimee": 45
+  },
+  {
+    "id": 15,
+    "nom": "Écran cassé Infinix",
+    "description": "Remplacement écran cassé Infinix",
+    "prix_min": 9000,
+    "prix_max": 9000,
+    "type": "téléphone",
+    "duree_estimee": 45
+  }
+]
