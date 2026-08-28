@@ -34,7 +34,7 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
 
 const allowedOrigins = CORS_ORIGINS.length
   ? CORS_ORIGINS
-  : ['https://repairdom.vercel.app', 'http://localhost:3000', 'http://localhost:8080'];
+  : ['https://repairdom-frontend.vercel.app', 'http://localhost:3000'];
 
 app.use(cors({
   origin: allowedOrigins,
