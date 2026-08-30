@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 
 // ── Chargement du fichier .env (Node 22+). Ignoré en production (env Railway).
@@ -41,6 +42,59 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+/* ═══════════════════════════════════════════════════════════
+   AUTHENTIFICATION JWT
+   ═══════════════════════════════════════════════════════════ */
+
+const JWT_SECRET = process.env.JWT_SECRET || '';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+
+/** Signe un JWT pour un utilisateur (rôle: 'client' | 'technician'). */
+function signToken(user) {
+  return jwt.sign(
+    { sub: user.id, role: user.role, nom: user.nom },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+/**
+ * Middleware : protège une route réservée à un technicien connecté.
+ * Vérifie le JWT (header Authorization: Bearer <token>), que le rôle est
+ * bien technicien, et que le technicianId de l'URL correspond à l'utilisateur
+ * connecté (le token doit appartenir à ce technicien).
+ */
+function requireTechnician(req, res, next) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : (req.query.token || '');
+
+  if (!JWT_SECRET) {
+    return res.status(500).json({ error: 'JWT_SECRET non configuré sur le serveur.' });
+  }
+  if (!token) {
+    return res.status(401).json({ error: 'Authentification requise : token manquant.' });
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, JWT_SECRET);
+  } catch (err) {
+    return res.status(401).json({ error: 'Token invalide ou expiré.' });
+  }
+
+  if (payload.role !== 'technician') {
+    return res.status(403).json({ error: 'Accès réservé aux techniciens.' });
+  }
+
+  const technicianId = req.params.technicianId;
+  if (!technicianId || technicianId !== payload.sub) {
+    return res.status(403).json({ error: 'Vous ne pouvez pas accéder aux données d’un autre technicien.' });
+  }
+
+  req.user = payload;
+  next();
+}
 
 /* ═══════════════════════════════════════════════════════════
    HELPERS
@@ -338,6 +392,118 @@ app.post('/api/messages', async (req, res) => {
   res.status(201).json(mapMessage(data));
 });
 
+/* ─────────────────────────────────────────────────────────────
+   DASHBOARD TECHNICIEN (routes protégées par JWT)
+   Toutes ces routes vérifient que le technicianId de l'URL
+   correspond au technicien connecté (token Bearer).
+   ───────────────────────────────────────────────────────────── */
+
+// GET /api/technician/missions/:technicianId?status=...
+// Missions assignées au technicien, avec infos du client (nom, téléphone, adresse).
+app.get('/api/technician/missions/:technicianId', requireTechnician, async (req, res) => {
+  const { status } = req.query;
+
+  let b = supabase.from('missions').select(MISSION_SELECT).eq('technician_id', req.params.technicianId);
+  if (status) b = b.eq('status', status);
+
+  const { data, error } = await b;
+  if (error) return res.status(500).json({ error: 'Missions : ' + error.message });
+
+  const missions = (data || []).map(row => {
+    const c = embed(row, 'clients');
+    return {
+      id: row.id,
+      clientName: (c && c.nom) || row.client_name || 'Client',
+      clientPhone: (c && c.telephone) || '',
+      address: row.address || (c && c.adresse) || '',
+      device: row.device,
+      issue: row.issue,
+      technicianId: row.technician_id,
+      status: row.status,
+      price: row.price,
+      createdAt: row.created_at
+    };
+  });
+
+  res.json(missions);
+});
+
+// GET /api/technician/stats/:technicianId
+// Statistiques du technicien : total, en cours, terminées, revenus, note moyenne.
+app.get('/api/technician/stats/:technicianId', requireTechnician, async (req, res) => {
+  const technicianId = req.params.technicianId;
+
+  const missionsQ = await supabase.from('missions').select('status,price').eq('technician_id', technicianId);
+  if (missionsQ.error) return res.status(500).json({ error: 'Statistiques : ' + missionsQ.error.message });
+
+  const missions = missionsQ.data || [];
+  const terminees = missions.filter(m => m.status === 'completed');
+  const enCours = missions.filter(m => m.status === 'in-progress' || m.status === 'pending' || m.status === 'accepted');
+  const revenusTotaux = terminees.reduce((sum, m) => sum + (Number(m.price) || 0), 0);
+
+  // Note moyenne : on préfère le rating stocké sur le technicien (déjà agrégé).
+  const techQ = await supabase.from('technicians').select('rating').eq('id', technicianId).maybeSingle();
+  const noteMoyenne = techQ.data && techQ.data.rating != null ? Number(techQ.data.rating) : null;
+
+  res.json({
+    technicianId,
+    totalMissions: missions.length,
+    missionsEnCours: enCours.length,
+    missionsTerminees: terminees.length,
+    revenusTotaux,
+    noteMoyenne
+  });
+});
+
+// GET /api/technician/reviews/:technicianId
+// Liste des avis reçus (nom du client, note, commentaire, date).
+app.get('/api/technician/reviews/:technicianId', requireTechnician, async (req, res) => {
+  const { data, error } = await supabase
+    .from('avis')
+    .select('*, clients(nom)')
+    .eq('technicien_id', req.params.technicianId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    // La table `avis` peut ne pas exister encore → réponse vide explicite.
+    if (error.code === 'PGRST205' || String(error.message).toLowerCase().includes('relation "avis" does not exist')) {
+      return res.json([]);
+    }
+    return res.status(500).json({ error: 'Avis : ' + error.message });
+  }
+
+  const reviews = (data || []).map(r => ({
+    id: r.id,
+    clientName: (r.clients && r.clients.nom) || r.client_name || 'Client',
+    note: r.note,
+    commentaire: r.commentaire,
+    date: r.created_at
+  }));
+  res.json(reviews);
+});
+
+// PATCH /api/technician/status/:technicianId
+// Met à jour le champ `disponible` du technicien. Body: { disponible: true/false }.
+app.patch('/api/technician/status/:technicianId', requireTechnician, async (req, res) => {
+  const disponible = req.body && req.body.disponible;
+  if (typeof disponible !== 'boolean') {
+    return res.status(400).json({ error: 'Champ manquant (disponible doit être un booléen).' });
+  }
+
+  const { data, error } = await supabase
+    .from('technicians')
+    .update({ disponible })
+    .eq('id', req.params.technicianId)
+    .select()
+    .single();
+  if (error) {
+    if (error.code === 'PGRST116') return res.status(404).json({ error: 'Technicien introuvable.' });
+    return res.status(500).json({ error: 'Technicien : ' + error.message });
+  }
+
+  res.json({ success: true, id: data.id, disponible: data.disponible });
+});
+
 // ── Informations client (démo) ──
 app.get('/api/client', (_req, res) => {
   res.json({ id: 'client-demo', name: 'Client', email: 'client@email.com' });
@@ -383,7 +549,8 @@ app.post('/api/register-client', async (req, res) => {
 
   const { data, error } = await supabase.from('clients').insert(clientRow(b)).select().single();
   if (error) return res.status(500).json({ error: 'Inscription : ' + error.message });
-  res.status(201).json({ success: true, message: 'Inscription réussie !', client: { id: data.id, nom: data.nom, email: data.email } });
+  const token = signToken({ id: data.id, role: 'client', nom: data.nom });
+  res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'client', token, client: { id: data.id, nom: data.nom, email: data.email } });
 });
 
 // POST /api/register-technician
@@ -398,7 +565,8 @@ app.post('/api/register-technician', async (req, res) => {
 
   const { data, error } = await supabase.from('technicians').insert(technicianRow(b)).select().single();
   if (error) return res.status(500).json({ error: 'Inscription : ' + error.message });
-  res.status(201).json({ success: true, message: 'Inscription réussie !', technicien: { id: data.id, name: data.nom, email: data.email } });
+  const token = signToken({ id: data.id, role: 'technician', nom: data.nom });
+  res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'technician', token, technicien: { id: data.id, name: data.nom, email: data.email } });
 });
 
 // POST /api/register → inscription unifiée (role: "client" | "technicien")
@@ -414,7 +582,8 @@ app.post('/api/register', async (req, res) => {
     }
     const { data, error } = await supabase.from('clients').insert(clientRow(b)).select().single();
     if (error) return res.status(500).json({ error: 'Inscription : ' + error.message });
-    return res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'client', client: { id: data.id, nom: data.nom, email: data.email } });
+    const token = signToken({ id: data.id, role: 'client', nom: data.nom });
+    return res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'client', token, client: { id: data.id, nom: data.nom, email: data.email } });
   }
 
   if (!requireAuthFields(res, b, x => x.specialite && x.localisation && x.tarifHoraire !== undefined)) return;
@@ -423,7 +592,8 @@ app.post('/api/register', async (req, res) => {
   }
   const { data, error } = await supabase.from('technicians').insert(technicianRow(b)).select().single();
   if (error) return res.status(500).json({ error: 'Inscription : ' + error.message });
-  res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'technicien', technicien: { id: data.id, name: data.nom, email: data.email } });
+  const token = signToken({ id: data.id, role: 'technician', nom: data.nom });
+  res.status(201).json({ success: true, message: 'Inscription réussie !', role: 'technician', token, technicien: { id: data.id, name: data.nom, email: data.email } });
 });
 
 // POST /api/login
@@ -442,7 +612,8 @@ app.post('/api/login', async (req, res) => {
     if (!verifyPassword(clientQ.data.password_hash, mdp)) {
       return res.status(401).json({ error: 'Identifiants incorrects.' });
     }
-    return res.status(200).json({ success: true, message: 'Connexion réussie !', role: 'client', user: { id: clientQ.data.id, nom: clientQ.data.nom } });
+    const token = signToken({ id: clientQ.data.id, role: 'client', nom: clientQ.data.nom });
+    return res.status(200).json({ success: true, message: 'Connexion réussie !', role: 'client', token, user: { id: clientQ.data.id, nom: clientQ.data.nom } });
   }
 
   const techQ = await supabase.from('technicians').select('*').eq('email', email).maybeSingle();
@@ -451,7 +622,8 @@ app.post('/api/login', async (req, res) => {
     if (!verifyPassword(techQ.data.password_hash, mdp)) {
       return res.status(401).json({ error: 'Identifiants incorrects.' });
     }
-    return res.status(200).json({ success: true, message: 'Connexion réussie !', role: 'technicien', user: { id: techQ.data.id, nom: techQ.data.nom } });
+    const token = signToken({ id: techQ.data.id, role: 'technician', nom: techQ.data.nom });
+    return res.status(200).json({ success: true, message: 'Connexion réussie !', role: 'technician', token, user: { id: techQ.data.id, nom: techQ.data.nom } });
   }
 
   res.status(404).json({ error: 'Aucun compte associé à cet email.' });
