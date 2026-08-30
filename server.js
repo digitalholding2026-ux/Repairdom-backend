@@ -424,6 +424,8 @@ app.get('/api/technician/missions/:technicianId', requireTechnician, async (req,
       technicianId: row.technician_id,
       status: row.status,
       price: row.price,
+      dateSouhaitee: row.date_souhaitee || null,
+      time: row.time_souhaitee || null,
       createdAt: row.created_at
     };
   });
