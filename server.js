@@ -103,6 +103,9 @@ function requireTechnician(req, res, next) {
 /** SALT_ROUNDS pour bcrypt (10 = bon compromis sécurité/perf). */
 const SALT_ROUNDS = 10;
 
+/** Commission RetailDom sur chaque mission (0.10 = 10%). Configurable via env. */
+const COMMISSION_RATE = Number(process.env.COMMISSION_RATE || 0.10);
+
 /** Compare un mot de passe fourni avec le hash stocké (bcrypt). */
 function verifyPassword(stored, provided) {
   if (!stored || provided === undefined) return false;
@@ -480,6 +483,63 @@ app.get('/api/technician/reviews/:technicianId', requireTechnician, async (req, 
     date: r.created_at
   }));
   res.json(reviews);
+});
+
+// GET /api/technician/payments/:technicianId
+// Historique des paiements : missions terminées, montant perçu (commission
+// déduite), client, date de paiement, statut du paiement. Ordonné par date
+// décroissante, avec montants totaux en tête.
+app.get('/api/technician/payments/:technicianId', requireTechnician, async (req, res) => {
+  let b = supabase
+    .from('missions')
+    .select(MISSION_SELECT)
+    .eq('technician_id', req.params.technicianId)
+    .eq('status', 'completed');
+
+  const { data, error } = await b;
+  if (error) return res.status(500).json({ error: 'Paiements : ' + error.message });
+
+  const payments = (data || []).map(row => {
+    const c = embed(row, 'clients');
+    const gross = Number(row.price) || 0;
+    const net = Math.round(gross * (1 - COMMISSION_RATE));
+
+    // Statut du paiement : utilise la colonne `paye` si elle existe,
+    // sinon un paiement est considéré "Payé" quand un montant est fixé.
+    let paid;
+    if (row.paye === true || row.paye === 'true') paid = true;
+    else if (row.paye === false || row.paye === 'false') paid = false;
+    else paid = gross > 0;
+
+    const paidAt = row.paid_at || row.updated_at || row.created_at || null;
+
+    return {
+      id: row.id,
+      missionId: row.id,
+      clientName: (c && c.nom) || row.client_name || 'Client',
+      gross: gross,
+      commission: Math.round(gross * COMMISSION_RATE),
+      net: net,
+      status: paid ? 'Payé' : 'En attente',
+      date: new Date(paidAt).toISOString()
+    };
+  });
+
+  // Tri par date décroissante (les plus récentes en premier).
+  payments.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  const totalGross = payments.reduce((s, p) => s + p.gross, 0);
+  const totalCommission = payments.reduce((s, p) => s + p.commission, 0);
+  const totalNet = payments.reduce((s, p) => s + p.net, 0);
+
+  res.json({
+    commissionRate: COMMISSION_RATE,
+    totalGross,
+    totalCommission,
+    totalNet,
+    totalPaid: payments.filter(p => p.status === 'Payé').length,
+    payments
+  });
 });
 
 // PATCH /api/technician/status/:technicianId
