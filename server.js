@@ -504,6 +504,51 @@ app.patch('/api/technician/status/:technicianId', requireTechnician, async (req,
   res.json({ success: true, id: data.id, disponible: data.disponible });
 });
 
+// PATCH /api/technician/profile/:technicianId
+// Met à jour les informations du profil du technicien (nom, téléphone,
+// spécialité, tarif, localisation). Le mot de passe n'est pas modifiable ici.
+app.patch('/api/technician/profile/:technicianId', requireTechnician, async (req, res) => {
+  const b = req.body || {};
+
+  // Validation du téléphone : format +237XXXXXXXXX.
+  if (b.telephone !== undefined && (!/^\+237\s?\d{9}$/.test(String(b.telephone).trim()))) {
+    return res.status(400).json({ error: 'Le téléphone doit être au format +237XXXXXXXXX.' });
+  }
+
+  const updates = {};
+  if (b.nom !== undefined) {
+    if (!String(b.nom).trim()) return res.status(400).json({ error: 'Le nom ne peut pas être vide.' });
+    updates.nom = String(b.nom).trim();
+  }
+  if (b.telephone !== undefined) updates.telephone = String(b.telephone).trim();
+  if (b.specialite !== undefined) updates.specialite = String(b.specialite).trim();
+  if (b.localisation !== undefined) updates.localisation = String(b.localisation).trim();
+  if (b.tarif !== undefined) {
+    const tarif = Number(b.tarif);
+    if (!Number.isFinite(tarif) || tarif < 0) {
+      return res.status(400).json({ error: 'Le tarif doit être un nombre positif.' });
+    }
+    updates.tarif = tarif;
+  }
+
+  if (!Object.keys(updates).length) {
+    return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+  }
+
+  const { data, error } = await supabase
+    .from('technicians')
+    .update(updates)
+    .eq('id', req.params.technicianId)
+    .select()
+    .single();
+  if (error) {
+    if (error.code === 'PGRST116') return res.status(404).json({ error: 'Technicien introuvable.' });
+    return res.status(500).json({ error: 'Technicien : ' + error.message });
+  }
+
+  res.json({ success: true, message: 'Profil mis à jour.', technicien: mapTechnician(data) });
+});
+
 // ── Informations client (démo) ──
 app.get('/api/client', (_req, res) => {
   res.json({ id: 'client-demo', name: 'Client', email: 'client@email.com' });
