@@ -173,6 +173,9 @@ function mapMission(row) {
     technicianName: (t && t.nom) || null,
     panneId: row.panne_id,
     status: row.status,
+    technicianStatus: row.technician_status || 'pending',
+    cancellationReason: row.cancellation_reason || null,
+    rescheduleDate: row.reschedule_date || null,
     price: row.price,
     negotiationStatus: row.negotiation_status || 'pending',
     systemPrice: row.system_price || null,
@@ -281,6 +284,41 @@ function isOnline(lastSeen) {
   const t = new Date(lastSeen).getTime();
   if (isNaN(t)) return false;
   return (Date.now() - t) < PRESENCE_TIMEOUT_MS;
+}
+
+/** Distance en km (haversine) — null si une coordonnée est absente. */
+function haversineKm(aLat, aLng, bLat, bLng) {
+  const A = [Number(aLat), Number(aLng)];
+  const B = [Number(bLat), Number(bLng)];
+  if (!A.concat(B).every(Number.isFinite)) return null;
+  const R = 6371;
+  const dLat = (B[0] - A[0]) * Math.PI / 180;
+  const dLng = (B[1] - A[1]) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(A[0] * Math.PI / 180) * Math.cos(B[0] * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Frais de déplacement par défaut (FCFA). */
+const DEFAULT_TRAVEL_FEE = 2000;
+
+/** Insère une notification système dans le fil de chat d'une mission
+ *  (best-effort : n'interrompt pas la route en cas d'échec). */
+async function notifyInChat(missionId, content) {
+  try {
+    await supabase.from('messages').insert({
+      mission_id: missionId,
+      sender_id: null,
+      sender_name: 'Système',
+      sender_role: 'system',
+      content,
+      timestamp: new Date().toISOString(),
+      read_by_client: false,
+      read_by_technician: false
+    });
+  } catch (err) {
+    console.error('Notification chat ignorée :', err.message || err);
+  }
 }
 
 /** Vérifie (via Supabase) qu'un email est déjà pris. */
@@ -491,7 +529,9 @@ app.patch('/api/missions/:id', async (req, res) => {
   const b = req.body;
   const columns = {
     status: 'status', price: 'price', technicianId: 'technician_id', address: 'address',
-    negotiationStatus: 'negotiation_status', systemPrice: 'system_price', travelFee: 'travel_fee'
+    negotiationStatus: 'negotiation_status', systemPrice: 'system_price', travelFee: 'travel_fee',
+    technicianStatus: 'technician_status', cancellationReason: 'cancellation_reason',
+    rescheduleDate: 'reschedule_date', dateSouhaitee: 'date_souhaitee'
   };
   const updates = {
     updated_at: new Date().toISOString()
@@ -508,6 +548,147 @@ app.patch('/api/missions/:id', async (req, res) => {
     return res.status(500).json({ error: 'Mission : ' + error.message });
   }
   res.json(mapMission(data));
+});
+
+// POST /api/missions/:id/cancel — le client annule sa mission.
+// - Autorisé si technician_status est 'pending' ou 'on_the_way'.
+// - Si 'on_the_way' : application des frais de transport au débit du client.
+// - La raison est enregistrée dans cancellation_reason.
+app.post('/api/missions/:id/cancel', async (req, res) => {
+  const missionId = req.params.id;
+  const reason = (req.body && req.body.reason ? String(req.body.reason).trim() : '') ||
+                 'Annulation par le client';
+
+  const { data: mission, error: mErr } = await supabase
+    .from('missions').select(MISSION_SELECT).eq('id', missionId).maybeSingle();
+  if (mErr) return res.status(500).json({ error: 'Mission : ' + mErr.message });
+  if (!mission) return res.status(404).json({ error: 'Mission introuvable.' });
+
+  const tStatus = mission.technician_status || 'pending';
+  if (tStatus !== 'pending' && tStatus !== 'on_the_way') {
+    return res.status(409).json({
+      error: 'Annulation impossible : la mission est déjà en cours ou terminée (' + tStatus + ').'
+    });
+  }
+
+  const onTheWay = tStatus === 'on_the_way';
+  const transportFee = onTheWay ? Number(mission.travel_fee) || DEFAULT_TRAVEL_FEE : 0;
+  const now = new Date().toISOString();
+
+  // Si on_the_way, on applique les frais de transport au prix facturé au client.
+  const updates = {
+    technician_status: 'cancelled',
+    status: 'cancelled',
+    cancellation_reason: reason,
+    updated_at: now
+  };
+  if (onTheWay) {
+    const currentPrice = Number(mission.price);
+    updates.price = (Number.isFinite(currentPrice) ? currentPrice : 0) + transportFee;
+  }
+
+  const { data: updated, error: uErr } = await supabase
+    .from('missions').update(updates).eq('id', missionId).select(MISSION_SELECT).single();
+  if (uErr) return res.status(500).json({ error: 'Mission : ' + uErr.message });
+
+  // Prévient le technicien dans le chat de la mission.
+  await notifyInChat(missionId, 'Mission annulée par le client' +
+    (onTheWay ? ' (frais de transport appliqués : ' + transportFee + ' FCFA).' : '.'));
+
+  res.json({
+    success: true,
+    message: onTheWay
+      ? 'Mission annulée. Les frais de transport de ' + transportFee + ' FCFA s\'appliquent.'
+      : 'Mission annulée avec succès.',
+    technicianStatus: 'cancelled',
+    status: 'cancelled',
+    cancellationReason: reason,
+    transportFee
+  });
+});
+
+// PATCH /api/missions/:id/reschedule — le client ou le technicien reporte le RDV.
+// - Body : { new_date: "2026-09-15T10:00:00Z" }
+// - Autorisé si technician_status est 'pending' ou 'on_the_way'.
+// - Si 'on_the_way' : ajout de frais de litige calculés selon la distance.
+// - Met à jour date_souhaitee et updated_at, et notifie le technicien.
+app.patch('/api/missions/:id/reschedule', async (req, res) => {
+  const missionId = req.params.id;
+  const rawDate = req.body && req.body.new_date;
+  if (!rawDate) {
+    return res.status(400).json({ error: 'Champ requis : new_date.' });
+  }
+  const parsedDate = new Date(rawDate);
+  if (isNaN(parsedDate.getTime())) {
+    return res.status(400).json({ error: 'new_date invalide.' });
+  }
+  const newDate = parsedDate.toISOString();
+
+  const { data: mission, error: mErr } = await supabase
+    .from('missions').select(MISSION_SELECT).eq('id', missionId).maybeSingle();
+  if (mErr) return res.status(500).json({ error: 'Mission : ' + mErr.message });
+  if (!mission) return res.status(404).json({ error: 'Mission introuvable.' });
+
+  const tStatus = mission.technician_status || 'pending';
+  if (tStatus !== 'pending' && tStatus !== 'on_the_way') {
+    return res.status(409).json({
+      error: 'Report impossible : la mission est déjà en cours ou terminée (' + tStatus + ').'
+    });
+  }
+
+  // Frais de litige : uniquement si le technicien est déjà en route (on_the_way),
+  // calculés selon la distance entre le client et le technicien.
+  const technician = mission.technicians ? (Array.isArray(mission.technicians) ? mission.technicians[0] : mission.technicians) : null;
+  let disputeFee = 0;
+  if (tStatus === 'on_the_way') {
+    const client = mission.clients ? (Array.isArray(mission.clients) ? mission.clients[0] : mission.clients) : null;
+    const cLat = Number(client && client.latitude);
+    const cLng = Number(client && client.longitude);
+    const tLat = Number(technician && technician.latitude);
+    const tLng = Number(technician && technician.longitude);
+    const distKm = haversineKm(cLat, cLng, tLat, tLng);
+    if (distKm != null) {
+      disputeFee = Math.max(1000, Math.round(distKm * 500));
+    } else {
+      disputeFee = DEFAULT_TRAVEL_FEE;
+    }
+  }
+
+  const currentTravelFee = Number(mission.travel_fee) || DEFAULT_TRAVEL_FEE;
+  const newTravelFee = currentTravelFee + disputeFee;
+  const now = new Date().toISOString();
+
+  const updates = {
+    date_souhaitee: newDate,
+    travel_fee: newTravelFee,
+    updated_at: now
+  };
+  if (disputeFee > 0) {
+    const currentPrice = Number(mission.price);
+    updates.price = (Number.isFinite(currentPrice) ? currentPrice : 0) + disputeFee;
+  }
+
+  const { data: updated, error: uErr } = await supabase
+    .from('missions').update(updates).eq('id', missionId).select(MISSION_SELECT).single();
+  if (uErr) return res.status(500).json({ error: 'Mission : ' + uErr.message });
+
+  const techName = (technician && technician.nom) || '';
+  await notifyInChat(
+    missionId,
+    'Rendez-vous reporté au ' + new Date(newDate).toLocaleString('fr-FR') +
+    (disputeFee > 0 ? ' — frais de litige de ' + disputeFee + ' FCFA appliqués.' : '.')
+  );
+
+  res.json({
+    success: true,
+    message: 'Rendez-vous reporté avec succès.',
+    rescheduleDate: newDate,
+    dateSouhaitee: newDate,
+    disputeFee,
+    travelFee: newTravelFee,
+    technicianName: techName,
+    notification: { sentTo: 'technician', via: 'chat', content: 'Rendez-vous reporté.' }
+  });
 });
 
 // ── Messages (chat) ──
