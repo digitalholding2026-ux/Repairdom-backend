@@ -142,6 +142,8 @@ function mapTechnician(row) {
     specialty: row.specialite,
     rate: row.tarif,
     location: row.localisation,
+    latitude: row.latitude != null ? Number(row.latitude) : null,
+    longitude: row.longitude != null ? Number(row.longitude) : null,
     available: row.disponible,
     verified: !!verified,
     avatar: row.avatar,
@@ -370,6 +372,114 @@ app.post('/api/missions', async (req, res) => {
   res.status(201).json(mapMission(data));
 });
 
+/* ─────────────────────────────────────────────────────────────
+   ASSIGNATION AUTOMATIQUE D'UN TECHNICIEN
+   POST /api/missions/:id/assign-technician
+   Sélectionne un technicien disponible (statut = disponible), le
+   plus proche de l'adresse du client (lat/lng) et avec la meilleure
+   note. Calcule et mémorise le prix système (catalogue + transport).
+   ───────────────────────────────────────────────────────────── */
+app.post('/api/missions/:id/assign-technician', async (req, res) => {
+  const missionId = req.params.id;
+
+  // Charge la mission (avec panne pour le calcul du prix).
+  const { data: mission, error: mErr } = await supabase
+    .from('missions').select('*, clients(*)').eq('id', missionId).maybeSingle();
+  if (mErr) return res.status(500).json({ error: 'Mission : ' + mErr.message });
+  if (!mission) return res.status(404).json({ error: 'Mission introuvable.' });
+
+  // Récupère les techniciens disponibles.
+  const { data: techs, error: tErr } = await supabase
+    .from('technicians').select('*').eq('disponible', true);
+  if (tErr) return res.status(500).json({ error: 'Techniciens : ' + tErr.message });
+
+  if (!techs || !techs.length) {
+    return res.status(404).json({ error: 'Aucun technicien disponible pour le moment.' });
+  }
+
+  // Coordonnées du client (si fournies en mémoire de session).
+  const clientLat = Number(req.body && (req.body.latitude != null ? req.body.latitude : mission.latitude));
+  const clientLng = Number(req.body && (req.body.longitude != null ? req.body.longitude : mission.longitude));
+
+  // Fonction de distance (haversine) — 0 si coordonnées absentes.
+  function haversine(aLat, aLng, bLat, bLng) {
+    if (![aLat, aLng, bLat, bLng].every(Number.isFinite)) return null;
+    const R = 6371;
+    const dLat = (bLat - aLat) * Math.PI / 180;
+    const dLng = (bLng - aLng) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(aLat * Math.PI / 180) * Math.cos(bLat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  let chosen = null;
+  let chosenDistance = null;
+
+  // 1) Priorité : techniciens avec coordonnées + distance calculable.
+  const techsWithCoords = [];
+  let clientHasCoords = Number.isFinite(clientLat) && Number.isFinite(clientLng);
+  techs.forEach(function (t) {
+    const tLat = Number(t.latitude);
+    const tLng = Number(t.longitude);
+    const d = Number.isFinite(tLat) && Number.isFinite(tLng) ? haversine(clientLat, clientLng, tLat, tLng) : null;
+    if (d != null) techsWithCoords.push({ t, d });
+  });
+
+  if (clientHasCoords && techsWithCoords.length) {
+    // Tri : distance croissante, puis note décroissante.
+    techsWithCoords.sort(function (a, b) {
+      if (a.d !== b.d) return a.d - b.d;
+      return (Number(b.t.rating) || 0) - (Number(a.t.rating) || 0);
+    });
+    chosen = techsWithCoords[0].t;
+    chosenDistance = techsWithCoords[0].d;
+  }
+
+  // 2) Sinon : meilleure note parmi les disponibles.
+  if (!chosen) {
+    techs.sort(function (a, b) {
+      return (Number(b.rating) || 0) - (Number(a.rating) || 0);
+    });
+    chosen = techs[0];
+  }
+
+  // Calcule le prix système : (min+max)/2 + frais déplacement.
+  let systemPrice = null;
+  let travelFee = Number(mission.travel_fee);
+  if (!Number.isFinite(travelFee) || travelFee <= 0) travelFee = 2000;
+  if (mission.panne_id) {
+    const { data: panne } = await supabase
+      .from('catalogue').select('prix_min, prix_max, nom').eq('id', mission.panne_id).maybeSingle();
+    if (panne) {
+      systemPrice = Math.round((panne.prix_min + panne.prix_max) / 2) + travelFee;
+    }
+  }
+
+  const now = new Date().toISOString();
+  // Assigne le technicien + mémorise le prix système.
+  const { data: updated, error: uErr } = await supabase
+    .from('missions')
+    .update({
+      technician_id: chosen.id,
+      system_price: systemPrice,
+      travel_fee: travelFee,
+      negotiation_status: 'pending',
+      updated_at: now
+    })
+    .eq('id', missionId)
+    .select(MISSION_SELECT)
+    .single();
+  if (uErr) return res.status(500).json({ error: 'Mission : ' + uErr.message });
+
+  res.status(200).json({
+    mission: mapMission(updated),
+    technician: mapTechnician(chosen),
+    distanceKm: chosenDistance != null ? Math.round(chosenDistance * 100) / 100 : null,
+    systemPrice,
+    travelFee
+  });
+});
+
 app.get('/api/missions/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('missions').select(MISSION_SELECT).eq('id', req.params.id).maybeSingle();
@@ -570,49 +680,19 @@ app.post('/api/missions/:id/proposals/:proposalId/accept', async (req, res) => {
     .eq('status', 'proposed')
     .neq('id', proposalId);
 
-  // ── Vérification de la validation mutuelle ──
-  // Cherche les propositions acceptées pour cette mission.
-  const { data: acceptedProposals } = await supabase
-    .from('price_proposals')
-    .select('proposer_role, amount')
-    .eq('mission_id', proposal.mission_id)
-    .eq('status', 'accepted');
-
-  const clientAccepted = (acceptedProposals || []).filter(p => p.proposer_role === 'client');
-  const techAccepted = (acceptedProposals || []).filter(p => p.proposer_role === 'technician');
-
-  let negotiationStatus = 'accepted';
-  let mutualAgreement = false;
-
-  // Les deux parties ont accepté une proposition → accord mutuel
-  if (clientAccepted.length > 0 && techAccepted.length > 0) {
-    // Cherche la dernière proposition acceptée par chaque partie
-    const lastClient = clientAccepted[clientAccepted.length - 1];
-    const lastTech = techAccepted[techAccepted.length - 1];
-    // Vérifie qu'elles portent sur le même montant
-    if (Number(lastClient.amount) === Number(lastTech.amount)) {
-      mutualAgreement = true;
-    }
-  }
-
-  // Si une seule partie a accepté → en attente de l'autre
-  if (!mutualAgreement && clientAccepted.length === 0) {
-    negotiationStatus = 'pending';
-  } else if (!mutualAgreement && techAccepted.length === 0) {
-    negotiationStatus = 'pending';
-  } else if (!mutualAgreement) {
-    negotiationStatus = 'accepted';
-  }
-
+  // ── Validation mutuelle ──
+  // Une proposition est acceptée par l'AUTRE partie → accord des deux côtés.
+  // Le prix est appliqué à la mission (missions.price) et la négociation est
+  // marquée comme acceptée → le bouton "Valider la mission" est débloqué.
   await supabase.from('missions')
-    .update({ negotiation_status: negotiationStatus, updated_at: now })
+    .update({ negotiation_status: 'accepted', updated_at: now })
     .eq('id', proposal.mission_id);
 
   res.json({
     success: true,
     price: proposal.amount,
-    negotiationStatus,
-    mutualAgreement,
+    negotiationStatus: 'accepted',
+    mutualAgreement: true,
     priceProposal: { ...proposal, status: 'accepted', resolved_at: now }
   });
 });

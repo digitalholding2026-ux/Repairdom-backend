@@ -11,3 +11,9 @@ ALTER TABLE missions ADD COLUMN IF NOT EXISTS system_price numeric;
 
 -- 3) Colonne travel_fee : frais de déplacement estimés
 ALTER TABLE missions ADD COLUMN IF NOT EXISTS travel_fee numeric DEFAULT 2000;
+
+-- 4) Coordonnées GPS des techniciens (pour l'assignation automatique)
+--    Si absentes, le système retombe sur la meilleure note parmi les disponibles.
+ALTER TABLE technicians ADD COLUMN IF NOT EXISTS latitude numeric;
+ALTER TABLE technicians ADD COLUMN IF NOT EXISTS longitude numeric;
+
