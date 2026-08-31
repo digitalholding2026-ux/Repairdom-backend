@@ -150,7 +150,8 @@ function mapTechnician(row) {
     reviews: row.avis,
     bio: row.bio,
     motDePasse: row.password_hash,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    lastSeen: row.last_seen || null
   };
 }
 
@@ -171,6 +172,9 @@ function mapMission(row) {
     panneId: row.panne_id,
     status: row.status,
     price: row.price,
+    negotiationStatus: row.negotiation_status || 'pending',
+    systemPrice: row.system_price || null,
+    travelFee: row.travel_fee || 2000,
     dateSouhaitee: row.date_souhaitee,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -185,7 +189,9 @@ function mapMessage(row) {
     senderName: row.sender_name,
     senderRole: row.sender_role,
     content: row.content,
-    timestamp: row.timestamp
+    timestamp: row.timestamp,
+    readByClient: row.read_by_client === true || row.read_by_client === 'true',
+    readByTechnician: row.read_by_technician === true || row.read_by_technician === 'true'
   };
 }
 
@@ -250,14 +256,29 @@ function missionRow(b) {
 }
 
 function messageRow(b) {
+  const role = b.senderRole || 'client';
   return {
     mission_id: b.missionId,
     sender_id: b.senderId || null,
     sender_name: b.senderName || 'Client',
-    sender_role: b.senderRole || 'client',
+    sender_role: role,
     content: b.content,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    // Le message est « lu » par son expéditeur dès l'insertion.
+    read_by_client: role === 'client',
+    read_by_technician: role === 'technician'
   };
+}
+
+// Seuil de présence : un utilisateur dont `last_seen` remonte à plus de
+// PRESENCE_TIMEOUT_MS est considéré hors ligne.
+const PRESENCE_TIMEOUT_MS = Number(process.env.PRESENCE_TIMEOUT_MS || 40000);
+
+function isOnline(lastSeen) {
+  if (!lastSeen) return false;
+  const t = new Date(lastSeen).getTime();
+  if (isNaN(t)) return false;
+  return (Date.now() - t) < PRESENCE_TIMEOUT_MS;
 }
 
 /** Vérifie (via Supabase) qu'un email est déjà pris. */
@@ -358,7 +379,10 @@ app.get('/api/missions/:id', async (req, res) => {
 
 app.patch('/api/missions/:id', async (req, res) => {
   const b = req.body;
-  const columns = { status: 'status', price: 'price', technicianId: 'technician_id', address: 'address' };
+  const columns = {
+    status: 'status', price: 'price', technicianId: 'technician_id', address: 'address',
+    negotiationStatus: 'negotiation_status', systemPrice: 'system_price', travelFee: 'travel_fee'
+  };
   const updates = {
     updated_at: new Date().toISOString()
   };
@@ -393,6 +417,319 @@ app.post('/api/messages', async (req, res) => {
   const { data, error } = await supabase.from('messages').insert(messageRow(b)).select().single();
   if (error) return res.status(500).json({ error: 'Message : ' + error.message });
   res.status(201).json(mapMessage(data));
+});
+
+// POST /api/messages/read — marque les messages d'une mission comme lus par
+// une partie donnée ("client" ou "technician").
+app.post('/api/messages/read', async (req, res) => {
+  const b = req.body || {};
+  if (!b.missionId || !(b.readerRole === 'client' || b.readerRole === 'technician')) {
+    return res.status(400).json({ error: 'Champs manquants (missionId, readerRole client|technician).' });
+  }
+  const column = b.readerRole === 'client' ? 'read_by_client' : 'read_by_technician';
+  const { error } = await supabase
+    .from('messages')
+    .update({ [column]: true })
+    .eq('mission_id', b.missionId)
+    .neq(column, true);
+  if (error) return res.status(500).json({ error: 'Messages : ' + error.message });
+  res.json({ success: true });
+});
+
+/* ─────────────────────────────────────────────────────────────
+   PRÉSENCE (statut en ligne / hors ligne)
+   Un battement de cœur (heartbeat ~15s) met à jour `last_seen` sur la table
+   du compte (clients / technicians). Le statut réel est dérivé de last_seen.
+   ───────────────────────────────────────────────────────────── */
+
+// POST /api/presence — marque un utilisateur comme actif (last_seen = now).
+app.post('/api/presence', async (req, res) => {
+  const b = req.body || {};
+  const { userId, role } = b;
+  if (!userId || !(role === 'client' || role === 'technician')) {
+    return res.status(400).json({ error: 'Champs manquants (userId, role).' });
+  }
+  const table = role === 'client' ? 'clients' : 'technicians';
+  const { error } = await supabase
+    .from(table).update({ last_seen: new Date().toISOString() }).eq('id', userId);
+  if (error) return res.status(500).json({ error: 'Présence : ' + error.message });
+  res.json({ success: true, online: true });
+});
+
+// GET /api/presence/status?clientId=&technicianId=
+// Renvoie le statut en ligne réel des deux parties.
+app.get('/api/presence/status', async (req, res) => {
+  const { clientId, technicianId } = req.query;
+  const out = { client: { online: false, lastSeen: null }, technician: { online: false, lastSeen: null } };
+
+  if (clientId) {
+    const { data, error } = await supabase.from('clients').select('id, last_seen').eq('id', clientId).maybeSingle();
+    if (error) return res.status(500).json({ error: 'Présence : ' + error.message });
+    if (data) out.client = { online: isOnline(data.last_seen), lastSeen: data.last_seen };
+  }
+  if (technicianId) {
+    const { data, error } = await supabase.from('technicians').select('id, last_seen').eq('id', technicianId).maybeSingle();
+    if (error) return res.status(500).json({ error: 'Présence : ' + error.message });
+    if (data) out.technician = { online: isOnline(data.last_seen), lastSeen: data.last_seen };
+  }
+  res.json(out);
+});
+
+/* ─────────────────────────────────────────────────────────────
+   PROPOSITIONS DE PRIX (négociation avec validation)
+   Un prix proposé par une partie n'est appliqué à la mission (price) et au
+   reçu qu'après acceptation par l'autre partie.
+   ───────────────────────────────────────────────────────────── */
+
+// GET /api/missions/:id/proposals — propositions de prix d'une mission (les plus récentes d'abord).
+app.get('/api/missions/:id/proposals', async (req, res) => {
+  const { data, error } = await supabase
+    .from('price_proposals')
+    .select('*')
+    .eq('mission_id', req.params.id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: 'Propositions : ' + error.message });
+  res.json(data || []);
+});
+
+// POST /api/missions/:id/proposals
+// Body: { proposerRole: 'client'|'technician', amount }
+// Crée une proposition "proposed" et remplace toute proposition encore en attente.
+app.post('/api/missions/:id/proposals', async (req, res) => {
+  const missionId = req.params.id;
+  const b = req.body || {};
+  const { proposerRole, amount } = b;
+  const amountNum = Number(amount);
+  if (!(proposerRole === 'client' || proposerRole === 'technician')) {
+    return res.status(400).json({ error: 'Champs manquants (proposerRole client|technician).' });
+  }
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    return res.status(400).json({ error: 'Montant invalide.' });
+  }
+
+  const now = new Date().toISOString();
+  // Remplace toute proposition encore "proposed" (créée par n'importe quelle partie).
+  await supabase.from('price_proposals')
+    .update({ status: 'replaced', resolved_at: now })
+    .eq('mission_id', missionId)
+    .eq('status', 'proposed');
+
+  const { data, error } = await supabase.from('price_proposals')
+    .insert({ mission_id: missionId, proposer_role: proposerRole, amount: amountNum, status: 'proposed', created_at: now })
+    .select().single();
+  if (error) return res.status(500).json({ error: 'Proposition : ' + error.message });
+
+  // Met à jour le negotiation_status
+  const newStatus = proposerRole === 'client' ? 'client_proposed' : 'tech_proposed';
+  await supabase.from('missions')
+    .update({ negotiation_status: newStatus, updated_at: now })
+    .eq('id', missionId);
+
+  res.status(201).json({ ...data, negotiationStatus: newStatus });
+});
+
+// POST /api/missions/:id/proposals/:proposalId/accept
+// Body: { accepterRole: 'client'|'technician' }
+// Valide la proposition : applique le prix à la mission (price) → nouveau reçu.
+app.post('/api/missions/:id/proposals/:proposalId/accept', async (req, res) => {
+  const { proposalId } = req.params;
+  const missionId = req.params.id;
+  const accepterRole = (req.body || {}).accepterRole;
+
+  if (!(accepterRole === 'client' || accepterRole === 'technician')) {
+    return res.status(400).json({ error: 'Champ manquant (accepterRole client|technician).' });
+  }
+
+  const { data: proposal, error: pErr } = await supabase
+    .from('price_proposals').select('*').eq('id', proposalId).maybeSingle();
+  if (pErr) return res.status(500).json({ error: 'Proposition : ' + pErr.message });
+  if (!proposal) return res.status(404).json({ error: 'Proposition introuvable.' });
+  if (proposal.status !== 'proposed') {
+    return res.status(409).json({ error: 'Cette proposition n\u2019est plus en attente.' });
+  }
+  if (proposal.proposer_role === accepterRole) {
+    return res.status(400).json({ error: 'La proposition doit être validée par l\u2019autre partie.' });
+  }
+
+  const now = new Date().toISOString();
+  const { data: mission, error: mErr } = await supabase
+    .from('missions')
+    .update({ price: proposal.amount, updated_at: now })
+    .eq('id', proposal.mission_id)
+    .select().single();
+  if (mErr) return res.status(500).json({ error: 'Mission : ' + mErr.message });
+
+  await supabase.from('price_proposals')
+    .update({ status: 'accepted', resolved_at: now })
+    .eq('id', proposalId);
+
+  // Mise à jour des autres propositions en attente → remplacées.
+  await supabase.from('price_proposals')
+    .update({ status: 'replaced', resolved_at: now })
+    .eq('mission_id', proposal.mission_id)
+    .eq('status', 'proposed')
+    .neq('id', proposalId);
+
+  // ── Vérification de la validation mutuelle ──
+  // Cherche les propositions acceptées pour cette mission.
+  const { data: acceptedProposals } = await supabase
+    .from('price_proposals')
+    .select('proposer_role, amount')
+    .eq('mission_id', proposal.mission_id)
+    .eq('status', 'accepted');
+
+  const clientAccepted = (acceptedProposals || []).filter(p => p.proposer_role === 'client');
+  const techAccepted = (acceptedProposals || []).filter(p => p.proposer_role === 'technician');
+
+  let negotiationStatus = 'accepted';
+  let mutualAgreement = false;
+
+  // Les deux parties ont accepté une proposition → accord mutuel
+  if (clientAccepted.length > 0 && techAccepted.length > 0) {
+    // Cherche la dernière proposition acceptée par chaque partie
+    const lastClient = clientAccepted[clientAccepted.length - 1];
+    const lastTech = techAccepted[techAccepted.length - 1];
+    // Vérifie qu'elles portent sur le même montant
+    if (Number(lastClient.amount) === Number(lastTech.amount)) {
+      mutualAgreement = true;
+    }
+  }
+
+  // Si une seule partie a accepté → en attente de l'autre
+  if (!mutualAgreement && clientAccepted.length === 0) {
+    negotiationStatus = 'pending';
+  } else if (!mutualAgreement && techAccepted.length === 0) {
+    negotiationStatus = 'pending';
+  } else if (!mutualAgreement) {
+    negotiationStatus = 'accepted';
+  }
+
+  await supabase.from('missions')
+    .update({ negotiation_status: negotiationStatus, updated_at: now })
+    .eq('id', proposal.mission_id);
+
+  res.json({
+    success: true,
+    price: proposal.amount,
+    negotiationStatus,
+    mutualAgreement,
+    priceProposal: { ...proposal, status: 'accepted', resolved_at: now }
+  });
+});
+
+// POST /api/missions/:id/proposals/:proposalId/reject
+// Body: { accepterRole } — refuse la proposition (elle reste "declined").
+app.post('/api/missions/:id/proposals/:proposalId/reject', async (req, res) => {
+  const { proposalId } = req.params;
+  const accepterRole = (req.body || {}).accepterRole;
+  if (!(accepterRole === 'client' || accepterRole === 'technician')) {
+    return res.status(400).json({ error: 'Champ manquant (accepterRole client|technician).' });
+  }
+
+  const { data: proposal, error: pErr } = await supabase
+    .from('price_proposals').select('*').eq('id', proposalId).maybeSingle();
+  if (pErr) return res.status(500).json({ error: 'Proposition : ' + pErr.message });
+  if (!proposal) return res.status(404).json({ error: 'Proposition introuvable.' });
+  if (proposal.status !== 'proposed') {
+    return res.status(409).json({ error: 'Cette proposition n\u2019est plus en attente.' });
+  }
+  if (proposal.proposer_role === accepterRole) {
+    return res.status(400).json({ error: 'La proposition doit être refusée par l\u2019autre partie.' });
+  }
+
+  await supabase.from('price_proposals')
+    .update({ status: 'declined', resolved_at: new Date().toISOString() })
+    .eq('id', proposalId);
+  // Remet le status de négociation à pending (retour au prix système).
+  await supabase.from('missions')
+    .update({ negotiation_status: 'pending', updated_at: new Date().toISOString() })
+    .eq('id', proposal.mission_id);
+  res.json({ success: true, priceProposal: { ...proposal, status: 'declined' } });
+});
+
+/* ─────────────────────────────────────────────────────────────
+   NÉGOCIATION MUTUALISÉE
+   POST /api/negotiation/:missionId
+   Calcule le prix système (catalogue + frais déplacement) et/ou
+   enregistre une proposition de prix avec validation mutuelle.
+   Body: { proposedBy: 'client'|'technician', amount? }
+   ───────────────────────────────────────────────────────────── */
+app.post('/api/negotiation/:missionId', async (req, res) => {
+  const missionId = req.params.missionId;
+  const b = req.body || {};
+  const { proposedBy, amount } = b;
+
+  // Récupère la mission
+  const { data: mission, error: mErr } = await supabase
+    .from('missions').select('*, clients(*), technicians(*)').eq('id', missionId).maybeSingle();
+  if (mErr) return res.status(500).json({ error: 'Mission : ' + mErr.message });
+  if (!mission) return res.status(404).json({ error: 'Mission introuvable.' });
+
+  // 1) Calcul du prix système si pas encore calculé
+  let systemPrice = mission.system_price;
+  let travelFee = mission.travel_fee || 2000;
+  if (!systemPrice && mission.panne_id) {
+    const { data: panne } = await supabase
+      .from('catalogue').select('prix_min, prix_max').eq('id', mission.panne_id).maybeSingle();
+    if (panne) {
+      systemPrice = Math.round((panne.prix_min + panne.prix_max) / 2) + travelFee;
+      await supabase.from('missions')
+        .update({ system_price: systemPrice, travel_fee: travelFee, updated_at: new Date().toISOString() })
+        .eq('id', missionId);
+    }
+  }
+
+  // 2) Si pas de proposition de prix → retourne juste le prix système
+  if (!proposedBy || amount === undefined) {
+    return res.json({
+      missionId,
+      systemPrice,
+      travelFee,
+      negotiationStatus: mission.negotiation_status || 'pending',
+      price: mission.price
+    });
+  }
+
+  // 3) Proposition de prix par une partie
+  const amountNum = Number(amount);
+  const proposerRole = (proposedBy === 'technician') ? 'technician' : 'client';
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    return res.status(400).json({ error: 'Montant invalide.' });
+  }
+
+  const now = new Date().toISOString();
+
+  // Remplace toute proposition encore "proposed"
+  await supabase.from('price_proposals')
+    .update({ status: 'replaced', resolved_at: now })
+    .eq('mission_id', missionId)
+    .eq('status', 'proposed');
+
+  // Insère la nouvelle proposition
+  const { data: proposal, error: pErr } = await supabase.from('price_proposals')
+    .insert({
+      mission_id: missionId,
+      proposer_role: proposerRole,
+      amount: amountNum,
+      status: 'proposed',
+      created_at: now
+    })
+    .select().single();
+  if (pErr) return res.status(500).json({ error: 'Proposition : ' + pErr.message });
+
+  // Met à jour le negotiation_status
+  const newStatus = proposerRole === 'client' ? 'client_proposed' : 'tech_proposed';
+  await supabase.from('missions')
+    .update({ negotiation_status: newStatus, updated_at: now })
+    .eq('id', missionId);
+
+  res.status(201).json({
+    missionId,
+    systemPrice,
+    travelFee,
+    negotiationStatus: newStatus,
+    priceProposal: proposal
+  });
 });
 
 /* ─────────────────────────────────────────────────────────────
@@ -458,6 +795,72 @@ app.get('/api/technician/stats/:technicianId', requireTechnician, async (req, re
     revenusTotaux,
     noteMoyenne
   });
+});
+
+// GET /api/technician/conversations/:technicianId
+// Liste des conversations du technicien, une par mission (active ou terminée) :
+// nom du client, dernier message, date, nombre de messages non lus.
+app.get('/api/technician/conversations/:technicianId', requireTechnician, async (req, res) => {
+  const technicianId = req.params.technicianId;
+
+  const { data: missions, error: mErr } = await supabase
+    .from('missions')
+    .select(MISSION_SELECT)
+    .eq('technician_id', technicianId);
+  if (mErr) return res.status(500).json({ error: 'Conversations : ' + mErr.message });
+
+  const activeMissions = (missions || []).filter(m =>
+    ['pending', 'accepted', 'in-progress', 'in_progress', 'completed'].includes(m.status)
+  );
+
+  const missionIds = activeMissions.map(m => m.id);
+  if (!missionIds.length) return res.json([]);
+
+  const { data: messages, error: msErr } = await supabase
+    .from('messages')
+    .select('*')
+    .in('mission_id', missionIds)
+    .order('timestamp', { ascending: true });
+  if (msErr) return res.status(500).json({ error: 'Conversations : ' + msErr.message });
+
+  // Groupe les messages par mission.
+  const byMission = {};
+  (messages || []).forEach(msg => {
+    (byMission[msg.mission_id] = byMission[msg.mission_id] || []).push(msg);
+  });
+
+  const conversations = activeMissions.map(row => {
+    const c = embed(row, 'clients');
+    const msgs = byMission[row.id] || [];
+    const last = msgs[msgs.length - 1] || null;
+    const unread = msgs.filter(msg => msg.sender_role === 'client' && !(msg.read_by_technician === true)).length;
+
+    return {
+      missionId: row.id,
+      clientName: (c && c.nom) || row.client_name || 'Client',
+      clientId: row.client_id || (c && c.id) || null,
+      clientPhone: (c && c.telephone) || '',
+      address: row.address || (c && c.adresse) || '',
+      device: row.device,
+      issue: row.issue,
+      status: row.status,
+      price: row.price,
+      lastMessage: last ? last.content : null,
+      lastMessageBy: last ? last.sender_role : null,
+      lastMessageAt: last ? last.timestamp : null,
+      unread
+    };
+  });
+
+  // Tri : conversations avec messages non lus d'abord, puis par activité récente.
+  conversations.sort((a, b) => {
+    if ((b.unread > 0) !== (a.unread > 0)) return (b.unread > 0) ? 1 : -1;
+    const ta = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+    const tb = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  res.json(conversations);
 });
 
 // GET /api/technician/reviews/:technicianId
