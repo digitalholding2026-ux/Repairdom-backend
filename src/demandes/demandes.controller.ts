@@ -5,7 +5,7 @@ import { RolesGuard } from './../auth/roles.guard.js';
 import { Roles } from './../auth/roles.decorator.js';
 import { CurrentUser } from './../auth/current-user.decorator.js';
 import type { RequestUser } from './../auth/auth.types.js';
-import type { CreateDemandeDto } from './dto/create-demande.dto.js';
+import { CreateDemandeDto } from './dto/create-demande.dto.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
