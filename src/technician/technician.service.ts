@@ -7,7 +7,9 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { toApiDemande, isMatchingStatus } from '../demandes/demandes.service.js';
+import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
+import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 
 export function normalizeValue(value: string): string {
   return value
@@ -174,6 +176,31 @@ export class TechnicianService {
       if (existing.technicianId) throw new ConflictException('Cette demande a déjà été acceptée par un autre technicien.');
       if (existing.status === 'CANCELED') throw new ConflictException('Cette demande a été annulée.');
       throw new ForbiddenException('Cette demande ne correspond pas à votre profil.');
+    }
+
+    return toApiDemande(result);
+  }
+
+  async updateStatus(userId: string, demandeId: string, dto: TechnicianUpdateStatusDto) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.demande.findFirst({
+        where: { id: demandeId, technicianId: userId },
+      });
+      if (!current) return null;
+
+      const scheduledAt = assertTransition('TECHNICIAN', current.status, dto.status, dto.scheduledAt);
+
+      return tx.demande.update({
+        where: { id: current.id },
+        data: scheduledAt ? { status: dto.status, scheduledAt } : { status: dto.status },
+        include: { medias: true },
+      });
+    });
+
+    if (!result) {
+      const existing = await this.prisma.demande.findUnique({ where: { id: demandeId } });
+      if (!existing) throw new NotFoundException('Demande introuvable.');
+      throw new ForbiddenException('Vous n\'êtes pas le technicien assigné à cette demande.');
     }
 
     return toApiDemande(result);

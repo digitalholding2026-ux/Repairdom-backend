@@ -6,6 +6,7 @@ import { Roles } from '../auth/roles.decorator.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
+import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 
 @Controller('technician')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -42,5 +43,10 @@ export class TechnicianController {
   @HttpCode(HttpStatus.OK)
   acceptDemande(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.technicianService.acceptDemande(user.id, id);
+  }
+
+  @Patch('demandes/:id/status')
+  updateStatus(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TechnicianUpdateStatusDto) {
+    return this.technicianService.updateStatus(user.id, id, dto);
   }
 }

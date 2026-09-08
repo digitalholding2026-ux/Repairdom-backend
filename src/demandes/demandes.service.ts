@@ -3,6 +3,8 @@ import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
+import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
+import { assertTransition } from './demandes-lifecycle.js';
 import { ALLOWED_CATEGORIES } from './categories.js';
 
 export const REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
@@ -46,6 +48,7 @@ export interface DemandeRecord {
   address: string | null;
   clientId: string;
   technicianId: string | null;
+  scheduledAt: Date | null;
   createdAt: Date;
   medias: DemandeMediaRow[];
   technician?: DemandeTechnicianInfo | null;
@@ -63,6 +66,7 @@ export function toApiDemande(demande: DemandeRecord) {
     address: demande.address,
     technicianId: demande.technicianId,
     technician: demande.technician ?? null,
+    scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
     medias: demande.medias.map((media) => ({
       id: media.id,
       kind: media.kind,
@@ -163,6 +167,26 @@ export class DemandesService {
     return toApiDemande(this.withTechnician(demande));
   }
 
+  async updateStatus(clientId: string, id: string, dto: UpdateDemandeStatusDto) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.demande.findFirst({
+        where: { id, clientId },
+      });
+      if (!current) return null;
+
+      assertTransition('CLIENT', current.status, dto.status);
+
+      return tx.demande.update({
+        where: { id: current.id },
+        data: { status: dto.status },
+        include: this.clientInclude(),
+      });
+    });
+
+    if (!result) throw new NotFoundException('Demande introuvable.');
+    return toApiDemande(this.withTechnician(result));
+  }
+
   private clientInclude() {
     return {
       medias: true,
@@ -188,6 +212,7 @@ export class DemandesService {
     address: string | null;
     clientId: string;
     technicianId: string | null;
+    scheduledAt: Date | null;
     createdAt: Date;
     medias: DemandeMediaRow[];
     technician?: {
