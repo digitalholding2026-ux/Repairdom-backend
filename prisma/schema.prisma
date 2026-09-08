@@ -35,8 +35,8 @@ model User {
   passwordHash        String
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
-  demandes            Demande[]
-  technicianDemandes  Demande[]
+  demandes            Demande[]           @relation("ClientDemandes")
+  technicianDemandes  Demande[]           @relation("TechnicianDemandes")
   technicianProfile   TechnicianProfile?
 }
 
@@ -48,9 +48,9 @@ model Demande {
   description String
   city        String
   address     String?
-  client      User          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client      User          @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
   clientId    String
-  technician  User?         @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  technician  User?         @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
   technicianId String?
   medias      DemandeMedia[]
   createdAt   DateTime      @default(now())
