@@ -9,6 +9,23 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { toApiDemande, isMatchingStatus } from '../demandes/demandes.service.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 
+export function normalizeValue(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeCity(value: string): string {
+  return normalizeValue(value);
+}
+
+function normalizeCategory(value: string): string {
+  return normalizeValue(value);
+}
+
 @Injectable()
 export class TechnicianService {
   constructor(private readonly prisma: PrismaService) {}
@@ -53,18 +70,25 @@ export class TechnicianService {
 
   async listAvailable(userId: string) {
     const profile = await this.requireProfile(userId);
+    const normalizedCity = normalizeCity(profile.city);
+    const normalizedCategories = profile.categories.map((c) => normalizeCategory(c));
     const demandes = await this.prisma.demande.findMany({
       where: {
         status: { in: ['SUBMITTED', 'PENDING'] },
-        category: { in: profile.categories },
-        city: { equals: profile.city, mode: 'insensitive' },
         technicianId: null,
       },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: 200,
       include: { medias: true },
     });
-    return demandes.map((d) => toApiDemande(d));
+    return demandes
+      .filter(
+        (d) =>
+          normalizeCity(d.city) === normalizedCity &&
+          normalizedCategories.includes(normalizeCategory(d.category)),
+      )
+      .slice(0, 50)
+      .map((d) => toApiDemande(d));
   }
 
   async listMine(userId: string) {
@@ -90,11 +114,12 @@ export class TechnicianService {
       return toApiDemande(demande);
     }
 
+    const isCityMatch = normalizeCity(demande.city) === normalizeCity(profile.city);
+    const isCategoryMatch = profile.categories.some(
+      (c) => normalizeCategory(c) === normalizeCategory(demande.category),
+    );
     const isAvailable =
-      isMatchingStatus(demande.status) &&
-      profile.categories.includes(demande.category) &&
-      demande.city.toLowerCase() === profile.city.toLowerCase() &&
-      !demande.technicianId;
+      isMatchingStatus(demande.status) && isCityMatch && isCategoryMatch && !demande.technicianId;
 
     if (!isAvailable) {
       throw new NotFoundException('Demande introuvable.');
@@ -107,12 +132,21 @@ export class TechnicianService {
     const profile = await this.requireProfile(userId);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.demande.findUnique({ where: { id: demandeId } });
+      if (!current) return null;
+
+      const isCityMatch = normalizeCity(current.city) === normalizeCity(profile.city);
+      const isCategoryMatch = profile.categories.some(
+        (c) => normalizeCategory(c) === normalizeCategory(current.category),
+      );
+      const isEligible =
+        isMatchingStatus(current.status) && isCityMatch && isCategoryMatch && !current.technicianId;
+      if (!isEligible) return null;
+
       const updated = await tx.demande.updateMany({
         where: {
           id: demandeId,
           status: { in: ['SUBMITTED', 'PENDING'] },
-          category: { in: profile.categories },
-          city: { equals: profile.city, mode: 'insensitive' },
           technicianId: null,
         },
         data: {
