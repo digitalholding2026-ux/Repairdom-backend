@@ -6,3 +6,65 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum Role {
+  CLIENT
+  TECHNICIAN
+}
+
+enum DemandeStatus {
+  SUBMITTED
+  PENDING
+  ACCEPTED
+  CANCELED
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+  AUDIO
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()"))
+  role         Role     @default(CLIENT)
+  firstName    String
+  phone        String?
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  demandes     Demande[]
+}
+
+model Demande {
+  id          String        @id @default(dbgenerated("gen_random_uuid()"))
+  reference   String        @unique
+  status      DemandeStatus @default(SUBMITTED)
+  category    String
+  description String
+  city        String
+  address     String?
+  client      User          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId    String
+  medias      DemandeMedia[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([clientId])
+}
+
+model DemandeMedia {
+  id        String    @id @default(dbgenerated("gen_random_uuid()"))
+  kind      MediaKind
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+  stored    Boolean   @default(false)
+  url       String?
+  demande   Demande   @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  demandeId String
+  createdAt DateTime  @default(now())
+
+  @@index([demandeId])
+}
