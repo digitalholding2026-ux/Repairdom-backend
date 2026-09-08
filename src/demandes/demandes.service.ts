@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
+import type { MediaKind } from './../generated/prisma/enums.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 
 const REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
@@ -60,7 +61,7 @@ export class DemandesService {
                 medias.length > 0
                   ? {
                       create: medias.map((media) => ({
-                        kind: media.kind,
+                        kind: media.kind as MediaKind,
                         fileName: media.name,
                         mimeType: media.mimeType,
                         sizeBytes: media.sizeBytes,

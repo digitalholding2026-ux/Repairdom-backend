@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'node:crypto';
-import jwt from 'jsonwebtoken';
+import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { Response } from 'express';
 import { PrismaService } from './../prisma/prisma.service.js';
 import { hashPassword, verifyPassword } from './password-hash.js';
@@ -102,7 +102,7 @@ export class AuthService {
     return jwt.sign(
       { sub: user.id, email: user.email, role: user.role },
       this.jwtSecret,
-      { expiresIn: this.expiresIn },
+      { expiresIn: this.expiresIn as SignOptions['expiresIn'] },
     );
   }
 
