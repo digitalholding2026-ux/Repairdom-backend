@@ -29,6 +29,12 @@ enum MediaKind {
   AUDIO
 }
 
+enum QuoteStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
 model User {
   id                  String              @id @default(dbgenerated("gen_random_uuid()"))
   role                Role                @default(CLIENT)
@@ -42,6 +48,9 @@ model User {
   demandes            Demande[]           @relation("ClientDemandes")
   technicianDemandes  Demande[]           @relation("TechnicianDemandes")
   technicianProfile   TechnicianProfile?
+  messages            Message[]
+  diagnostics         Diagnostic[]
+  quotes              Quote[]
 }
 
 model Demande {
@@ -58,6 +67,9 @@ model Demande {
   technicianId String?
   scheduledAt DateTime?
   medias      DemandeMedia[]
+  messages    Message[]
+  diagnostics Diagnostic[]
+  quotes      Quote[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -87,6 +99,50 @@ model DemandeMedia {
   demande   Demande   @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   demandeId String
   createdAt DateTime  @default(now())
+
+  @@index([demandeId])
+}
+
+model Message {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId String
+  senderId  String
+  content   String
+  createdAt DateTime @default(now())
+
+  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  sender  User    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([demandeId])
+  @@index([senderId])
+}
+
+model Diagnostic {
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId      String
+  technicianId   String
+  content        String
+  recommendation String?
+  createdAt      DateTime @default(now())
+
+  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([demandeId])
+}
+
+model Quote {
+  id           String      @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId    String
+  technicianId String
+  amount       Int
+  currency     String      @default("XAF")
+  description  String
+  status       QuoteStatus @default(PENDING)
+  createdAt    DateTime    @default(now())
+
+  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([demandeId])
 }

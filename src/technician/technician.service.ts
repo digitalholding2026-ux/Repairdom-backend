@@ -190,6 +190,18 @@ export class TechnicianService {
 
       const scheduledAt = assertTransition('TECHNICIAN', current.status, dto.status, dto.scheduledAt);
 
+      if (dto.status === 'SCHEDULED') {
+        const acceptedQuote = await tx.quote.findFirst({
+          where: { demandeId, status: 'ACCEPTED' },
+          select: { id: true },
+        });
+        if (!acceptedQuote) {
+          throw new BadRequestException(
+            'Le tarif doit être accepté par le client avant de planifier l\'intervention.',
+          );
+        }
+      }
+
       return tx.demande.update({
         where: { id: current.id },
         data: scheduledAt ? { status: dto.status, scheduledAt } : { status: dto.status },
