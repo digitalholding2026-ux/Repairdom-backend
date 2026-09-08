@@ -20,7 +20,7 @@ export class RolesGuard implements CanActivate {
     if (!user) throw new ForbiddenException('Accès refusé.');
 
     if (!requiredRoles.includes(user.role)) {
-      throw new ForbiddenException('Accès réservé aux clients.');
+      throw new ForbiddenException('Vous n’avez pas accès à cette ressource.');
     }
 
     return true;

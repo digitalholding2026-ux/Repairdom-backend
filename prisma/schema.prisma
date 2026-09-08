@@ -26,15 +26,18 @@ enum MediaKind {
 }
 
 model User {
-  id           String   @id @default(dbgenerated("gen_random_uuid()"))
-  role         Role     @default(CLIENT)
-  firstName    String
-  phone        String?
-  email        String   @unique
-  passwordHash String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  demandes     Demande[]
+  id                  String              @id @default(dbgenerated("gen_random_uuid()"))
+  role                Role                @default(CLIENT)
+  firstName           String
+  lastName            String?
+  phone               String?
+  email               String              @unique
+  passwordHash        String
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  demandes            Demande[]
+  technicianDemandes  Demande[]
+  technicianProfile   TechnicianProfile?
 }
 
 model Demande {
@@ -47,11 +50,25 @@ model Demande {
   address     String?
   client      User          @relation(fields: [clientId], references: [id], onDelete: Cascade)
   clientId    String
+  technician  User?         @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  technicianId String?
   medias      DemandeMedia[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   @@index([clientId])
+  @@index([technicianId])
+  @@index([status])
+}
+
+model TechnicianProfile {
+  id         String   @id @default(dbgenerated("gen_random_uuid()"))
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city       String
+  categories String[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 model DemandeMedia {

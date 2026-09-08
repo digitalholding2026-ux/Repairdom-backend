@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'node:crypto';
 import jwt, { type SignOptions } from 'jsonwebtoken';
@@ -61,15 +67,48 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<AuthUser> {
+    const isTechnician = dto.role === 'TECHNICIAN';
+
+    if (isTechnician) {
+      if (!dto.lastName?.trim()) {
+        throw new BadRequestException('Le nom est requis pour un compte technicien.');
+      }
+      if (!dto.phone?.trim()) {
+        throw new BadRequestException('Le téléphone est requis pour un compte technicien.');
+      }
+      if (!dto.city?.trim()) {
+        throw new BadRequestException("La ville d'intervention est requise.");
+      }
+      if (!dto.categories || dto.categories.length === 0) {
+        throw new BadRequestException('Sélectionnez au moins une catégorie de réparation.');
+      }
+    }
+
     const passwordHash = await hashPassword(dto.password);
     try {
-      const user = await this.prisma.user.create({
-        data: {
-          firstName: dto.firstName,
-          phone: dto.phone ?? null,
-          email: dto.email.toLowerCase().trim(),
-          passwordHash,
-        },
+      const user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            firstName: dto.firstName,
+            lastName: dto.lastName?.trim() || null,
+            phone: dto.phone ?? null,
+            email: dto.email.toLowerCase().trim(),
+            passwordHash,
+            role: isTechnician ? 'TECHNICIAN' : 'CLIENT',
+          },
+        });
+
+        if (isTechnician) {
+          await tx.technicianProfile.create({
+            data: {
+              userId: created.id,
+              city: dto.city!.trim(),
+              categories: dto.categories!,
+            },
+          });
+        }
+
+        return created;
       });
       return this.toAuthUser(user);
     } catch (error) {
