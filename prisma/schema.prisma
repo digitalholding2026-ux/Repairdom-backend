@@ -29,6 +29,11 @@ enum MediaKind {
   AUDIO
 }
 
+enum RequestTiming {
+  ASAP
+  SCHEDULED
+}
+
 enum QuoteStatus {
   PENDING
   ACCEPTED
@@ -66,6 +71,8 @@ model Demande {
   technician  User?         @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
   technicianId String?
   scheduledAt DateTime?
+  requestedMode RequestTiming @default(ASAP)
+  requestedAt   DateTime?
   medias      DemandeMedia[]
   messages    Message[]
   diagnostics Diagnostic[]
@@ -84,6 +91,7 @@ model TechnicianProfile {
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   city       String
   categories String[]
+  isAvailable Boolean @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }

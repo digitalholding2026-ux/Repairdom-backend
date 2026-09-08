@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
@@ -49,6 +49,8 @@ export interface DemandeRecord {
   clientId: string;
   technicianId: string | null;
   scheduledAt: Date | null;
+  requestedMode: string;
+  requestedAt: Date | null;
   createdAt: Date;
   medias: DemandeMediaRow[];
   technician?: DemandeTechnicianInfo | null;
@@ -67,6 +69,8 @@ export function toApiDemande(demande: DemandeRecord) {
     technicianId: demande.technicianId,
     technician: demande.technician ?? null,
     scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
+    requestedMode: demande.requestedMode,
+    requestedAt: demande.requestedAt ? demande.requestedAt.toISOString() : null,
     medias: demande.medias.map((media) => ({
       id: media.id,
       kind: media.kind,
@@ -89,6 +93,37 @@ export function isMatchingStatus(status: string): status is 'SUBMITTED' | 'PENDI
   return status === 'SUBMITTED' || status === 'PENDING';
 }
 
+export function isAsapMode(mode: string): boolean {
+  return mode === 'ASAP';
+}
+
+export function resolveRequestedAt(mode: string, requestedAt?: string): Date | null {
+  if (mode === 'SCHEDULED') {
+    if (!requestedAt) {
+      throw new BadRequestException(
+        'Veuillez préciser la date et l\'heure auxquelles vous souhaitez être dépanné.',
+      );
+    }
+    const date = new Date(requestedAt);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException('La date d\'intervention souhaitée est invalide.');
+    }
+    if (date.getTime() <= Date.now()) {
+      throw new BadRequestException(
+        'La date d\'intervention souhaitée ne peut pas être dans le passé.',
+      );
+    }
+    return date;
+  }
+
+  if (requestedAt) {
+    throw new BadRequestException(
+      'Une intervention « dès que possible » ne doit pas comporter de date souhaitée.',
+    );
+  }
+  return null;
+}
+
 function labelForCategory(category: string): string {
   const labels: Record<string, string> = {
     electricite: 'Électricité',
@@ -108,6 +143,8 @@ export class DemandesService {
 
   async create(clientId: string, dto: CreateDemandeDto) {
     const medias = dto.medias ?? [];
+    const requestedMode = dto.requestedMode ?? 'ASAP';
+    const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
 
     for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
       const reference = generateReference();
@@ -121,6 +158,8 @@ export class DemandesService {
               city: dto.city,
               address: dto.address ?? null,
               clientId,
+              requestedMode,
+              requestedAt,
               medias:
                 medias.length > 0
                   ? {
@@ -213,6 +252,8 @@ export class DemandesService {
     clientId: string;
     technicianId: string | null;
     scheduledAt: Date | null;
+    requestedMode: string;
+    requestedAt: Date | null;
     createdAt: Date;
     medias: DemandeMediaRow[];
     technician?: {

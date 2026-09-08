@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { toApiDemande, isMatchingStatus } from '../demandes/demandes.service.js';
+import { toApiDemande, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
@@ -42,22 +42,46 @@ export class TechnicianService {
       id: profile.id,
       city: profile.city,
       categories: profile.categories,
+      isAvailable: profile.isAvailable,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,
     };
   }
 
   async updateProfile(userId: string, dto: UpdateTechnicianProfileDto) {
-    const profile = await this.prisma.technicianProfile.upsert({
+    const existing = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+
+    if (!existing) {
+      if (!dto.city || !dto.categories || dto.categories.length === 0) {
+        throw new BadRequestException(
+          'Profil technicien incomplet. Veuillez compléter votre profil.',
+        );
+      }
+      const created = await this.prisma.technicianProfile.create({
+        data: {
+          userId,
+          city: dto.city.trim(),
+          categories: dto.categories,
+          isAvailable: dto.isAvailable ?? false,
+        },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      });
+      return {
+        id: created.id,
+        city: created.city,
+        categories: created.categories,
+        isAvailable: created.isAvailable,
+        createdAt: created.createdAt.toISOString(),
+        user: created.user,
+      };
+    }
+
+    const profile = await this.prisma.technicianProfile.update({
       where: { userId },
-      update: {
-        city: dto.city.trim(),
-        categories: dto.categories,
-      },
-      create: {
-        userId,
-        city: dto.city.trim(),
-        categories: dto.categories,
+      data: {
+        ...(dto.city !== undefined ? { city: dto.city.trim() } : {}),
+        ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
+        ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
       },
       include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
     });
@@ -65,6 +89,7 @@ export class TechnicianService {
       id: profile.id,
       city: profile.city,
       categories: profile.categories,
+      isAvailable: profile.isAvailable,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,
     };
@@ -89,6 +114,14 @@ export class TechnicianService {
           normalizeCity(d.city) === normalizedCity &&
           normalizedCategories.includes(normalizeCategory(d.category)),
       )
+      .sort((a, b) => {
+        // Les demandes « dès que possible » passent en premier (signal de priorité) ;
+        // à besoin équivalent, la plus récente d'abord.
+        const aAsap = isAsapMode(a.requestedMode);
+        const bAsap = isAsapMode(b.requestedMode);
+        if (aAsap !== bAsap) return aAsap ? -1 : 1;
+        return b.createdAt.getTime() - a.createdAt.getTime();
+      })
       .slice(0, 50)
       .map((d) => toApiDemande(d));
   }

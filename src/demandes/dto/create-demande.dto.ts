@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsDateString,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -14,6 +15,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ALLOWED_CATEGORIES } from '../categories.js';
+
+export const REQUEST_TIMINGS = ['ASAP', 'SCHEDULED'] as const;
 
 export const MEDIA_KINDS = ['IMAGE', 'VIDEO', 'AUDIO'] as const;
 export const MAX_MEDIA_FILES = 5;
@@ -64,4 +67,12 @@ export class CreateDemandeDto {
   @ValidateNested({ each: true })
   @Type(() => RequestMediaDto)
   medias?: RequestMediaDto[];
+
+  @IsOptional()
+  @IsIn(REQUEST_TIMINGS)
+  requestedMode?: (typeof REQUEST_TIMINGS)[number];
+
+  @IsOptional()
+  @IsDateString()
+  requestedAt?: string;
 }
