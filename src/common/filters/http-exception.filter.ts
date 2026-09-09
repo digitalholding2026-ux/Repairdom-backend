@@ -10,10 +10,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<{ method: string; url: string }>();
 
+    const fileTooLarge = isMulterFileSizeError(exception);
+
     const status =
       exception instanceof HttpException
         ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+        : fileTooLarge
+          ? HttpStatus.PAYLOAD_TOO_LARGE
+          : HttpStatus.INTERNAL_SERVER_ERROR;
 
     if (status >= 500) {
       this.logger.error(
@@ -26,8 +30,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       exception instanceof HttpException
         ? this.formatHttpException(exception)
         : {
-            error: 'InternalServerError',
-            message: 'Une erreur interne est survenue.',
+            error: fileTooLarge ? 'PayloadTooLarge' : 'InternalServerError',
+            message: fileTooLarge
+              ? 'Le fichier dépasse 5 Mo.'
+              : 'Une erreur interne est survenue.',
             statusCode: status,
           };
 
@@ -64,4 +70,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
   private httpErrorLabel(status: number): string {
     return HttpStatus[status] ?? 'Error';
   }
+}
+
+function isMulterFileSizeError(exception: unknown): boolean {
+  if (!(exception instanceof Error)) return false;
+  const code = (exception as { code?: unknown }).code;
+  return exception.name === 'MulterError' && code === 'LIMIT_FILE_SIZE';
 }

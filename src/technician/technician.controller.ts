@@ -1,4 +1,18 @@
-import { Controller, Get, Patch, Post, Param, Body, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Param,
+  Body,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+  BadRequestException,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { TechnicianService } from './technician.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -7,6 +21,7 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
+import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from './avatar-file.js';
 
 @Controller('technician')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -22,6 +37,27 @@ export class TechnicianController {
   @Patch('profile')
   updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateTechnicianProfileDto) {
     return this.technicianService.updateProfile(user.id, dto);
+  }
+
+  @Post('profile/avatar')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { files: 1, fileSize: MAX_AVATAR_SIZE },
+      fileFilter(_request, file, callback) {
+        if (!isAllowedAvatarMimetype(file.mimetype)) {
+          callback(
+            new BadRequestException('Format non supporté. Formats acceptés : JPG, PNG, WEBP.'),
+            false,
+          );
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
+  uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file?: UploadedAvatarFile) {
+    return this.technicianService.uploadAvatar(user.id, file);
   }
 
   @Get('available')

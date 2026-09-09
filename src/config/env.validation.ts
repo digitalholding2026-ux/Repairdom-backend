@@ -31,6 +31,16 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   JWT_EXPIRES_IN?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SUPABASE_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SUPABASE_SERVICE_ROLE_KEY?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

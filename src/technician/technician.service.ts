@@ -4,12 +4,22 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { toApiDemande, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
+import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
+import {
+  AVATAR_EXTENSION_BY_MIME,
+  MAX_AVATAR_SIZE,
+  isAllowedAvatarMimetype,
+  isImageBuffer,
+  type UploadedAvatarFile,
+} from './avatar-file.js';
 
 export function normalizeValue(value: string): string {
   return value
@@ -63,7 +73,10 @@ interface PrivateProfileRow {
 
 @Injectable()
 export class TechnicianService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: SupabaseStorageService,
+  ) {}
 
   private async completedInterventionsCount(technicianId: string): Promise<number> {
     return this.prisma.demande.count({
@@ -127,6 +140,54 @@ export class TechnicianService {
     return this.serializePrivate(profile, completedInterventions);
   }
 
+  async uploadAvatar(userId: string, file: UploadedAvatarFile | undefined) {
+    const profile = await this.prisma.technicianProfile.findUnique({
+      where: { userId },
+      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+    });
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    if (!file) throw new BadRequestException('Fichier manquant.');
+    if (!isAllowedAvatarMimetype(file.mimetype)) {
+      throw new BadRequestException('Format non supporté. Formats acceptés : JPG, PNG, WEBP.');
+    }
+    if (file.size > MAX_AVATAR_SIZE) {
+      throw new BadRequestException('Le fichier dépasse 5 Mo.');
+    }
+    if (!isImageBuffer(file.buffer)) {
+      throw new BadRequestException('Le fichier n’est pas une image valide.');
+    }
+    if (!this.storage.isConfigured) {
+      throw new ServiceUnavailableException('L’upload de photo n’est pas disponible pour le moment.');
+    }
+
+    const extension = AVATAR_EXTENSION_BY_MIME[file.mimetype];
+    const path = `technicians/${userId}/${randomUUID()}.${extension}`;
+    await this.storage.uploadObject(path, file.buffer, file.mimetype);
+    const avatarUrl = this.storage.publicUrl(path);
+
+    let updated: PrivateProfileRow;
+    try {
+      updated = await this.prisma.technicianProfile.update({
+        where: { userId },
+        data: { avatarUrl },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      });
+    } catch (error) {
+      await this.storage.deleteObject(path).catch(() => undefined);
+      throw error;
+    }
+
+    if (profile.avatarUrl) {
+      const previousPath = this.extractObjectPath(profile.avatarUrl);
+      if (previousPath && previousPath !== path) {
+        await this.storage.deleteObject(previousPath).catch(() => undefined);
+      }
+    }
+
+    const completedInterventions = await this.completedInterventionsCount(userId);
+    return this.serializePrivate(updated, completedInterventions);
+  }
+
   async getPublicProfile(technicianId: string): Promise<PublicTechnicianProfile> {
     const technician = await this.prisma.user.findUnique({
       where: { id: technicianId },
@@ -172,10 +233,17 @@ export class TechnicianService {
       specialties: profile.specialties,
       kycStatus: profile.kycStatus,
       completedInterventions,
-      createdAt: profile.createdAt.toISOString(),
+createdAt: profile.createdAt.toISOString(),
       user: profile.user,
     };
   }
+
+  private extractObjectPath(publicUrl: string): string | null {
+    const marker = `/object/public/${AVATAR_BUCKET}/`;
+    const index = publicUrl.indexOf(marker);
+    return index >= 0 ? publicUrl.slice(index + marker.length) : null;
+  }
+}
 
   async listAvailable(userId: string) {
     const profile = await this.requireProfile(userId);
