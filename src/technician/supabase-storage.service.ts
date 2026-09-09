@@ -30,7 +30,7 @@ export class SupabaseStorageService {
           'Content-Type': contentType,
           'x-upsert': 'false',
         },
-        body: data,
+        body: data as unknown as BodyInit,
       });
     } catch {
       throw new BadGatewayException('Impossible d’enregistrer la photo. Réessayez dans un instant.');

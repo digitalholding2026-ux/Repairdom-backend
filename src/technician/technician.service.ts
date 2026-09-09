@@ -233,7 +233,7 @@ export class TechnicianService {
       specialties: profile.specialties,
       kycStatus: profile.kycStatus,
       completedInterventions,
-createdAt: profile.createdAt.toISOString(),
+      createdAt: profile.createdAt.toISOString(),
       user: profile.user,
     };
   }
@@ -243,7 +243,6 @@ createdAt: profile.createdAt.toISOString(),
     const index = publicUrl.indexOf(marker);
     return index >= 0 ? publicUrl.slice(index + marker.length) : null;
   }
-}
 
   async listAvailable(userId: string) {
     const profile = await this.requireProfile(userId);
