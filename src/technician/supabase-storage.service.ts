@@ -42,6 +42,46 @@ export class SupabaseStorageService {
     return `${this.baseUrl}/storage/v1/object/public/${AVATAR_BUCKET}/${path}`;
   }
 
+  /**
+   * Génère une URL temporaire signée pour un objet d'un bucket PRIVÉ.
+   * L'URL expire après `expiresInSeconds` et n'est stockée nulle part :
+   * elle ne sert qu'à permettre à un admin de consulter un document KYC.
+   */
+  async createSignedUrl(
+    bucket: string,
+    path: string,
+    expiresInSeconds: number,
+  ): Promise<string> {
+    this.assertConfigured();
+    let response: Response;
+    try {
+      response = await fetch(
+        `${this.baseUrl}/storage/v1/object/sign/${bucket}/${path}?expiresIn=${expiresInSeconds}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${this.serviceRoleKey}`,
+          },
+        },
+      );
+    } catch {
+      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+    }
+    if (!response.ok) {
+      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+    }
+    const data = (await response.json().catch(() => null)) as { signedUrl?: string } | null;
+    const signedUrl = data?.signedUrl;
+    if (!signedUrl) {
+      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+    }
+    if (signedUrl.startsWith('http')) return signedUrl;
+    if (signedUrl.startsWith('/object/sign/')) {
+      return `${this.baseUrl}/storage/v1${signedUrl}`;
+    }
+    return `${this.baseUrl}${signedUrl}`;
+  }
+
   private async uploadToBucket(
     bucket: string,
     path: string,

@@ -67,6 +67,7 @@ export interface PublicTechnicianProfile {
 
 interface PrivateProfileRow {
   id: string;
+  userId: string;
   city: string;
   categories: string[];
   isAvailable: boolean;
@@ -76,6 +77,7 @@ interface PrivateProfileRow {
   serviceDescription: string | null;
   specialties: string[];
   kycStatus: string;
+  kycRejectionReason: string | null;
   createdAt: Date;
   user: { firstName: string; lastName: string | null; phone: string | null; email: string; role: string };
 }
@@ -241,11 +243,12 @@ export class TechnicianService {
     }
 
     // Le statut passe à PENDING uniquement (jamais VERIFIED/REJECTED) et reste PENDING
-    // si l'utilisateur ajoute un document complémentaire.
+    // si l'utilisateur ajoute un document complémentaire. Une resoumission (REJECTED → PENDING)
+    // efface le motif de rejet courant : le précédent reste tracé dans l'historique KycReview.
     if (profile.kycStatus !== 'PENDING') {
       await this.prisma.technicianProfile.update({
         where: { userId },
-        data: { kycStatus: 'PENDING' },
+        data: { kycStatus: 'PENDING', kycRejectionReason: null },
       });
     }
 
@@ -264,6 +267,7 @@ export class TechnicianService {
     if (!profile) throw new NotFoundException('Profil technicien introuvable.');
     return {
       status: profile.kycStatus,
+      kycRejectionReason: profile.kycRejectionReason ?? null,
       documents: documents.map((document) => ({
         id: document.id,
         type: document.type,
@@ -344,7 +348,7 @@ export class TechnicianService {
     completedInterventions: number,
   ) {
     return {
-      id: profile.id,
+      id: profile.userId,
       city: profile.city,
       categories: profile.categories,
       isAvailable: profile.isAvailable,
@@ -354,6 +358,7 @@ export class TechnicianService {
       serviceDescription: profile.serviceDescription,
       specialties: profile.specialties,
       kycStatus: profile.kycStatus,
+      kycRejectionReason: profile.kycRejectionReason ?? null,
       completedInterventions,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,

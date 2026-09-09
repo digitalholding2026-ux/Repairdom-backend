@@ -9,5 +9,6 @@ import { SupabaseStorageService } from './supabase-storage.service.js';
   imports: [AuthModule],
   controllers: [TechnicianController, TechniciansPublicController],
   providers: [TechnicianService, SupabaseStorageService],
+  exports: [SupabaseStorageService],
 })
 export class TechnicianModule {}
