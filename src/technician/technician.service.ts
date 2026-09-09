@@ -20,6 +20,15 @@ import {
   isImageBuffer,
   type UploadedAvatarFile,
 } from './avatar-file.js';
+import {
+  KYC_EXTENSION_BY_MIME,
+  MAX_KYC_DOCUMENT_SIZE,
+  isAllowedKycDocumentType,
+  isAllowedKycMimetype,
+  isKycDocumentBuffer,
+  type UploadedKycFile,
+} from './kyc-file.js';
+import type { KycDocumentType } from '../generated/prisma/enums.js';
 
 export function normalizeValue(value: string): string {
   return value
@@ -186,6 +195,119 @@ export class TechnicianService {
 
     const completedInterventions = await this.completedInterventionsCount(userId);
     return this.serializePrivate(updated, completedInterventions);
+  }
+
+  async submitKycDocument(userId: string, file: UploadedKycFile | undefined, type: string) {
+    const profile = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    if (!file) throw new BadRequestException('Fichier manquant.');
+    if (!type || !isAllowedKycDocumentType(type)) {
+      throw new BadRequestException('Type de document non autorisé.');
+    }
+    if (!isAllowedKycMimetype(file.mimetype)) {
+      throw new BadRequestException('Format non supporté. Formats acceptés : PDF, JPG, PNG, WEBP.');
+    }
+    if (file.size > MAX_KYC_DOCUMENT_SIZE) {
+      throw new BadRequestException('Le fichier dépasse 10 Mo.');
+    }
+    if (!isKycDocumentBuffer(file.buffer)) {
+      throw new BadRequestException('Le fichier n’est pas un document valide.');
+    }
+    if (!this.storage.isConfigured) {
+      throw new ServiceUnavailableException('Le dépôt de documents n’est pas disponible pour le moment.');
+    }
+    if (profile.kycStatus === 'VERIFIED') {
+      throw new ForbiddenException('Votre identité est déjà vérifiée.');
+    }
+
+    const extension = KYC_EXTENSION_BY_MIME[file.mimetype];
+    const storagePath = `technicians/${userId}/kyc/${randomUUID()}.${extension}`;
+    await this.storage.uploadKycObject(storagePath, file.buffer, file.mimetype);
+
+    try {
+      await this.prisma.kycDocument.create({
+        data: {
+          technicianId: userId,
+          type: type as KycDocumentType,
+          storagePath,
+          originalName: this.sanitizeOriginalName(file.originalname),
+          mimeType: file.mimetype,
+          size: file.size,
+        },
+      });
+    } catch (error) {
+      await this.storage.deleteKycObject(storagePath).catch(() => undefined);
+      throw error;
+    }
+
+    // Le statut passe à PENDING uniquement (jamais VERIFIED/REJECTED) et reste PENDING
+    // si l'utilisateur ajoute un document complémentaire.
+    if (profile.kycStatus !== 'PENDING') {
+      await this.prisma.technicianProfile.update({
+        where: { userId },
+        data: { kycStatus: 'PENDING' },
+      });
+    }
+
+    return this.listKycDocuments(userId);
+  }
+
+  async listKycDocuments(userId: string) {
+    const [profile, documents] = await Promise.all([
+      this.prisma.technicianProfile.findUnique({ where: { userId } }),
+      this.prisma.kycDocument.findMany({
+        where: { technicianId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+    ]);
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    return {
+      status: profile.kycStatus,
+      documents: documents.map((document) => ({
+        id: document.id,
+        type: document.type,
+        originalName: document.originalName,
+        createdAt: document.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  async deleteKycDocument(userId: string, documentId: string) {
+    const profile = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    if (profile.kycStatus === 'VERIFIED') {
+      throw new ForbiddenException('Votre identité est déjà vérifiée : les documents ne peuvent pas être supprimés.');
+    }
+
+    const document = await this.prisma.kycDocument.findFirst({
+      where: { id: documentId, technicianId: userId },
+    });
+    if (!document) throw new NotFoundException('Document introuvable.');
+
+    // Suppression Storage d'abord, puis suppression de la métadonnée en base.
+    await this.storage.deleteKycObject(document.storagePath);
+
+    try {
+      await this.prisma.kycDocument.delete({ where: { id: document.id } });
+    } catch (error) {
+      throw error;
+    }
+
+    const remaining = await this.prisma.kycDocument.count({ where: { technicianId: userId } });
+    if (profile.kycStatus === 'PENDING' && remaining === 0) {
+      await this.prisma.technicianProfile.update({
+        where: { userId },
+        data: { kycStatus: 'NOT_SUBMITTED' },
+      });
+    }
+
+    return this.listKycDocuments(userId);
+  }
+
+  private sanitizeOriginalName(name: string): string {
+    const base = name.split(/[\\/]/).pop() ?? name;
+    return base.slice(0, 200);
   }
 
   async getPublicProfile(technicianId: string): Promise<PublicTechnicianProfile> {

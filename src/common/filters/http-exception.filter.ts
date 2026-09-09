@@ -32,7 +32,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         : {
             error: fileTooLarge ? 'PayloadTooLarge' : 'InternalServerError',
             message: fileTooLarge
-              ? 'Le fichier dépasse 5 Mo.'
+              ? 'Le fichier dépasse la taille maximale autorisée.'
               : 'Une erreur interne est survenue.',
             statusCode: status,
           };

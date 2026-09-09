@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Delete,
   Param,
   Body,
   UseGuards,
@@ -22,6 +23,11 @@ import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from './avatar-file.js';
+import {
+  MAX_KYC_DOCUMENT_SIZE,
+  isAllowedKycMimetype,
+  type UploadedKycFile,
+} from './kyc-file.js';
 
 @Controller('technician')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -58,6 +64,42 @@ export class TechnicianController {
   )
   uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file?: UploadedAvatarFile) {
     return this.technicianService.uploadAvatar(user.id, file);
+  }
+
+  @Post('kyc/documents')
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { files: 1, fileSize: MAX_KYC_DOCUMENT_SIZE },
+      fileFilter(_request, file, callback) {
+        if (!isAllowedKycMimetype(file.mimetype)) {
+          callback(
+            new BadRequestException('Format non supporté. Formats acceptés : PDF, JPG, PNG, WEBP.'),
+            false,
+          );
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
+  submitKycDocument(
+    @CurrentUser() user: RequestUser,
+    @UploadedFile() file?: UploadedKycFile,
+    @Body('type') type?: string,
+  ) {
+    return this.technicianService.submitKycDocument(user.id, file, type ?? '');
+  }
+
+  @Get('kyc')
+  listKycDocuments(@CurrentUser() user: RequestUser) {
+    return this.technicianService.listKycDocuments(user.id);
+  }
+
+  @Delete('kyc/documents/:id')
+  @HttpCode(HttpStatus.OK)
+  deleteKycDocument(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.technicianService.deleteKycDocument(user.id, id);
   }
 
   @Get('available')

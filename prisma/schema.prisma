@@ -47,6 +47,11 @@ enum KycStatus {
   REJECTED
 }
 
+enum KycDocumentType {
+  IDENTITY
+  PROFESSIONAL
+}
+
 model User {
   id                  String              @id @default(dbgenerated("gen_random_uuid()"))
   role                Role                @default(CLIENT)
@@ -60,6 +65,7 @@ model User {
   demandes            Demande[]           @relation("ClientDemandes")
   technicianDemandes  Demande[]           @relation("TechnicianDemandes")
   technicianProfile   TechnicianProfile?
+  kycDocuments        KycDocument[]
   messages            Message[]
   diagnostics         Diagnostic[]
   quotes              Quote[]
@@ -107,6 +113,21 @@ model TechnicianProfile {
   kycStatus  KycStatus @default(NOT_SUBMITTED)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+model KycDocument {
+  id           String          @id @default(dbgenerated("gen_random_uuid()"))
+  technicianId String
+  type         KycDocumentType
+  storagePath  String
+  originalName String
+  mimeType     String
+  size         Int
+  createdAt    DateTime        @default(now())
+
+  technician   User            @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId])
 }
 
 model DemandeMedia {
