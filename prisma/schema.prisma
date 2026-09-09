@@ -40,6 +40,13 @@ enum QuoteStatus {
   REJECTED
 }
 
+enum KycStatus {
+  NOT_SUBMITTED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
 model User {
   id                  String              @id @default(dbgenerated("gen_random_uuid()"))
   role                Role                @default(CLIENT)
@@ -92,6 +99,12 @@ model TechnicianProfile {
   city       String
   categories String[]
   isAvailable Boolean @default(false)
+  avatarUrl  String?
+  bio        String?
+  experience String?
+  serviceDescription String?
+  specialties String[] @default([])
+  kycStatus  KycStatus @default(NOT_SUBMITTED)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }

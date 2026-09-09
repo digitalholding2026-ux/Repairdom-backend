@@ -28,9 +28,48 @@ function normalizeCategory(value: string): string {
   return normalizeValue(value);
 }
 
+export interface PublicTechnicianProfile {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  city: string;
+  categories: string[];
+  specialties: string[];
+  bio: string | null;
+  experience: string | null;
+  serviceDescription: string | null;
+  isAvailable: boolean;
+  kycStatus: string;
+  completedInterventions: number;
+  registeredAt: string;
+}
+
+interface PrivateProfileRow {
+  id: string;
+  city: string;
+  categories: string[];
+  isAvailable: boolean;
+  avatarUrl: string | null;
+  bio: string | null;
+  experience: string | null;
+  serviceDescription: string | null;
+  specialties: string[];
+  kycStatus: string;
+  createdAt: Date;
+  user: { firstName: string; lastName: string | null; phone: string | null; email: string; role: string };
+}
+
 @Injectable()
 export class TechnicianService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private async completedInterventionsCount(technicianId: string): Promise<number> {
+    return this.prisma.demande.count({
+      where: { technicianId, status: 'CONFIRMED' },
+    });
+  }
 
   async getProfile(userId: string) {
     const profile = await this.prisma.technicianProfile.findUnique({
@@ -38,17 +77,13 @@ export class TechnicianService {
       include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
     });
     if (!profile) throw new NotFoundException('Profil technicien introuvable.');
-    return {
-      id: profile.id,
-      city: profile.city,
-      categories: profile.categories,
-      isAvailable: profile.isAvailable,
-      createdAt: profile.createdAt.toISOString(),
-      user: profile.user,
-    };
+    const completedInterventions = await this.completedInterventionsCount(userId);
+    return this.serializePrivate(profile, completedInterventions);
   }
 
   async updateProfile(userId: string, dto: UpdateTechnicianProfileDto) {
+    let profile: PrivateProfileRow;
+
     const existing = await this.prisma.technicianProfile.findUnique({ where: { userId } });
 
     if (!existing) {
@@ -57,39 +92,86 @@ export class TechnicianService {
           'Profil technicien incomplet. Veuillez compléter votre profil.',
         );
       }
-      const created = await this.prisma.technicianProfile.create({
+      profile = await this.prisma.technicianProfile.create({
         data: {
           userId,
           city: dto.city.trim(),
           categories: dto.categories,
           isAvailable: dto.isAvailable ?? false,
+          avatarUrl: dto.avatarUrl ?? null,
+          bio: dto.bio ?? null,
+          experience: dto.experience ?? null,
+          serviceDescription: dto.serviceDescription ?? null,
+          specialties: dto.specialties ?? [],
         },
         include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
       });
-      return {
-        id: created.id,
-        city: created.city,
-        categories: created.categories,
-        isAvailable: created.isAvailable,
-        createdAt: created.createdAt.toISOString(),
-        user: created.user,
-      };
+    } else {
+      profile = await this.prisma.technicianProfile.update({
+        where: { userId },
+        data: {
+          ...(dto.city !== undefined ? { city: dto.city.trim() } : {}),
+          ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
+          ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
+          ...(dto.avatarUrl !== undefined ? { avatarUrl: dto.avatarUrl } : {}),
+          ...(dto.bio !== undefined ? { bio: dto.bio } : {}),
+          ...(dto.experience !== undefined ? { experience: dto.experience } : {}),
+          ...(dto.serviceDescription !== undefined ? { serviceDescription: dto.serviceDescription } : {}),
+          ...(dto.specialties !== undefined ? { specialties: dto.specialties } : {}),
+        },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      });
     }
 
-    const profile = await this.prisma.technicianProfile.update({
-      where: { userId },
-      data: {
-        ...(dto.city !== undefined ? { city: dto.city.trim() } : {}),
-        ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
-        ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
-      },
-      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+    const completedInterventions = await this.completedInterventionsCount(userId);
+    return this.serializePrivate(profile, completedInterventions);
+  }
+
+  async getPublicProfile(technicianId: string): Promise<PublicTechnicianProfile> {
+    const technician = await this.prisma.user.findUnique({
+      where: { id: technicianId },
+      include: { technicianProfile: true },
     });
+    if (!technician || technician.role !== 'TECHNICIAN' || !technician.technicianProfile) {
+      throw new NotFoundException('Profil technicien introuvable.');
+    }
+    const profile = technician.technicianProfile;
+    const completedInterventions = await this.completedInterventionsCount(technicianId);
+    return {
+      id: technician.id,
+      firstName: technician.firstName,
+      lastName: technician.lastName,
+      phone: technician.phone,
+      avatarUrl: profile.avatarUrl,
+      city: profile.city,
+      categories: profile.categories,
+      specialties: profile.specialties,
+      bio: profile.bio,
+      experience: profile.experience,
+      serviceDescription: profile.serviceDescription,
+      isAvailable: profile.isAvailable,
+      kycStatus: profile.kycStatus,
+      completedInterventions,
+      registeredAt: technician.createdAt.toISOString(),
+    };
+  }
+
+  private serializePrivate(
+    profile: PrivateProfileRow,
+    completedInterventions: number,
+  ) {
     return {
       id: profile.id,
       city: profile.city,
       categories: profile.categories,
       isAvailable: profile.isAvailable,
+      avatarUrl: profile.avatarUrl,
+      bio: profile.bio,
+      experience: profile.experience,
+      serviceDescription: profile.serviceDescription,
+      specialties: profile.specialties,
+      kycStatus: profile.kycStatus,
+      completedInterventions,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,
     };
