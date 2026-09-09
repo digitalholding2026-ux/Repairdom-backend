@@ -46,6 +46,10 @@ export class SupabaseStorageService {
    * Génère une URL temporaire signée pour un objet d'un bucket PRIVÉ.
    * L'URL expire après `expiresInSeconds` et n'est stockée nulle part :
    * elle ne sert qu'à permettre à un admin de consulter un document KYC.
+   *
+   * Contrat REST officiel Supabase Storage (`storage-api`) :
+   *   POST /storage/v1/object/sign/{bucket}/{path}   body { "expiresIn": N }
+   *   → 200 { "signedURL": "/object/sign/{bucket}/{path}?token=..." }
    */
   async createSignedUrl(
     bucket: string,
@@ -56,30 +60,50 @@ export class SupabaseStorageService {
     let response: Response;
     try {
       response = await fetch(
-        `${this.baseUrl}/storage/v1/object/sign/${bucket}/${path}?expiresIn=${expiresInSeconds}`,
+        `${this.baseUrl}/storage/v1/object/sign/${bucket}/${path}`,
         {
-          method: 'GET',
+          method: 'POST',
           headers: {
             Authorization: `Bearer ${this.serviceRoleKey}`,
+            'Content-Type': 'application/json',
           },
+          body: JSON.stringify({ expiresIn: expiresInSeconds }),
         },
       );
     } catch {
-      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+      throw new BadGatewayException(
+        'Le service de stockage est injoignable. Réessayez dans un instant.',
+      );
     }
     if (!response.ok) {
-      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+      const detail = await this.safeErrorDetail(response);
+      throw new BadGatewayException(
+        `Impossible de générer le lien de consultation du document (Supabase HTTP ${response.status}).${detail}`,
+      );
     }
-    const data = (await response.json().catch(() => null)) as { signedUrl?: string } | null;
-    const signedUrl = data?.signedUrl;
-    if (!signedUrl) {
-      throw new BadGatewayException('Impossible de générer le lien de consultation du document.');
+    const data = (await response.json().catch(() => null)) as
+      | { signedURL?: string; signedUrl?: string }
+      | null;
+    const signedPath = data?.signedURL ?? data?.signedUrl;
+    if (!signedPath) {
+      throw new BadGatewayException(
+        'La génération du lien a échoué : réponse Supabase incomplète.',
+      );
     }
-    if (signedUrl.startsWith('http')) return signedUrl;
-    if (signedUrl.startsWith('/object/sign/')) {
-      return `${this.baseUrl}/storage/v1${signedUrl}`;
+    if (/^https?:\/\//.test(signedPath)) return encodeURI(signedPath);
+    if (signedPath.startsWith('/storage/v1/')) {
+      return encodeURI(`${this.baseUrl}${signedPath}`);
     }
-    return `${this.baseUrl}${signedUrl}`;
+    if (signedPath.startsWith('/object/sign/')) {
+      return encodeURI(`${this.baseUrl}/storage/v1${signedPath}`);
+    }
+    return encodeURI(`${this.baseUrl}${signedPath}`);
+  }
+
+  private async safeErrorDetail(response: Response): Promise<string> {
+    const text = await response.text().catch(() => '');
+    const safe = text.replace(/\r?\n/g, ' ').trim().slice(0, 160);
+    return safe ? ` Détail : ${safe}` : '';
   }
 
   private async uploadToBucket(
