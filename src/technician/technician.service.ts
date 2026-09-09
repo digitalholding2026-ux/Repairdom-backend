@@ -29,6 +29,7 @@ import {
   type UploadedKycFile,
 } from './kyc-file.js';
 import type { KycDocumentType } from '../generated/prisma/enums.js';
+import { ReviewsService } from '../reviews/reviews.service.js';
 
 export function normalizeValue(value: string): string {
   return value
@@ -87,6 +88,7 @@ export class TechnicianService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: SupabaseStorageService,
+    private readonly reviews: ReviewsService,
   ) {}
 
   private async completedInterventionsCount(technicianId: string): Promise<number> {
@@ -422,7 +424,19 @@ export class TechnicianService {
 
     const isAlreadyMine = demande.technicianId === userId;
     if (isAlreadyMine) {
-      return toApiDemande(demande);
+      const api = toApiDemande(demande);
+      const client = await this.prisma.user.findUnique({
+        where: { id: demande.clientId },
+        select: { id: true, firstName: true, lastName: true },
+      });
+      const clientReputation = client
+        ? await this.reviews.getReputation(client.id)
+        : { averageRating: null, totalReviews: 0 };
+      return {
+        ...api,
+        client: client ?? null,
+        clientReputation,
+      };
     }
 
     const isCityMatch = normalizeCity(demande.city) === normalizeCity(profile.city);

@@ -72,6 +72,8 @@ model User {
   messages            Message[]
   diagnostics         Diagnostic[]
   quotes              Quote[]
+  reviewsAuthored     Review[]     @relation("ReviewAuthor")
+  reviewsReceived     Review[]     @relation("ReviewTarget")
 }
 
 model Demande {
@@ -93,6 +95,7 @@ model Demande {
   messages    Message[]
   diagnostics Diagnostic[]
   quotes      Quote[]
+  reviews     Review[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -207,4 +210,21 @@ model Quote {
   technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([demandeId])
+}
+
+model Review {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId String
+  authorId  String
+  targetId  String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  author  User    @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  target  User    @relation("ReviewTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([demandeId, authorId])
+  @@index([targetId])
 }
