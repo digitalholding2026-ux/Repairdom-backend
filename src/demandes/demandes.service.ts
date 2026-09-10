@@ -12,8 +12,7 @@ export const REFERENCE_LENGTH = 6;
 export const REFERENCE_MAX_ATTEMPTS = 5;
 
 export function generateReference(): string {
-  const year = String(new Date().getFullYear()).slice(-2);
-  let reference = `RD-${year}-`;
+  let reference = 'RD-';
   for (let i = 0; i < REFERENCE_LENGTH; i += 1) {
     reference += REFERENCE_ALPHABET[randomInt(REFERENCE_ALPHABET.length)];
   }
