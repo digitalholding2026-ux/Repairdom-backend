@@ -69,7 +69,7 @@ export async function recordEvent(tx: Tx, input: EventInput) {
       type: input.type,
       fromStatus: input.fromStatus ?? null,
       toStatus: input.toStatus ?? null,
-      metadata: (input.metadata ?? null) as Prisma.InputJsonValue | null,
+      metadata: input.metadata ?? Prisma.JsonNull,
     },
   });
 }
