@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { CollaborationService } from './collaboration.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -103,6 +103,11 @@ export class CollaborationController {
     @Param('quoteId') quoteId: string,
   ) {
     return this.collaborationService.respondToQuote(user, demandeId, quoteId, 'reject');
+  }
+
+  @Get('chronologies/mine')
+  listChronologies(@CurrentUser() user: RequestUser, @Query('scope') scope: string) {
+    return this.collaborationService.listChronologies(user, scope);
   }
 
   @Get(':demandeId/events')

@@ -15,11 +15,25 @@ import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic
 import {
   buildNotification,
   createNotification,
+  eventLabel,
   recordEvent,
   toApiEvent,
 } from '../mission-events/mission-events.js';
 
 export const DEFAULT_QUOTE_CURRENCY = 'XAF';
+
+/** Sprint 8.4 — Centrale « Chronologies » : les statuts de chaque pan sont
+ *  figés ici (source de vérité, identique à la spec). */
+const ACTIVE_CHRONOLOGY_STATUSES = [
+  'SUBMITTED',
+  'PENDING',
+  'ACCEPTED',
+  'SCHEDULED',
+  'IN_PROGRESS',
+  'COMPLETED',
+] as const;
+
+const HISTORY_CHRONOLOGY_STATUSES = ['CONFIRMED', 'CANCELED'] as const;
 
 interface AccessibleDemande {
   id: string;
@@ -705,6 +719,80 @@ export class CollaborationService {
       demandeId: updated.id,
       negotiationRequestedAt: updated.negotiationRequestedAt!.toISOString(),
     };
+  }
+
+  /** Sprint 8.4 — Centrale « Chronologies ». Missions accessibles selon le
+   *  rôle (client → les siennes ; technicien → celles qui lui sont
+   *  attribuées), événements embarqués dans une même requête (pas de N+1),
+   *  filtrage active/history effectué côté backend, aucune donnée sensible
+   *  (adresse, téléphone, KYC, GPS, conversations) exposée. */
+  async listChronologies(user: RequestUser, scope?: string) {
+    const isClient = user.role === 'CLIENT';
+    const statuses = (scope ?? 'active') === 'history'
+      ? HISTORY_CHRONOLOGY_STATUSES
+      : scope === undefined || scope === 'active'
+        ? ACTIVE_CHRONOLOGY_STATUSES
+        : (() => {
+            throw new BadRequestException(
+              "Le paramètre 'scope' doit être 'active' ou 'history'.",
+            );
+          })();
+
+    const demandes = await this.prisma.demande.findMany({
+      where: {
+        ...(isClient ? { clientId: user.id } : { technicianId: user.id }),
+        status: { in: [...statuses] },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        reference: true,
+        status: true,
+        domain: { select: { name: true } },
+        brand: { select: { name: true } },
+        model: { select: { name: true } },
+        problem: { select: { name: true } },
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        client: { select: { id: true, firstName: true, lastName: true } },
+        scheduledAt: true,
+        createdAt: true,
+        updatedAt: true,
+        events: {
+          orderBy: { createdAt: 'asc' },
+          take: 100,
+          select: { type: true, createdAt: true },
+        },
+      },
+    });
+
+    return demandes.map((demande) => {
+      const events = demande.events.map((event) => ({
+        type: event.type,
+        label: eventLabel(event.type),
+        createdAt: event.createdAt.toISOString(),
+      }));
+      const lastEvent = demande.events[demande.events.length - 1] ?? null;
+      return {
+        id: demande.id,
+        reference: demande.reference,
+        status: demande.status,
+        device: {
+          domain: demande.domain?.name ?? null,
+          brand: demande.brand?.name ?? null,
+          model: demande.model?.name ?? null,
+          problem: demande.problem?.name ?? null,
+        },
+        technician: demande.technician,
+        client: demande.client,
+        scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
+        createdAt: demande.createdAt.toISOString(),
+        updatedAt: demande.updatedAt.toISOString(),
+        lastActivityAt: lastEvent
+          ? lastEvent.createdAt.toISOString()
+          : demande.updatedAt.toISOString(),
+        events,
+      };
+    });
   }
 
   /** Sprint 8.3 : journal métier de la mission (API privée, accessibles aux
