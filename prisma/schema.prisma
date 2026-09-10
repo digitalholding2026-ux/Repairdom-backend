@@ -74,7 +74,7 @@ model User {
   quotes              Quote[]
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
-  pricingHistory      PricingHistory[]
+  pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
 }
 
 model Demande {
@@ -349,7 +349,7 @@ model PricingHistory {
   createdAt       DateTime @default(now())
 
   pricing Pricing   @relation(fields: [pricingId], references: [id], onDelete: Cascade)
-  user    User      @relation(fields: [adminId], references: [id], onDelete: Restrict)
+  user    User      @relation("PricingHistoryAuthor", fields: [adminId], references: [id], onDelete: Restrict)
 
   @@index([pricingId])
   @@index([adminId])
