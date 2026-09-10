@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import type { SendMessageDto } from './dto/send-message.dto.js';
 import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
@@ -325,10 +326,19 @@ export class CollaborationService {
     if (demande.technicianId !== user.id) throw new NotFoundException('Demande introuvable.');
     this.assertOpen(demande.status);
 
-    const problemWhere: Record<string, unknown> = { isActive: true };
+    // Le problème est retenu quand il correspond au domaine ET (générique
+    // « marque/modèle vides » OU ancré sur la marque/le modèle de la demande).
+    // NB : Prisma n'accepte pas null comme membre d'un filtre `in` — le cas
+    // « générique » doit être exprimé explicitement via un OR (sinon
+    // PrismaClientValidationError -> 500 sur cette route).
+    const problemWhere: Prisma.ProblemWhereInput = { isActive: true, AND: [] };
     if (demande.domainId) problemWhere.domainId = demande.domainId;
-    if (demande.brandId !== null) problemWhere.brandId = { in: [null, demande.brandId] };
-    if (demande.modelId !== null) problemWhere.modelId = { in: [null, demande.modelId] };
+    if (demande.brandId !== null) {
+      problemWhere.AND!.push({ OR: [{ brandId: null }, { brandId: demande.brandId }] });
+    }
+    if (demande.modelId !== null) {
+      problemWhere.AND!.push({ OR: [{ modelId: null }, { modelId: demande.modelId }] });
+    }
 
     const candidates = await this.prisma.catalogDiagnostic.findMany({
       where: { isActive: true, problem: problemWhere },
