@@ -322,8 +322,6 @@ model Pricing {
   minPrice        Int?
   referencePrice  Int?
   maxPrice        Int?
-  technicianPrice Int?
-  customerPrice   Int?
   travelFee       Int?
   serviceFee      Int?
   currency        String   @default("XAF")

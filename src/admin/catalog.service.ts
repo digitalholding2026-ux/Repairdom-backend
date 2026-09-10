@@ -168,7 +168,13 @@ export class CatalogService {
       },
     });
     if (!diagnostic) throw new NotFoundException('Diagnostic introuvable.');
-    return diagnostic;
+    return {
+      ...diagnostic,
+      interventions: diagnostic.interventions.map((intervention) => ({
+        ...intervention,
+        pricing: intervention.pricing ? this.toAdminPricing(intervention.pricing) : null,
+      })),
+    };
   }
 
   async createDiagnostic(dto: CreateDiagnosticDto) {
@@ -224,11 +230,18 @@ export class CatalogService {
   async listInterventions(diagnosticId: string) {
     const diagnostic = await this.prisma.catalogDiagnostic.findUnique({ where: { id: diagnosticId } });
     if (!diagnostic) throw new NotFoundException('Diagnostic introuvable.');
-    return this.prisma.catalogIntervention.findMany({
-      where: { diagnosticId },
-      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: { pricing: true },
-    });
+    return this.prisma.catalogIntervention
+      .findMany({
+        where: { diagnosticId },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        include: { pricing: true },
+      })
+      .then((items) =>
+        items.map((item) => ({
+          ...item,
+          pricing: item.pricing ? this.toAdminPricing(item.pricing) : null,
+        })),
+      );
   }
 
   async getIntervention(id: string) {
@@ -240,7 +253,10 @@ export class CatalogService {
       },
     });
     if (!intervention) throw new NotFoundException('Intervention introuvable.');
-    return intervention;
+    return {
+      ...intervention,
+      pricing: intervention.pricing ? this.toAdminPricing(intervention.pricing) : null,
+    };
   }
 
   async createIntervention(dto: CreateInterventionDto) {
@@ -293,6 +309,77 @@ export class CatalogService {
 
   /* ── Pricing ────────────────────────────────────────────────── */
 
+  /* Politique de visibilité tarifaire RepairDom.
+   *
+   * Un même Pricing ne doit JAMAIS être renvoyé brut à n'importe quel rôle :
+   * seul l'ADMIN a accès aux données internes complètes (min/max/historique).
+   * Le technicien assigné voit la fourchette pour négocier ; le client ne voit
+   * que le prix de référence + les frais de déplacement qui le concernent.
+   * Les endpoints client/public ne doivent pas exposer minPrice/maxPrice. */
+
+  private toAdminPricing(pricing: {
+    id: string;
+    interventionId: string;
+    minPrice: number | null;
+    referencePrice: number | null;
+    maxPrice: number | null;
+    travelFee: number | null;
+    serviceFee: number | null;
+    currency: string;
+    priceMode: string;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+    history?: Array<{
+      id: string;
+      pricingId: string;
+      adminId: string;
+      previousValues: unknown;
+      newValues: unknown;
+      reason: string | null;
+      createdAt: Date;
+    }>;
+  }) {
+    return {
+      id: pricing.id,
+      interventionId: pricing.interventionId,
+      minPrice: pricing.minPrice,
+      referencePrice: pricing.referencePrice,
+      maxPrice: pricing.maxPrice,
+      travelFee: pricing.travelFee,
+      serviceFee: pricing.serviceFee,
+      currency: pricing.currency,
+      priceMode: pricing.priceMode,
+      isActive: pricing.isActive,
+      createdAt: pricing.createdAt,
+      updatedAt: pricing.updatedAt,
+      history: pricing.history ?? [],
+    };
+  }
+
+  private toTechnicianPricing(pricing: { id: string; interventionId: string; minPrice: number | null; referencePrice: number | null; maxPrice: number | null; travelFee: number | null; serviceFee: number | null; currency: string; priceMode: string }) {
+    return {
+      id: pricing.id,
+      interventionId: pricing.interventionId,
+      minPrice: pricing.minPrice,
+      referencePrice: pricing.referencePrice,
+      maxPrice: pricing.maxPrice,
+      travelFee: pricing.travelFee,
+      serviceFee: pricing.serviceFee,
+      currency: pricing.currency,
+      priceMode: pricing.priceMode,
+    };
+  }
+
+  private toClientPricing(pricing: { referencePrice: number | null; travelFee: number | null; currency: string; priceMode: string }) {
+    return {
+      referencePrice: pricing.referencePrice,
+      travelFee: pricing.travelFee,
+      currency: pricing.currency,
+      priceMode: pricing.priceMode,
+    };
+  }
+
   async getPricing(interventionId: string) {
     const pricing = await this.prisma.pricing.findUnique({
       where: { interventionId },
@@ -307,7 +394,10 @@ export class CatalogService {
       },
     });
     if (!pricing) throw new NotFoundException('Tarification introuvable.');
-    return pricing;
+    return {
+      ...this.toAdminPricing(pricing),
+      intervention: pricing.intervention,
+    };
   }
 
   async createPricing(dto: CreatePricingDto, _adminId: string) {
@@ -325,8 +415,6 @@ export class CatalogService {
         minPrice: dto.minPrice ?? null,
         referencePrice: dto.referencePrice ?? null,
         maxPrice: dto.maxPrice ?? null,
-        technicianPrice: dto.technicianPrice ?? null,
-        customerPrice: dto.customerPrice ?? null,
         travelFee: dto.travelFee ?? null,
         serviceFee: dto.serviceFee ?? null,
         currency: dto.currency?.trim().toUpperCase() || 'XAF',
@@ -342,8 +430,6 @@ export class CatalogService {
       minPrice: pricing.minPrice,
       referencePrice: pricing.referencePrice,
       maxPrice: pricing.maxPrice,
-      technicianPrice: pricing.technicianPrice,
-      customerPrice: pricing.customerPrice,
       travelFee: pricing.travelFee,
       serviceFee: pricing.serviceFee,
       currency: pricing.currency,
@@ -354,8 +440,6 @@ export class CatalogService {
     if (dto.minPrice !== undefined) newData.minPrice = dto.minPrice ?? null;
     if (dto.referencePrice !== undefined) newData.referencePrice = dto.referencePrice ?? null;
     if (dto.maxPrice !== undefined) newData.maxPrice = dto.maxPrice ?? null;
-    if (dto.technicianPrice !== undefined) newData.technicianPrice = dto.technicianPrice ?? null;
-    if (dto.customerPrice !== undefined) newData.customerPrice = dto.customerPrice ?? null;
     if (dto.travelFee !== undefined) newData.travelFee = dto.travelFee ?? null;
     if (dto.serviceFee !== undefined) newData.serviceFee = dto.serviceFee ?? null;
     if (dto.currency !== undefined) newData.currency = dto.currency.trim().toUpperCase();
@@ -421,7 +505,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Écran compatible de qualité',
-                pricing: { minPrice: 15000, referencePrice: 25000, maxPrice: 40000, technicianPrice: 15000, customerPrice: 25000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 15000, referencePrice: 25000, maxPrice: 40000, travelFee: 2000, serviceFee: 3000 },
               },
               {
                 slug: 'remplacement-ecran-premium',
@@ -431,7 +515,7 @@ export class CatalogService {
                 estimatedTime: '45-60 min',
                 needsParts: true,
                 partsNote: 'Écran OEM ou original',
-                pricing: { minPrice: 30000, referencePrice: 50000, maxPrice: 80000, technicianPrice: 20000, customerPrice: 50000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 30000, referencePrice: 50000, maxPrice: 80000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -457,7 +541,7 @@ export class CatalogService {
                 estimatedTime: '20-30 min',
                 needsParts: true,
                 partsNote: 'Batterie compatible',
-                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, technicianPrice: 8000, customerPrice: 15000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -483,7 +567,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Connecteur compatible',
-                pricing: { minPrice: 10000, referencePrice: 18000, maxPrice: 30000, technicianPrice: 10000, customerPrice: 18000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 10000, referencePrice: 18000, maxPrice: 30000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -502,7 +586,7 @@ export class CatalogService {
                 estimatedTime: '1-2h',
                 needsParts: true,
                 partsNote: 'Composants micro-soudure',
-                pricing: { minPrice: 20000, referencePrice: 35000, maxPrice: 55000, technicianPrice: 20000, customerPrice: 35000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 20000, referencePrice: 35000, maxPrice: 55000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -528,7 +612,7 @@ export class CatalogService {
                 estimatedTime: '15 min',
                 needsParts: false,
                 partsNote: null,
-                pricing: { minPrice: 3000, referencePrice: 5000, maxPrice: 8000, technicianPrice: 3000, customerPrice: 5000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 3000, referencePrice: 5000, maxPrice: 8000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -554,7 +638,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Module caméra compatible',
-                pricing: { minPrice: 12000, referencePrice: 22000, maxPrice: 40000, technicianPrice: 12000, customerPrice: 22000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 12000, referencePrice: 22000, maxPrice: 40000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -580,7 +664,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Module microphone compatible',
-                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, technicianPrice: 8000, customerPrice: 15000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -606,7 +690,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Module haut-parleur compatible',
-                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, technicianPrice: 8000, customerPrice: 15000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 8000, referencePrice: 15000, maxPrice: 25000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -632,7 +716,7 @@ export class CatalogService {
                 estimatedTime: '30-60 min',
                 needsParts: true,
                 partsNote: 'Vitre compatible',
-                pricing: { minPrice: 10000, referencePrice: 18000, maxPrice: 30000, technicianPrice: 10000, customerPrice: 18000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 10000, referencePrice: 18000, maxPrice: 30000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -658,7 +742,7 @@ export class CatalogService {
                 estimatedTime: '30-60 min',
                 needsParts: false,
                 partsNote: null,
-                pricing: { minPrice: 5000, referencePrice: 10000, maxPrice: 15000, technicianPrice: 5000, customerPrice: 10000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 5000, referencePrice: 10000, maxPrice: 15000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -684,7 +768,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: false,
                 partsNote: null,
-                pricing: { minPrice: 8000, referencePrice: 12000, maxPrice: 18000, technicianPrice: 8000, customerPrice: 12000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 8000, referencePrice: 12000, maxPrice: 18000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -741,8 +825,6 @@ export class CatalogService {
                 minPrice: i.pricing.minPrice,
                 referencePrice: i.pricing.referencePrice,
                 maxPrice: i.pricing.maxPrice,
-                technicianPrice: i.pricing.technicianPrice,
-                customerPrice: i.pricing.customerPrice,
                 travelFee: i.pricing.travelFee,
                 serviceFee: i.pricing.serviceFee,
                 currency: 'XAF',

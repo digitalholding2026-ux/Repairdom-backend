@@ -13,7 +13,7 @@ import { Roles } from '../auth/roles.decorator.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { CatalogService } from './catalog.service.js';
-import type {
+import {
   CreateDomainDto,
   UpdateDomainDto,
   CreateProblemDto,

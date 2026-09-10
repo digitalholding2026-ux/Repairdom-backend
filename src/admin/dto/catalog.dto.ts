@@ -289,16 +289,6 @@ export class CreatePricingDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  technicianPrice?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  customerPrice?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
   travelFee?: number;
 
   @IsOptional()
@@ -332,16 +322,6 @@ export class UpdatePricingDto {
   @IsInt()
   @Min(0)
   maxPrice?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  technicianPrice?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  customerPrice?: number;
 
   @IsOptional()
   @IsInt()
