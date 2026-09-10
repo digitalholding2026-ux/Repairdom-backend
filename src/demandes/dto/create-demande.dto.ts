@@ -58,8 +58,23 @@ export class CreateDemandeDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(120)
+  neighborhood?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(200)
   address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  landmark?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  contactPhone?: string;
 
   @IsOptional()
   @IsArray()

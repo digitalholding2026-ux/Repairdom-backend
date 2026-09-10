@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { toApiDemande, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
+import { toApiDemande, toApiDemandePublic, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
@@ -401,7 +401,7 @@ export class TechnicianService {
         return b.createdAt.getTime() - a.createdAt.getTime();
       })
       .slice(0, 50)
-      .map((d) => toApiDemande(d));
+      .map((d) => toApiDemandePublic(d));
   }
 
   async listMine(userId: string) {
@@ -450,11 +450,17 @@ export class TechnicianService {
       throw new NotFoundException('Demande introuvable.');
     }
 
-    return toApiDemande(demande);
+    return toApiDemandePublic(demande);
   }
 
   async acceptDemande(userId: string, demandeId: string) {
     const profile = await this.requireProfile(userId);
+
+    if (profile.kycStatus !== 'VERIFIED') {
+      throw new ForbiddenException(
+        'Votre compte technicien doit être vérifié avant de pouvoir accepter une mission.',
+      );
+    }
 
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findUnique({ where: { id: demandeId } });

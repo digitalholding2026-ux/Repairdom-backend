@@ -208,8 +208,7 @@ export class CollaborationService {
     demandeId: string,
     quoteId: string,
     action: 'accept' | 'reject',
-  ) {
-    if (user.role !== 'CLIENT') {
+  ) {    if (user.role !== 'CLIENT') {
       throw new ForbiddenException('Seul le client propriétaire peut répondre à une proposition.');
     }
     const demande = await this.requireAccess(user, demandeId);
@@ -228,5 +227,91 @@ export class CollaborationService {
       data: { status: action === 'accept' ? 'ACCEPTED' : 'REJECTED' },
     });
     return this.toApiQuote(updated);
+  }
+
+  async summary(user: RequestUser, demandeId: string) {
+    await this.requireAccess(user, demandeId);
+
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      include: {
+        client: {
+          select: { id: true, firstName: true, lastName: true, phone: true },
+        },
+        technician: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            technicianProfile: { select: { city: true } },
+          },
+        },
+      },
+    });
+    if (!demande) throw new NotFoundException('Demande introuvable.');
+
+    const diagnostics = await this.prisma.diagnostic.findMany({
+      where: { demandeId },
+      orderBy: { createdAt: 'desc' },
+      take: 1,
+      include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+    });
+    const latestDiagnostic = diagnostics[0] ?? null;
+
+    const quotes = await this.prisma.quote.findMany({
+      where: { demandeId },
+      orderBy: { createdAt: 'desc' },
+    });
+    const acceptedQuote =
+      quotes.find((q) => q.status === 'ACCEPTED') ?? quotes[0] ?? null;
+
+    const technician = demande.technician
+      ? {
+          id: demande.technician.id,
+          firstName: demande.technician.firstName,
+          lastName: demande.technician.lastName,
+          phone: demande.technician.phone,
+          city: demande.technician.technicianProfile?.city ?? null,
+        }
+      : null;
+
+    return {
+      demandeId: demande.id,
+      reference: demande.reference,
+      status: demande.status,
+      category: demande.category,
+      description: demande.description,
+      technician,
+      scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
+      requestedMode: demande.requestedMode,
+      requestedAt: demande.requestedAt ? demande.requestedAt.toISOString() : null,
+      createdAt: demande.createdAt.toISOString(),
+      diagnostic: latestDiagnostic
+        ? {
+            id: latestDiagnostic.id,
+            content: latestDiagnostic.content,
+            recommendation: latestDiagnostic.recommendation,
+            technician: latestDiagnostic.technician,
+            createdAt: latestDiagnostic.createdAt.toISOString(),
+          }
+        : null,
+      quote: acceptedQuote
+        ? {
+            id: acceptedQuote.id,
+            amount: acceptedQuote.amount,
+            currency: acceptedQuote.currency,
+            description: acceptedQuote.description,
+            status: acceptedQuote.status,
+          }
+        : null,
+      location: {
+        city: demande.city,
+        neighborhood: demande.neighborhood,
+        address: demande.address,
+        landmark: demande.landmark,
+        contactPhone: demande.contactPhone,
+      },
+    };
   }
 }

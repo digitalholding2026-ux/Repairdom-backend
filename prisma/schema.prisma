@@ -83,7 +83,10 @@ model Demande {
   category    String
   description String
   city        String
+  neighborhood String?
   address     String?
+  landmark    String?
+  contactPhone String?
   client      User          @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
   clientId    String
   technician  User?         @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)

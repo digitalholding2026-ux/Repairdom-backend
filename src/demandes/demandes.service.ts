@@ -12,7 +12,8 @@ export const REFERENCE_LENGTH = 6;
 export const REFERENCE_MAX_ATTEMPTS = 5;
 
 export function generateReference(): string {
-  let reference = 'RD-';
+  const year = String(new Date().getFullYear()).slice(-2);
+  let reference = `RD-${year}-`;
   for (let i = 0; i < REFERENCE_LENGTH; i += 1) {
     reference += REFERENCE_ALPHABET[randomInt(REFERENCE_ALPHABET.length)];
   }
@@ -45,7 +46,10 @@ export interface DemandeRecord {
   category: string;
   description: string;
   city: string;
+  neighborhood: string | null;
   address: string | null;
+  landmark: string | null;
+  contactPhone: string | null;
   clientId: string;
   technicianId: string | null;
   scheduledAt: Date | null;
@@ -65,7 +69,10 @@ export function toApiDemande(demande: DemandeRecord) {
     categoryLabel: labelForCategory(demande.category),
     description: demande.description,
     city: demande.city,
+    neighborhood: demande.neighborhood,
     address: demande.address,
+    landmark: demande.landmark,
+    contactPhone: demande.contactPhone,
     technicianId: demande.technicianId,
     technician: demande.technician ?? null,
     scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
@@ -82,6 +89,19 @@ export function toApiDemande(demande: DemandeRecord) {
     mediaPersisted: false,
     storageStatus: 'metadata-only',
     createdAt: demande.createdAt.toISOString(),
+  };
+}
+
+// Sérialisation publique (opportunités) : aucun détail privé (adresse,
+// contact téléphonique) n'est exposé tant que le technicien n'est pas assigné.
+export function toApiDemandePublic(demande: DemandeRecord) {
+  const api = toApiDemande(demande);
+  return {
+    ...api,
+    neighborhood: null,
+    address: null,
+    landmark: null,
+    contactPhone: null,
   };
 }
 
@@ -124,7 +144,7 @@ export function resolveRequestedAt(mode: string, requestedAt?: string): Date | n
   return null;
 }
 
-function labelForCategory(category: string): string {
+export function labelForCategory(category: string): string {
   const labels: Record<string, string> = {
     electricite: 'Électricité',
     plomberie: 'Plomberie',
@@ -156,7 +176,10 @@ export class DemandesService {
               category: dto.categoryId,
               description: dto.description,
               city: dto.city,
+              neighborhood: dto.neighborhood ?? null,
               address: dto.address ?? null,
+              landmark: dto.landmark ?? null,
+              contactPhone: dto.contactPhone ?? null,
               clientId,
               requestedMode,
               requestedAt,
@@ -248,7 +271,10 @@ export class DemandesService {
     category: string;
     description: string;
     city: string;
+    neighborhood: string | null;
     address: string | null;
+    landmark: string | null;
+    contactPhone: string | null;
     clientId: string;
     technicianId: string | null;
     scheduledAt: Date | null;

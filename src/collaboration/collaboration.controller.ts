@@ -76,4 +76,9 @@ export class CollaborationController {
   ) {
     return this.collaborationService.respondToQuote(user, demandeId, quoteId, 'reject');
   }
+
+  @Get(':demandeId/summary')
+  summary(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
+    return this.collaborationService.summary(user, demandeId);
+  }
 }
