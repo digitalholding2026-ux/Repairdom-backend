@@ -24,6 +24,35 @@ enum DemandeStatus {
   CANCELED
 }
 
+// Sprint 8.3 : journal métier des missions.
+enum DemandeEventType {
+  CREATED
+  TECHNICIAN_ASSIGNED
+  TECHNICIAN_ACCEPTED
+  DIAGNOSTIC_SELECTED
+  QUOTE_CREATED
+  NEGOTIATION_REQUESTED
+  QUOTE_ACCEPTED
+  QUOTE_REJECTED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CONFIRMED
+  CANCELED
+}
+
+// Sprint 8.3 : notifications applicatives (créées uniquement par le backend).
+enum NotificationType {
+  TECHNICIAN_ACCEPTED
+  QUOTE_CREATED
+  NEGOTIATION_REQUESTED
+  QUOTE_ACCEPTED
+  QUOTE_REJECTED
+  SCHEDULED
+  COMPLETED
+  CONFIRMED
+}
+
 enum MediaKind {
   IMAGE
   VIDEO
@@ -75,6 +104,8 @@ model User {
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
+  demandeEvents       DemandeEvent[]
+  notifications       Notification[]
 }
 
 model Demande {
@@ -115,6 +146,8 @@ model Demande {
   diagnostics Diagnostic[]
   quotes      Quote[]
   reviews     Review[]
+  events      DemandeEvent[]
+  notifications Notification[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -125,6 +158,40 @@ model Demande {
   @@index([brandId])
   @@index([modelId])
   @@index([problemId])
+}
+
+model DemandeEvent {
+  id          String          @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId   String
+  actorUserId String?
+  type        DemandeEventType
+  fromStatus  DemandeStatus?
+  toStatus    DemandeStatus?
+  metadata    Json?
+  createdAt   DateTime        @default(now())
+
+  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  actor   User?   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([demandeId, createdAt])
+  @@index([actorUserId])
+}
+
+model Notification {
+  id        String          @id @default(dbgenerated("gen_random_uuid()"))
+  userId    String
+  demandeId String?
+  type      NotificationType
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime        @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  demande Demande? @relation(fields: [demandeId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
 }
 
 model TechnicianProfile {

@@ -10,6 +10,12 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { toApiDemande, toApiDemandePublic, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
+import {
+  buildNotification,
+  createNotification,
+  eventTypeForStatus,
+  recordEvent,
+} from '../mission-events/mission-events.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
@@ -530,13 +536,36 @@ export class TechnicianService {
         return null;
       }
 
-      return tx.demande.findUnique({
+      const assigned = await tx.demande.findUnique({
         where: { id: demandeId },
         include: {
           ...this.deviceInclude,
           client: { select: { id: true, firstName: true, lastName: true } },
         },
       });
+      if (!assigned) return null;
+
+      // Sprint 8.3 : journal métier de l'acceptation (assignation puis
+      // acceptation) + notification au client, dans la même transaction.
+      await recordEvent(tx, {
+        demandeId,
+        type: 'TECHNICIAN_ASSIGNED',
+        actorUserId: userId,
+        fromStatus: current.status,
+      });
+      await recordEvent(tx, {
+        demandeId,
+        type: 'TECHNICIAN_ACCEPTED',
+        actorUserId: userId,
+        fromStatus: current.status,
+        toStatus: 'ACCEPTED',
+      });
+      await createNotification(
+        tx,
+        buildNotification('TECHNICIAN_ACCEPTED', demandeId, current.clientId, 'CLIENT'),
+      );
+
+      return assigned;
     });
 
     if (!result) {
@@ -571,11 +600,46 @@ export class TechnicianService {
         }
       }
 
-      return tx.demande.update({
+      const updated = await tx.demande.update({
         where: { id: current.id },
         data: scheduledAt ? { status: dto.status, scheduledAt } : { status: dto.status },
         include: this.deviceInclude,
       });
+
+      // Sprint 8.3 : journal métier de la transition de statut + notifications
+      // (planification → client et technicien ; terminaison → client).
+      const type = eventTypeForStatus(dto.status);
+      if (type) {
+        await recordEvent(tx, {
+          demandeId: current.id,
+          type,
+          actorUserId: userId,
+          fromStatus: current.status,
+          toStatus: dto.status,
+          metadata:
+            type === 'SCHEDULED' && scheduledAt
+              ? { scheduledAt: scheduledAt.toISOString() }
+              : null,
+        });
+      }
+      if (dto.status === 'SCHEDULED') {
+        await createNotification(
+          tx,
+          buildNotification('SCHEDULED', current.id, current.clientId, 'CLIENT'),
+        );
+        await createNotification(
+          tx,
+          buildNotification('SCHEDULED', current.id, userId, 'TECHNICIAN'),
+        );
+      }
+      if (dto.status === 'COMPLETED') {
+        await createNotification(
+          tx,
+          buildNotification('COMPLETED', current.id, current.clientId, 'CLIENT'),
+        );
+      }
+
+      return updated;
     });
 
     if (!result) {

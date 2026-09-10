@@ -6,6 +6,12 @@ import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
 import { assertTransition } from './demandes-lifecycle.js';
 import { ALLOWED_CATEGORIES } from './categories.js';
+import {
+  buildNotification,
+  createNotification,
+  eventTypeForStatus,
+  recordEvent,
+} from '../mission-events/mission-events.js';
 
 export const REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
 export const REFERENCE_LENGTH = 6;
@@ -195,8 +201,8 @@ export class DemandesService {
     for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
       const reference = generateReference();
       try {
-        const demande = await this.prisma.$transaction((tx) =>
-          tx.demande.create({
+        const demande = await this.prisma.$transaction(async (tx) => {
+          const created = await tx.demande.create({
             data: {
               reference,
               category: device.category,
@@ -226,8 +232,18 @@ export class DemandesService {
                   : undefined,
             },
             include: this.clientInclude(),
-          }),
-        );
+          });
+
+          // Sprint 8.3 : premier événement du journal métier de la mission.
+          await recordEvent(tx, {
+            demandeId: created.id,
+            type: 'CREATED',
+            actorUserId: clientId,
+            toStatus: 'SUBMITTED',
+          });
+
+          return created;
+        });
 
         return toApiDemande(this.withTechnician(demande));
       } catch (error) {
@@ -362,11 +378,33 @@ export class DemandesService {
 
       assertTransition('CLIENT', current.status, dto.status);
 
-      return tx.demande.update({
+      const updated = await tx.demande.update({
         where: { id: current.id },
         data: { status: dto.status },
         include: this.clientInclude(),
       });
+
+      // Sprint 8.3 : journal métier de la transition + notification
+      // éventuelle (confirmation → technicien assigné).
+      const type = eventTypeForStatus(dto.status);
+      if (type) {
+        await recordEvent(tx, {
+          demandeId: current.id,
+          type,
+          actorUserId: clientId,
+          fromStatus: current.status,
+          toStatus: dto.status,
+        });
+
+        if (type === 'CONFIRMED' && current.technicianId) {
+          await createNotification(
+            tx,
+            buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
+          );
+        }
+      }
+
+      return updated;
     });
 
     if (!result) throw new NotFoundException('Demande introuvable.');

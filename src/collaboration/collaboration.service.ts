@@ -12,6 +12,12 @@ import type { SendMessageDto } from './dto/send-message.dto.js';
 import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
+import {
+  buildNotification,
+  createNotification,
+  recordEvent,
+  toApiEvent,
+} from '../mission-events/mission-events.js';
 
 export const DEFAULT_QUOTE_CURRENCY = 'XAF';
 
@@ -264,16 +270,31 @@ export class CollaborationService {
         data: { status: 'REJECTED' },
       });
 
-return tx.quote.create({
-          data: {
-            demandeId,
-            technicianId: user.id,
-            amount: dto.amount,
-            currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
-            description,
-          },
-          include: this.quoteInclude(),
-        });
+      const quote = await tx.quote.create({
+        data: {
+          demandeId,
+          technicianId: user.id,
+          amount: dto.amount,
+          currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
+          description,
+        },
+        include: this.quoteInclude(),
+      });
+
+      // Sprint 8.3 : journal métier + notification au client, dans la même
+      // transaction que la création manuelle du tarif.
+      await recordEvent(tx, {
+        demandeId,
+        type: 'QUOTE_CREATED',
+        actorUserId: user.id,
+        metadata: { amount: quote.amount, currency: quote.currency, source: 'MANUAL' },
+      });
+      await createNotification(
+        tx,
+        buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
+      );
+
+      return quote;
     });
 
     return this.toApiQuote(quote);
@@ -312,6 +333,27 @@ return tx.quote.create({
           data: { finalAmount: quote.amount },
         });
       }
+
+      // Sprint 8.3 : journal métier de la réponse + notification au
+      // technicien, dans la même transaction.
+      await recordEvent(tx, {
+        demandeId,
+        type: action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
+        actorUserId: user.id,
+        metadata: { amount: quote.amount, currency: quote.currency },
+      });
+      if (demande.technicianId) {
+        await createNotification(
+          tx,
+          buildNotification(
+            action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
+            demandeId,
+            demande.technicianId,
+            'TECHNICIAN',
+          ),
+        );
+      }
+
       return quote;
     });
     return this.toApiQuote(updated);
@@ -450,6 +492,7 @@ return tx.quote.create({
       select: {
         id: true,
         status: true,
+        clientId: true,
         technicianId: true,
         domainId: true,
         brandId: true,
@@ -562,6 +605,24 @@ return tx.quote.create({
           include: this.quoteInclude(),
         });
 
+        // Sprint 8.3 : journal métier diagnostic + tarif auto, puis
+        // notification au client, dans la même transaction.
+        await recordEvent(tx, {
+          demandeId,
+          type: 'DIAGNOSTIC_SELECTED',
+          actorUserId: user.id,
+        });
+        await recordEvent(tx, {
+          demandeId,
+          type: 'QUOTE_CREATED',
+          actorUserId: user.id,
+          metadata: { amount: quote.amount, currency: quote.currency, source: 'CATALOG' },
+        });
+        await createNotification(
+          tx,
+          buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
+        );
+
         return {
           mode: 'CATALOG',
           diagnostic: this.toApiDiagnostic(diagnostic),
@@ -591,6 +652,11 @@ return tx.quote.create({
         },
         include: { technician: { select: { id: true, firstName: true, lastName: true } } },
       });
+      await recordEvent(tx, {
+        demandeId,
+        type: 'DIAGNOSTIC_SELECTED',
+        actorUserId: user.id,
+      });
       return { mode: 'MANUAL', diagnostic: this.toApiDiagnostic(diagnostic), quote: null };
     });
   }
@@ -613,14 +679,45 @@ return tx.quote.create({
       throw new ConflictException('Ce tarif a déjà été traité.');
     }
 
-    const updated = await this.prisma.demande.update({
-      where: { id: demandeId },
-      data: { negotiationRequestedAt: new Date() },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const request = await tx.demande.update({
+        where: { id: demandeId },
+        data: { negotiationRequestedAt: new Date() },
+      });
+
+      // Sprint 8.3 : journal métier + notification au technicien, dans la
+      // même transaction que l'ouverture de la négociation.
+      await recordEvent(tx, {
+        demandeId,
+        type: 'NEGOTIATION_REQUESTED',
+        actorUserId: user.id,
+      });
+      if (demande.technicianId) {
+        await createNotification(
+          tx,
+          buildNotification('NEGOTIATION_REQUESTED', demandeId, demande.technicianId, 'TECHNICIAN'),
+        );
+      }
+
+      return request;
     });
     return {
       demandeId: updated.id,
       negotiationRequestedAt: updated.negotiationRequestedAt!.toISOString(),
     };
+  }
+
+  /** Sprint 8.3 : journal métier de la mission (API privée, accessibles aux
+   *  seuls acteurs autorisés). actorUserId n'est jamais exposé. */
+  async listEvents(user: RequestUser, demandeId: string) {
+    await this.requireAccess(user, demandeId);
+    const events = await this.prisma.demandeEvent.findMany({
+      where: { demandeId },
+      orderBy: { createdAt: 'asc' },
+      include: { actor: { select: { firstName: true, lastName: true } } },
+      take: 200,
+    });
+    return events.map((event) => toApiEvent(event));
   }
 
   async summary(user: RequestUser, demandeId: string) {
@@ -664,6 +761,14 @@ return tx.quote.create({
     });
     const acceptedQuote =
       quotes.find((q) => q.status === 'ACCEPTED') ?? quotes[0] ?? null;
+
+    // Sprint 8.3 : journal métier dans le récapitulatif (chronologie).
+    const events = await this.prisma.demandeEvent.findMany({
+      where: { demandeId },
+      orderBy: { createdAt: 'asc' },
+      include: { actor: { select: { firstName: true, lastName: true } } },
+      take: 200,
+    });
 
     const technician = demande.technician
       ? {
@@ -740,6 +845,7 @@ return tx.quote.create({
         landmark: demande.landmark,
         contactPhone: demande.contactPhone,
       },
+      events: events.map((event) => toApiEvent(event)),
     };
   }
 }
