@@ -1,4 +1,4 @@
-import type { Prisma } from '../generated/prisma/client.js';
+import { Prisma } from '../generated/prisma/client.js';
 
 /* Sprint 8.3 — Préparation opérationnelle de la mission.
  * Helpers partagés d'enregistrement des événements métier (DemandeEvent) et
