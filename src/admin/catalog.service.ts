@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { toAdminPricing } from './pricing-visibility.js';
 import type {
   CreateDomainDto,
   UpdateDomainDto,
@@ -11,6 +12,10 @@ import type {
   UpdateInterventionDto,
   CreatePricingDto,
   UpdatePricingDto,
+  CreateBrandDto,
+  UpdateBrandDto,
+  CreateModelDto,
+  UpdateModelDto,
 } from './dto/catalog.dto.js';
 
 @Injectable()
@@ -22,7 +27,9 @@ export class CatalogService {
   async listDomains() {
     return this.prisma.serviceDomain.findMany({
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: { _count: { select: { problems: true } } },
+      include: {
+        _count: { select: { problems: true, brands: true } },
+      },
     });
   }
 
@@ -33,6 +40,10 @@ export class CatalogService {
         problems: {
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
           include: { _count: { select: { diagnostics: true } } },
+        },
+        brands: {
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          include: { _count: { select: { models: true } } },
         },
       },
     });
@@ -50,6 +61,7 @@ export class CatalogService {
         slug,
         description: dto.description?.trim() || null,
         icon: dto.icon?.trim() || null,
+        category: dto.category?.trim() || null,
       },
     });
   }
@@ -71,21 +83,227 @@ export class CatalogService {
         ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
         ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
         ...(dto.icon !== undefined ? { icon: dto.icon?.trim() || null } : {}),
+        ...(dto.category !== undefined ? { category: dto.category?.trim() || null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
       },
     });
   }
 
+  /* ── DeviceBrand / DeviceModel ───────────────────────────────── */
+
+  async listBrands(domainId: string) {
+    const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
+    if (!domain) throw new NotFoundException('Domaine introuvable.');
+    return this.prisma.deviceBrand.findMany({
+      where: { domainId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      include: { _count: { select: { models: true } } },
+    });
+  }
+
+  async getBrand(id: string) {
+    const brand = await this.prisma.deviceBrand.findUnique({
+      where: { id },
+      include: {
+        domain: true,
+        models: {
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          include: { _count: { select: { problems: true } } },
+        },
+      },
+    });
+    if (!brand) throw new NotFoundException('Marque introuvable.');
+    return brand;
+  }
+
+  async createBrand(dto: CreateBrandDto) {
+    const domain = await this.prisma.serviceDomain.findUnique({ where: { id: dto.domainId } });
+    if (!domain) throw new NotFoundException('Domaine introuvable.');
+    const slug = dto.slug.trim().toLowerCase();
+    const existing = await this.prisma.deviceBrand.findFirst({
+      where: { domainId: dto.domainId, slug },
+    });
+    if (existing) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
+    return this.prisma.deviceBrand.create({
+      data: {
+        domainId: dto.domainId,
+        name: dto.name.trim(),
+        slug,
+        description: dto.description?.trim() || null,
+      },
+    });
+  }
+
+  async updateBrand(id: string, dto: UpdateBrandDto) {
+    const brand = await this.prisma.deviceBrand.findUnique({ where: { id } });
+    if (!brand) throw new NotFoundException('Marque introuvable.');
+    if (dto.slug) {
+      const slug = dto.slug.trim().toLowerCase();
+      const conflict = await this.prisma.deviceBrand.findFirst({
+        where: { domainId: brand.domainId, slug, NOT: { id } },
+      });
+      if (conflict) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
+    }
+    return this.prisma.deviceBrand.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+  }
+
+  async listModels(brandId: string) {
+    const brand = await this.prisma.deviceBrand.findUnique({ where: { id: brandId } });
+    if (!brand) throw new NotFoundException('Marque introuvable.');
+    return this.prisma.deviceModel.findMany({
+      where: { brandId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      include: { _count: { select: { problems: true } } },
+    });
+  }
+
+  async createModel(dto: CreateModelDto) {
+    const brand = await this.prisma.deviceBrand.findUnique({ where: { id: dto.brandId } });
+    if (!brand) throw new NotFoundException('Marque introuvable.');
+    const slug = dto.slug.trim().toLowerCase();
+    const existing = await this.prisma.deviceModel.findFirst({
+      where: { brandId: dto.brandId, slug },
+    });
+    if (existing) throw new BadRequestException('Ce slug existe déjà pour cette marque.');
+    return this.prisma.deviceModel.create({
+      data: {
+        brandId: dto.brandId,
+        name: dto.name.trim(),
+        slug,
+        description: dto.description?.trim() || null,
+      },
+    });
+  }
+
+  async updateModel(id: string, dto: UpdateModelDto) {
+    const model = await this.prisma.deviceModel.findUnique({ where: { id } });
+    if (!model) throw new NotFoundException('Modèle introuvable.');
+    if (dto.slug) {
+      const slug = dto.slug.trim().toLowerCase();
+      const conflict = await this.prisma.deviceModel.findFirst({
+        where: { brandId: model.brandId, slug, NOT: { id } },
+      });
+      if (conflict) throw new BadRequestException('Ce slug existe déjà pour cette marque.');
+    }
+    return this.prisma.deviceModel.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+  }
+
+  /* ── Catalogue public (client/technicien) ────────────────────── */
+
+  /* Endpoints publics : uniquement les éléments actifs et aucune donnée
+   * tarifaire. Les marques/modèles/problèmes sont servis sans min/max ni
+   * pricing (ce dernier n'est consulté qu'au moment de la sélection du
+   * diagnostic, sous contrôle du backend). */
+
+  async listPublicDomains() {
+    return this.prisma.serviceDomain.findMany({
+      where: { isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        icon: true,
+        category: true,
+        _count: { select: { brands: true, problems: true } },
+      },
+    });
+  }
+
+  async listPublicBrands(domainId: string) {
+    const domain = await this.prisma.serviceDomain.findUnique({
+      where: { id: domainId, isActive: true },
+    });
+    if (!domain) throw new NotFoundException('Domaine introuvable.');
+    return this.prisma.deviceBrand.findMany({
+      where: { domainId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        _count: { select: { models: true } },
+      },
+    });
+  }
+
+  async listPublicModels(brandId: string) {
+    const brand = await this.prisma.deviceBrand.findUnique({
+      where: { id: brandId, isActive: true },
+    });
+    if (!brand) throw new NotFoundException('Marque introuvable.');
+    return this.prisma.deviceModel.findMany({
+      where: { brandId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true, slug: true },
+    });
+  }
+
+  /* Problèmes proposables pour un domaine, filtrés par la spécificité
+   * marque/modèle connue du client. Un problème générique (ni marque ni
+   * modèle) reste toujours proposable ; un problème ancré marque/modèle
+   * n'est proposable que lorsque le client a renseigné ce contexte. */
+  async listPublicProblems(domainId: string, brandId?: string, modelId?: string) {
+    const domain = await this.prisma.serviceDomain.findUnique({
+      where: { id: domainId, isActive: true },
+    });
+    if (!domain) throw new NotFoundException('Domaine introuvable.');
+    return this.prisma.problem.findMany({
+      where: {
+        domainId,
+        isActive: true,
+        ...(brandId
+          ? { OR: [{ brandId: null }, { brandId }] }
+          : { brandId: null }),
+        ...(modelId
+          ? { OR: [{ modelId: null }, { modelId }] }
+          : { modelId: null }),
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true, slug: true },
+    });
+  }
+
   /* ── Problem ────────────────────────────────────────────────── */
 
-  async listProblems(domainId: string) {
+  async listProblems(domainId: string, brandId?: string, modelId?: string) {
     const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
     if (!domain) throw new NotFoundException('Domaine introuvable.');
     return this.prisma.problem.findMany({
-      where: { domainId },
+      where: {
+        domainId,
+        ...(brandId
+          ? { OR: [{ brandId: null }, { brandId }] }
+          : { brandId: null }),
+        ...(modelId
+          ? { OR: [{ modelId: null }, { modelId }] }
+          : { modelId: null }),
+      },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      include: { _count: { select: { diagnostics: true } } },
+      include: {
+        brand: { select: { id: true, name: true } },
+        model: { select: { id: true, name: true } },
+        _count: { select: { diagnostics: true } },
+      },
     });
   }
 
@@ -94,6 +312,8 @@ export class CatalogService {
       where: { id },
       include: {
         domain: true,
+        brand: true,
+        model: true,
         diagnostics: {
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
           include: { _count: { select: { interventions: true } } },
@@ -104,9 +324,37 @@ export class CatalogService {
     return problem;
   }
 
+  private async assertBrandModelForProblem(
+    domainId: string,
+    brandId: string | undefined,
+    modelId: string | undefined,
+  ) {
+    if (modelId && !brandId) {
+      throw new BadRequestException('Un modèle doit être rattaché à une marque.');
+    }
+    if (brandId) {
+      const brand = await this.prisma.deviceBrand.findUnique({ where: { id: brandId } });
+      if (!brand || brand.domainId !== domainId) {
+        throw new BadRequestException('La marque ne dépend pas de ce domaine.');
+      }
+    }
+    if (modelId) {
+      const model = await this.prisma.deviceModel.findUnique({ where: { id: modelId } });
+      if (!model) throw new BadRequestException('Modèle introuvable.');
+      if (!brandId || model.brandId !== brandId) {
+        throw new BadRequestException('Le modèle ne dépend pas de cette marque.');
+      }
+    }
+  }
+
   async createProblem(dto: CreateProblemDto) {
     const domain = await this.prisma.serviceDomain.findUnique({ where: { id: dto.domainId } });
     if (!domain) throw new NotFoundException('Domaine introuvable.');
+    await this.assertBrandModelForProblem(
+      dto.domainId,
+      dto.brandId ?? undefined,
+      dto.modelId ?? undefined,
+    );
     const slug = dto.slug.trim().toLowerCase();
     const existing = await this.prisma.problem.findFirst({
       where: { domainId: dto.domainId, slug },
@@ -115,6 +363,8 @@ export class CatalogService {
     return this.prisma.problem.create({
       data: {
         domainId: dto.domainId,
+        brandId: dto.brandId ?? null,
+        modelId: dto.modelId ?? null,
         name: dto.name.trim(),
         slug,
         description: dto.description?.trim() || null,
@@ -125,6 +375,15 @@ export class CatalogService {
   async updateProblem(id: string, dto: UpdateProblemDto) {
     const problem = await this.prisma.problem.findUnique({ where: { id } });
     if (!problem) throw new NotFoundException('Problème introuvable.');
+    if (dto.brandId !== undefined || dto.modelId !== undefined) {
+      const brandId = dto.brandId === undefined ? problem.brandId : (dto.brandId ?? null);
+      const modelId = dto.modelId === undefined ? problem.modelId : (dto.modelId ?? null);
+      await this.assertBrandModelForProblem(
+        problem.domainId,
+        brandId ?? undefined,
+        modelId ?? undefined,
+      );
+    }
     if (dto.slug) {
       const slug = dto.slug.trim().toLowerCase();
       const conflict = await this.prisma.problem.findFirst({
@@ -138,6 +397,8 @@ export class CatalogService {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
         ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
         ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
+        ...(dto.brandId !== undefined ? { brandId: dto.brandId ?? null } : {}),
+        ...(dto.modelId !== undefined ? { modelId: dto.modelId ?? null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
       },
@@ -172,7 +433,7 @@ export class CatalogService {
       ...diagnostic,
       interventions: diagnostic.interventions.map((intervention) => ({
         ...intervention,
-        pricing: intervention.pricing ? this.toAdminPricing(intervention.pricing) : null,
+        pricing: intervention.pricing ? toAdminPricing(intervention.pricing) : null,
       })),
     };
   }
@@ -239,7 +500,7 @@ export class CatalogService {
       .then((items) =>
         items.map((item) => ({
           ...item,
-          pricing: item.pricing ? this.toAdminPricing(item.pricing) : null,
+          pricing: item.pricing ? toAdminPricing(item.pricing) : null,
         })),
       );
   }
@@ -255,7 +516,7 @@ export class CatalogService {
     if (!intervention) throw new NotFoundException('Intervention introuvable.');
     return {
       ...intervention,
-      pricing: intervention.pricing ? this.toAdminPricing(intervention.pricing) : null,
+      pricing: intervention.pricing ? toAdminPricing(intervention.pricing) : null,
     };
   }
 
@@ -309,76 +570,7 @@ export class CatalogService {
 
   /* ── Pricing ────────────────────────────────────────────────── */
 
-  /* Politique de visibilité tarifaire RepairDom.
-   *
-   * Un même Pricing ne doit JAMAIS être renvoyé brut à n'importe quel rôle :
-   * seul l'ADMIN a accès aux données internes complètes (min/max/historique).
-   * Le technicien assigné voit la fourchette pour négocier ; le client ne voit
-   * que le prix de référence + les frais de déplacement qui le concernent.
-   * Les endpoints client/public ne doivent pas exposer minPrice/maxPrice. */
-
-  private toAdminPricing(pricing: {
-    id: string;
-    interventionId: string;
-    minPrice: number | null;
-    referencePrice: number | null;
-    maxPrice: number | null;
-    travelFee: number | null;
-    serviceFee: number | null;
-    currency: string;
-    priceMode: string;
-    isActive: boolean;
-    createdAt: Date;
-    updatedAt: Date;
-    history?: Array<{
-      id: string;
-      pricingId: string;
-      adminId: string;
-      previousValues: unknown;
-      newValues: unknown;
-      reason: string | null;
-      createdAt: Date;
-    }>;
-  }) {
-    return {
-      id: pricing.id,
-      interventionId: pricing.interventionId,
-      minPrice: pricing.minPrice,
-      referencePrice: pricing.referencePrice,
-      maxPrice: pricing.maxPrice,
-      travelFee: pricing.travelFee,
-      serviceFee: pricing.serviceFee,
-      currency: pricing.currency,
-      priceMode: pricing.priceMode,
-      isActive: pricing.isActive,
-      createdAt: pricing.createdAt,
-      updatedAt: pricing.updatedAt,
-      history: pricing.history ?? [],
-    };
-  }
-
-  private toTechnicianPricing(pricing: { id: string; interventionId: string; minPrice: number | null; referencePrice: number | null; maxPrice: number | null; travelFee: number | null; serviceFee: number | null; currency: string; priceMode: string }) {
-    return {
-      id: pricing.id,
-      interventionId: pricing.interventionId,
-      minPrice: pricing.minPrice,
-      referencePrice: pricing.referencePrice,
-      maxPrice: pricing.maxPrice,
-      travelFee: pricing.travelFee,
-      serviceFee: pricing.serviceFee,
-      currency: pricing.currency,
-      priceMode: pricing.priceMode,
-    };
-  }
-
-  private toClientPricing(pricing: { referencePrice: number | null; travelFee: number | null; currency: string; priceMode: string }) {
-    return {
-      referencePrice: pricing.referencePrice,
-      travelFee: pricing.travelFee,
-      currency: pricing.currency,
-      priceMode: pricing.priceMode,
-    };
-  }
+  /* Politique de visibilité tarifaire partagée (voir pricing-visibility.ts).
 
   async getPricing(interventionId: string) {
     const pricing = await this.prisma.pricing.findUnique({
@@ -395,7 +587,7 @@ export class CatalogService {
     });
     if (!pricing) throw new NotFoundException('Tarification introuvable.');
     return {
-      ...this.toAdminPricing(pricing),
+      ...toAdminPricing(pricing),
       intervention: pricing.intervention,
     };
   }
@@ -471,19 +663,120 @@ export class CatalogService {
 
   async seedSmartphoneDomain() {
     const existing = await this.prisma.serviceDomain.findUnique({ where: { slug: 'smartphone' } });
+
+    const domain = existing
+      ? await this.prisma.serviceDomain.update({
+          where: { id: existing.id },
+          data: {
+            name: 'Smartphone',
+            description: 'Réparation et maintenance de smartphones',
+            icon: 'smartphone',
+            category: 'informatique',
+          },
+        })
+      : await this.prisma.serviceDomain.create({
+          data: {
+            name: 'Smartphone',
+            slug: 'smartphone',
+            description: 'Réparation et maintenance de smartphones',
+            icon: 'smartphone',
+            // Catégorie métier historique (matching) : les demandes issues du
+            // domaine Smartphone sont rattachées à « informatique ».
+            category: 'informatique',
+          },
+        });
+
+    await this.seedSmartphoneBrands(domain.id);
+
     if (existing) {
-      return { message: 'Le domaine Smartphone existe déjà.', domainId: existing.id };
+      return {
+        message: 'Le domaine Smartphone existe déjà. Marques et modèles vérifiés.',
+        domainId: domain.id,
+      };
     }
 
-    const domain = await this.prisma.serviceDomain.create({
-      data: {
-        name: 'Smartphone',
-        slug: 'smartphone',
-        description: 'Réparation et maintenance de smartphones',
-        icon: 'smartphone',
-      },
-    });
+    return this.seedSmartphoneProblems(domain.id);
+  }
 
+  private async seedSmartphoneBrands(domainId: string) {
+    const brands: Array<{
+      slug: string;
+      name: string;
+      models: Array<{ slug: string; name: string }>;
+    }> = [
+      {
+        slug: 'tecno',
+        name: 'Tecno',
+        models: [
+          { slug: 'spark-10', name: 'Spark 10' },
+          { slug: 'spark-5', name: 'Spark 5' },
+          { slug: 'camon-20', name: 'Camon 20' },
+        ],
+      },
+      {
+        slug: 'infinix',
+        name: 'Infinix',
+        models: [
+          { slug: 'hot-30', name: 'Hot 30' },
+          { slug: 'note-40', name: 'Note 40' },
+        ],
+      },
+      {
+        slug: 'itel',
+        name: 'itel',
+        models: [
+          { slug: 'a60', name: 'A60' },
+          { slug: 's23', name: 'S23' },
+        ],
+      },
+      {
+        slug: 'samsung',
+        name: 'Samsung',
+        models: [
+          { slug: 'galaxy-a15', name: 'Galaxy A15' },
+          { slug: 'galaxy-a05', name: 'Galaxy A05' },
+        ],
+      },
+      {
+        slug: 'apple',
+        name: 'Apple',
+        models: [
+          { slug: 'iphone-13', name: 'iPhone 13' },
+          { slug: 'iphone-12', name: 'iPhone 12' },
+        ],
+      },
+      { slug: 'autres', name: 'Autres', models: [] },
+    ];
+
+    let brandSort = 0;
+    for (const brand of brands) {
+      const record = await this.prisma.deviceBrand.upsert({
+        where: { domainId_slug: { domainId, slug: brand.slug } },
+        create: {
+          domainId,
+          name: brand.name,
+          slug: brand.slug,
+          sortOrder: brandSort++,
+        },
+        update: { name: brand.name, sortOrder: brandSort++ },
+      });
+      let modelSort = 0;
+      for (const model of brand.models) {
+        await this.prisma.deviceModel.upsert({
+          where: { brandId_slug: { brandId: record.id, slug: model.slug } },
+          create: {
+            brandId: record.id,
+            name: model.name,
+            slug: model.slug,
+            sortOrder: modelSort++,
+          },
+          update: { name: model.name, sortOrder: modelSort++ },
+        });
+      }
+    }
+  }
+
+  private async seedSmartphoneProblems(domainId: string) {
     const problems = [
       {
         slug: 'ecran-casse',
@@ -567,7 +860,7 @@ export class CatalogService {
                 estimatedTime: '30-45 min',
                 needsParts: true,
                 partsNote: 'Connecteur compatible',
-                pricing: { minPrice: 10000, referencePrice: 18000, maxPrice: 30000, travelFee: 2000, serviceFee: 3000 },
+                pricing: { minPrice: 10000, referencePrice: 15000, maxPrice: 30000, travelFee: 2000, serviceFee: 3000 },
               },
             ],
           },
@@ -780,7 +1073,7 @@ export class CatalogService {
     for (const p of problems) {
       const problem = await this.prisma.problem.create({
         data: {
-          domainId: domain.id,
+          domainId,
           name: p.name,
           slug: p.slug,
           description: p.description,
@@ -838,7 +1131,7 @@ export class CatalogService {
 
     return {
       message: 'Domaine Smartphone créé avec succès.',
-      domainId: domain.id,
+      domainId,
       problemsCount: problems.length,
     };
   }

@@ -10,6 +10,10 @@ export class TrackingService {
     const demande = await this.prisma.demande.findUnique({
       where: { reference },
       include: {
+        domain: { select: { id: true, name: true, slug: true } },
+        brand: { select: { id: true, name: true, slug: true } },
+        model: { select: { id: true, name: true, slug: true } },
+        problem: { select: { id: true, name: true, slug: true } },
         technician: {
           select: {
             id: true,
@@ -36,6 +40,10 @@ export class TrackingService {
     requestedAt: Date | null;
     scheduledAt: Date | null;
     createdAt: Date;
+    domain: { id: string; name: string; slug: string } | null;
+    brand: { id: string; name: string; slug: string } | null;
+    model: { id: string; name: string; slug: string } | null;
+    problem: { id: string; name: string; slug: string } | null;
     technician: {
       id: string;
       firstName: string;
@@ -50,6 +58,20 @@ export class TrackingService {
       reference: demande.reference,
       status,
       category: labelForCategory(demande.category),
+      device: {
+        domain: demande.domain
+          ? { id: demande.domain.id, name: demande.domain.name, slug: demande.domain.slug }
+          : null,
+        brand: demande.brand
+          ? { id: demande.brand.id, name: demande.brand.name, slug: demande.brand.slug }
+          : null,
+        model: demande.model
+          ? { id: demande.model.id, name: demande.model.name, slug: demande.model.slug }
+          : null,
+        problem: demande.problem
+          ? { id: demande.problem.id, name: demande.problem.name, slug: demande.problem.slug }
+          : null,
+      },
       timing: {
         mode: demande.requestedMode,
         requestedAt: demande.requestedAt ? demande.requestedAt.toISOString() : null,

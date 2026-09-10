@@ -55,8 +55,18 @@ export interface DemandeRecord {
   requestedMode: string;
   requestedAt: Date | null;
   createdAt: Date;
+  domainId: string | null;
+  brandId: string | null;
+  modelId: string | null;
+  problemId: string | null;
+  negotiationRequestedAt: Date | null;
+  finalAmount: number | null;
   medias: DemandeMediaRow[];
   technician?: DemandeTechnicianInfo | null;
+  domain?: { id: string; name: string; slug: string } | null;
+  brand?: { id: string; name: string; slug: string } | null;
+  model?: { id: string; name: string; slug: string } | null;
+  problem?: { id: string; name: string; slug: string } | null;
 }
 
 export function toApiDemande(demande: DemandeRecord) {
@@ -77,6 +87,22 @@ export function toApiDemande(demande: DemandeRecord) {
     scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
     requestedMode: demande.requestedMode,
     requestedAt: demande.requestedAt ? demande.requestedAt.toISOString() : null,
+    domain: demande.domain
+      ? { id: demande.domain.id, name: demande.domain.name, slug: demande.domain.slug }
+      : null,
+    brand: demande.brand
+      ? { id: demande.brand.id, name: demande.brand.name, slug: demande.brand.slug }
+      : null,
+    model: demande.model
+      ? { id: demande.model.id, name: demande.model.name, slug: demande.model.slug }
+      : null,
+    problem: demande.problem
+      ? { id: demande.problem.id, name: demande.problem.name, slug: demande.problem.slug }
+      : null,
+    negotiationRequestedAt: demande.negotiationRequestedAt
+      ? demande.negotiationRequestedAt.toISOString()
+      : null,
+    finalAmount: demande.finalAmount,
     medias: demande.medias.map((media) => ({
       id: media.id,
       kind: media.kind,
@@ -164,6 +190,7 @@ export class DemandesService {
     const medias = dto.medias ?? [];
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
+    const device = await this.resolveDevice(dto);
 
     for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
       const reference = generateReference();
@@ -172,7 +199,7 @@ export class DemandesService {
           tx.demande.create({
             data: {
               reference,
-              category: dto.categoryId,
+              category: device.category,
               description: dto.description,
               city: dto.city,
               neighborhood: dto.neighborhood ?? null,
@@ -182,6 +209,10 @@ export class DemandesService {
               clientId,
               requestedMode,
               requestedAt,
+              domainId: device.domainId,
+              brandId: device.brandId,
+              modelId: device.modelId,
+              problemId: device.problemId,
               medias:
                 medias.length > 0
                   ? {
@@ -194,11 +225,11 @@ export class DemandesService {
                     }
                   : undefined,
             },
-            include: { medias: true },
+            include: this.clientInclude(),
           }),
         );
 
-        return toApiDemande(demande);
+        return toApiDemande(this.withTechnician(demande));
       } catch (error) {
         // Collision sur la référence générée : on regénère une nouvelle référence.
         if ((error as { code?: string }).code === 'P2002') continue;
@@ -207,6 +238,82 @@ export class DemandesService {
     }
 
     throw new Error('Impossible de générer une référence unique. Réessayez.');
+  }
+
+  /* Résolution du contexte appareil (Sprint 8.1) :
+   * - le problème est prioritaire pour déterminer le domaine ;
+   * - le domaine actif fournit la catégorie métier (category) ;
+   * - marque/modèle/problème doivent appartenir au bon parent sinon 400. */
+  private async resolveDevice(dto: CreateDemandeDto): Promise<{
+    domainId: string | null;
+    brandId: string | null;
+    modelId: string | null;
+    problemId: string | null;
+    category: string;
+  }> {
+    let domainId = dto.domainId ?? null;
+    let brandId = dto.brandId ?? null;
+    let modelId = dto.modelId ?? null;
+    let problemId = dto.problemId ?? null;
+    let category = dto.categoryId;
+
+    if (domainId) {
+      const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
+      if (!domain) throw new BadRequestException('Domaine d\'appareil introuvable.');
+      if (!domain.isActive) {
+        throw new BadRequestException('Ce domaine d\'appareil n\'est plus disponible.');
+      }
+      if (domain.category) category = domain.category;
+    }
+
+    if (brandId) {
+      const brand = await this.prisma.deviceBrand.findUnique({ where: { id: brandId } });
+      if (!brand) throw new BadRequestException('Marque introuvable.');
+      if (!brand.isActive) throw new BadRequestException('Cette marque n\'est plus disponible.');
+      if (domainId && brand.domainId !== domainId) {
+        throw new BadRequestException('La marque ne dépend pas de ce domaine.');
+      }
+      domainId = brand.domainId;
+    }
+
+    if (modelId) {
+      const model = await this.prisma.deviceModel.findUnique({ where: { id: modelId } });
+      if (!model) throw new BadRequestException('Modèle introuvable.');
+      if (!model.isActive) throw new BadRequestException('Ce modèle n\'est plus disponible.');
+      if (brandId && model.brandId !== brandId) {
+        throw new BadRequestException('Le modèle ne dépend pas de cette marque.');
+      }
+      brandId = model.brandId;
+    }
+
+    if (problemId) {
+      const problem = await this.prisma.problem.findUnique({ where: { id: problemId } });
+      if (!problem) throw new BadRequestException('Problème introuvable.');
+      if (!problem.isActive) throw new BadRequestException('Ce problème n\'est plus disponible.');
+      if (domainId && problem.domainId !== domainId) {
+        throw new BadRequestException('Le problème ne dépend pas de ce domaine.');
+      }
+      domainId = problem.domainId;
+      if (problem.brandId && brandId && problem.brandId !== brandId) {
+        throw new BadRequestException(
+          'Le problème sélectionné ne correspond pas à la marque de l\'appareil.',
+        );
+      }
+      if (problem.brandId && !brandId) brandId = problem.brandId;
+      if (problem.modelId && modelId && problem.modelId !== modelId) {
+        throw new BadRequestException(
+          'Le problème sélectionné ne correspond pas au modèle de l\'appareil.',
+        );
+      }
+      if (problem.modelId && !modelId) modelId = problem.modelId;
+    }
+
+    if (domainId) {
+      const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
+      if (domain?.category) category = domain.category;
+    }
+
+    return { domainId, brandId, modelId, problemId, category };
   }
 
   async listForClient(clientId: string) {
@@ -251,6 +358,10 @@ export class DemandesService {
   private clientInclude() {
     return {
       medias: true,
+      domain: { select: { id: true, name: true, slug: true } },
+      brand: { select: { id: true, name: true, slug: true } },
+      model: { select: { id: true, name: true, slug: true } },
+      problem: { select: { id: true, name: true, slug: true } },
       technician: {
         select: {
           id: true,
@@ -280,7 +391,17 @@ export class DemandesService {
     requestedMode: string;
     requestedAt: Date | null;
     createdAt: Date;
+    domainId: string | null;
+    brandId: string | null;
+    modelId: string | null;
+    problemId: string | null;
+    negotiationRequestedAt: Date | null;
+    finalAmount: number | null;
     medias: DemandeMediaRow[];
+    domain?: { id: string; name: string; slug: string } | null;
+    brand?: { id: string; name: string; slug: string } | null;
+    model?: { id: string; name: string; slug: string } | null;
+    problem?: { id: string; name: string; slug: string } | null;
     technician?: {
       id: string;
       firstName: string;

@@ -20,6 +20,11 @@ export class CreateDomainDto {
   @IsString()
   @MaxLength(50)
   icon?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  category?: string;
 }
 
 export class UpdateDomainDto {
@@ -44,6 +49,99 @@ export class UpdateDomainDto {
   icon?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  category?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+}
+
+/* ── DeviceBrand / DeviceModel ────────────────────────────────── */
+
+export class CreateBrandDto {
+  @IsString()
+  domainId: string;
+
+  @IsString()
+  @MaxLength(150)
+  name: string;
+
+  @IsString()
+  @MaxLength(150)
+  slug: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+}
+
+export class UpdateBrandDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  slug?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+}
+
+export class CreateModelDto {
+  @IsString()
+  brandId: string;
+
+  @IsString()
+  @MaxLength(150)
+  name: string;
+
+  @IsString()
+  @MaxLength(150)
+  slug: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+}
+
+export class UpdateModelDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  slug?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 
@@ -57,6 +155,14 @@ export class UpdateDomainDto {
 export class CreateProblemDto {
   @IsString()
   domainId: string;
+
+  @IsOptional()
+  @IsString()
+  brandId?: string;
+
+  @IsOptional()
+  @IsString()
+  modelId?: string;
 
   @IsString()
   @MaxLength(150)
@@ -87,6 +193,14 @@ export class UpdateProblemDto {
   @IsString()
   @MaxLength(1000)
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  brandId?: string;
+
+  @IsOptional()
+  @IsString()
+  modelId?: string;
 
   @IsOptional()
   @IsBoolean()

@@ -46,6 +46,32 @@ export class CreateDemandeDto {
   @IsIn(ALLOWED_CATEGORIES)
   categoryId: string;
 
+  /* Appareil (catalogue) — Sprint 8.1. Tout est optionnel pour la
+   * rétro-compatibilité : une demande « classique » sans appareil reste valide. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  domainId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  brandId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  modelId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  problemId?: string;
+
   @IsString()
   @MinLength(10)
   @MaxLength(1000)

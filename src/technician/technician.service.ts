@@ -91,6 +91,16 @@ export class TechnicianService {
     private readonly reviews: ReviewsService,
   ) {}
 
+  /** Contexte appareil (catalogue, Sprint 8.1) sur les demandes techniques :
+   *  à rejoindre à tout `include`/`select` de demande côté technicien. */
+  private readonly deviceInclude = {
+    medias: true,
+    domain: { select: { id: true, name: true, slug: true } },
+    brand: { select: { id: true, name: true, slug: true } },
+    model: { select: { id: true, name: true, slug: true } },
+    problem: { select: { id: true, name: true, slug: true } },
+  };
+
   private async completedInterventionsCount(technicianId: string): Promise<number> {
     return this.prisma.demande.count({
       where: { technicianId, status: 'CONFIRMED' },
@@ -384,7 +394,7 @@ export class TechnicianService {
       },
       orderBy: { createdAt: 'desc' },
       take: 200,
-      include: { medias: true },
+      include: this.deviceInclude,
     });
     return demandes
       .filter(
@@ -409,7 +419,7 @@ export class TechnicianService {
       where: { technicianId: userId },
       orderBy: { createdAt: 'desc' },
       take: 50,
-      include: { medias: true },
+      include: this.deviceInclude,
     });
     return demandes.map((d) => toApiDemande(d));
   }
@@ -418,7 +428,7 @@ export class TechnicianService {
     const profile = await this.requireProfile(userId);
     const demande = await this.prisma.demande.findUnique({
       where: { id: demandeId },
-      include: { medias: true },
+      include: this.deviceInclude,
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
 
@@ -493,7 +503,7 @@ export class TechnicianService {
       return tx.demande.findUnique({
         where: { id: demandeId },
         include: {
-          medias: true,
+          ...this.deviceInclude,
           client: { select: { id: true, firstName: true, lastName: true } },
         },
       });
@@ -534,7 +544,7 @@ export class TechnicianService {
       return tx.demande.update({
         where: { id: current.id },
         data: scheduledAt ? { status: dto.status, scheduledAt } : { status: dto.status },
-        include: { medias: true },
+        include: this.deviceInclude,
       });
     });
 

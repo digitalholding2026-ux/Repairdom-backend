@@ -95,6 +95,21 @@ model Demande {
   scheduledAt DateTime?
   requestedMode RequestTiming @default(ASAP)
   requestedAt   DateTime?
+  // Contexte matériel issu du catalogue (Sprint 8.1) — optionnel pour rester
+  // compatible avec les demandes créées avant l'arrivée du catalogue.
+  domain ServiceDomain? @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  domainId String?
+  brand   DeviceBrand?   @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  brandId String?
+  model   DeviceModel?   @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  modelId String?
+  problem Problem?       @relation(fields: [problemId], references: [id], onDelete: SetNull)
+  problemId String?
+  // Négociation (Sprint 8.1) : le chat de négociation n'est ouvert qu'après
+  // la demande explicite du client (negotiationRequestedAt).
+  negotiationRequestedAt DateTime?
+  // Traçabilité : montant final accepté (quote ACCEPTED) de la mission.
+  finalAmount Int?
   medias      DemandeMedia[]
   messages    Message[]
   diagnostics Diagnostic[]
@@ -106,6 +121,10 @@ model Demande {
   @@index([clientId])
   @@index([technicianId])
   @@index([status])
+  @@index([domainId])
+  @@index([brandId])
+  @@index([modelId])
+  @@index([problemId])
 }
 
 model TechnicianProfile {
@@ -192,12 +211,20 @@ model Diagnostic {
   technicianId   String
   content        String
   recommendation String?
+  // Lien optionnel vers le catalogue (Sprint 8.1) : diagnostic sélectionné
+  // par le technicien + intervention correspondante. NULL = anomalie libre.
+  catalogDiagnosticId   String?
+  catalogInterventionId String?
   createdAt      DateTime @default(now())
 
   demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
+  catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
 
   @@index([demandeId])
+  @@index([catalogDiagnosticId])
+  @@index([catalogInterventionId])
 }
 
 model Quote {
@@ -208,12 +235,26 @@ model Quote {
   currency     String      @default("XAF")
   description  String
   status       QuoteStatus @default(PENDING)
+  // Origine du prix (Sprint 8.1).
+  // MANUAL : saisi par le technicien (fallback contrôlé) — comportement historique.
+  // CATALOG : généré automatiquement par RepairDom depuis le Pricing catalogue
+  // (snapshot figé, indépendant des modifications ultérieures du catalogue).
+  source                String @default("MANUAL")
+  catalogDiagnosticId   String?
+  catalogInterventionId String?
+  initialReferencePrice Int?
+  initialTravelFee      Int?
+  initialServiceFee     Int?
   createdAt    DateTime    @default(now())
 
   demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
+  catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
 
   @@index([demandeId])
+  @@index([catalogDiagnosticId])
+  @@index([catalogInterventionId])
 }
 
 model Review {
@@ -241,17 +282,23 @@ model ServiceDomain {
   slug        String   @unique
   description String?
   icon        String?
+  // Catégorie métier « historique » facultative (electricite, plomberie, …) :
+  // utilisée pour dériver la catégorie de matching d'une demande issue du
+  // catalogue (Sprint 8.1) sans casser le matching existant.
+  category    String?
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   problems Problem[]
+  brands   DeviceBrand[]
+  demandes Demande[]
 
   @@index([isActive])
 }
 
-model Problem {
+model DeviceBrand {
   id          String   @id @default(dbgenerated("gen_random_uuid()"))
   domainId    String
   name        String
@@ -262,11 +309,63 @@ model Problem {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  domain      ServiceDomain     @relation(fields: [domainId], references: [id], onDelete: Cascade)
-  diagnostics CatalogDiagnostic[]
+  domain  ServiceDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  models  DeviceModel[]
+  problems Problem[]
+  demandes Demande[]
 
   @@unique([domainId, slug])
   @@index([domainId])
+  @@index([isActive])
+}
+
+model DeviceModel {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  brandId     String
+  name        String
+  slug        String
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  brand    DeviceBrand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  problems Problem[]
+  demandes Demande[]
+
+  @@unique([brandId, slug])
+  @@index([brandId])
+  @@index([isActive])
+}
+
+model Problem {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  domainId    String
+  // Ancrage marque/modèle optionnel (Sprint 8.1) :
+  //   - NULL/NULL   → problème générique du domaine ;
+  //   - brandId set → problème spécifique à une marque ;
+  //   - brandId+modelId set → problème spécifique à un modèle.
+  brandId     String?
+  modelId     String?
+  name        String
+  slug        String
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  domain      ServiceDomain     @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  brand       DeviceBrand?      @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  model       DeviceModel?      @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  diagnostics CatalogDiagnostic[]
+  demandes    Demande[]
+
+  @@unique([domainId, slug])
+  @@index([domainId])
+  @@index([brandId])
+  @@index([modelId])
   @@index([isActive])
 }
 
@@ -287,6 +386,8 @@ model CatalogDiagnostic {
 
   problem       Problem             @relation(fields: [problemId], references: [id], onDelete: Cascade)
   interventions CatalogIntervention[]
+  missionDiagnostics Diagnostic[]
+  quotes         Quote[]
 
   @@unique([problemId, slug])
   @@index([problemId])
@@ -310,6 +411,8 @@ model CatalogIntervention {
 
   diagnostic CatalogDiagnostic @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
 pricing Pricing?
+missionDiagnostics Diagnostic[]
+quotes         Quote[]
 
   @@unique([diagnosticId, slug])
   @@index([diagnosticId])

@@ -8,6 +8,7 @@ import type { RequestUser } from '../auth/auth.types.js';
 import { SendMessageDto } from './dto/send-message.dto.js';
 import { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import { CreateQuoteDto } from './dto/create-quote.dto.js';
+import { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -41,6 +42,33 @@ export class CollaborationController {
     @Body() dto: CreateDiagnosticDto,
   ) {
     return this.collaborationService.createDiagnostic(user, demandeId, dto);
+  }
+
+  @Get(':demandeId/catalog/suggestions')
+  @Roles('TECHNICIAN')
+  suggestDiagnostics(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
+    return this.collaborationService.suggestDiagnostics(user, demandeId);
+  }
+
+  @Post(':demandeId/diagnostic/select')
+  @Roles('TECHNICIAN')
+  selectCatalogDiagnostic(
+    @CurrentUser() user: RequestUser,
+    @Param('demandeId') demandeId: string,
+    @Body() dto: SelectCatalogDiagnosticDto,
+  ) {
+    return this.collaborationService.selectCatalogDiagnostic(user, demandeId, dto);
+  }
+
+  @Post(':demandeId/quotes/:quoteId/negotiate')
+  @Roles('CLIENT')
+  @HttpCode(HttpStatus.OK)
+  requestNegotiation(
+    @CurrentUser() user: RequestUser,
+    @Param('demandeId') demandeId: string,
+    @Param('quoteId') quoteId: string,
+  ) {
+    return this.collaborationService.requestNegotiation(user, demandeId, quoteId);
   }
 
   @Get(':demandeId/quotes')

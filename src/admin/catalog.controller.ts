@@ -24,6 +24,10 @@ import {
   UpdateInterventionDto,
   CreatePricingDto,
   UpdatePricingDto,
+  CreateBrandDto,
+  UpdateBrandDto,
+  CreateModelDto,
+  UpdateModelDto,
 } from './dto/catalog.dto.js';
 
 @Controller('admin/catalog')
@@ -52,6 +56,43 @@ export class CatalogController {
   @Patch('domains/:id')
   updateDomain(@Param('id') id: string, @Body() dto: UpdateDomainDto) {
     return this.catalog.updateDomain(id, dto);
+  }
+
+  /* ── DeviceBrand / DeviceModel ─────────────────────────────── */
+
+  @Get('domains/:domainId/brands')
+  listBrands(@Param('domainId') domainId: string) {
+    return this.catalog.listBrands(domainId);
+  }
+
+  @Get('brands/:id')
+  getBrand(@Param('id') id: string) {
+    return this.catalog.getBrand(id);
+  }
+
+  @Post('brands')
+  createBrand(@Body() dto: CreateBrandDto) {
+    return this.catalog.createBrand(dto);
+  }
+
+  @Patch('brands/:id')
+  updateBrand(@Param('id') id: string, @Body() dto: UpdateBrandDto) {
+    return this.catalog.updateBrand(id, dto);
+  }
+
+  @Get('brands/:brandId/models')
+  listModels(@Param('brandId') brandId: string) {
+    return this.catalog.listModels(brandId);
+  }
+
+  @Post('models')
+  createModel(@Body() dto: CreateModelDto) {
+    return this.catalog.createModel(dto);
+  }
+
+  @Patch('models/:id')
+  updateModel(@Param('id') id: string, @Body() dto: UpdateModelDto) {
+    return this.catalog.updateModel(id, dto);
   }
 
   /* ── Problem ────────────────────────────────────────────────── */
