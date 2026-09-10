@@ -34,6 +34,11 @@ export class AuthService {
   ) {
     this.isProduction = this.config.get<string>('NODE_ENV') === 'production';
     const configured = this.config.get<string>('JWT_SECRET');
+    if (!configured && this.isProduction) {
+      throw new Error(
+        'JWT_SECRET is required in production. Define it (Railway → Variables) before starting.',
+      );
+    }
     if (!configured) {
       const fallback = randomBytes(32).toString('base64');
       this.logger.warn(

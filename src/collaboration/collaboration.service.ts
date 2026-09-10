@@ -127,6 +127,8 @@ export class CollaborationService {
     source: string;
     catalogDiagnosticId: string | null;
     catalogInterventionId: string | null;
+    catalogDiagnostic: { id: string; name: string } | null;
+    catalogIntervention: { id: string; name: string } | null;
     initialReferencePrice: number | null;
     initialTravelFee: number | null;
     initialServiceFee: number | null;
@@ -143,6 +145,10 @@ export class CollaborationService {
       source: quote.source,
       catalogDiagnosticId: quote.catalogDiagnosticId,
       catalogInterventionId: quote.catalogInterventionId,
+      // Noms structurés (Sprint 8.2.5) : le frontend cesse de parser la
+      // description pour retrouver le libellé du diagnostic / de l'intervention.
+      catalogDiagnostic: quote.catalogDiagnostic,
+      catalogIntervention: quote.catalogIntervention,
       breakdown: quote.source === 'CATALOG'
         ? {
             referencePrice: quote.initialReferencePrice,
@@ -152,6 +158,13 @@ export class CollaborationService {
         : null,
       createdAt: quote.createdAt.toISOString(),
     };
+  }
+
+  private quoteInclude() {
+    return {
+      catalogDiagnostic: { select: { id: true, name: true } },
+      catalogIntervention: { select: { id: true, name: true } },
+    } as const;
   }
 
   async listMessages(user: RequestUser, demandeId: string) {
@@ -214,6 +227,7 @@ export class CollaborationService {
     const quotes = await this.prisma.quote.findMany({
       where: { demandeId },
       orderBy: { createdAt: 'desc' },
+      include: this.quoteInclude(),
     });
     return quotes.map((quote) => this.toApiQuote(quote));
   }
@@ -250,15 +264,16 @@ export class CollaborationService {
         data: { status: 'REJECTED' },
       });
 
-      return tx.quote.create({
-        data: {
-          demandeId,
-          technicianId: user.id,
-          amount: dto.amount,
-          currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
-          description,
-        },
-      });
+return tx.quote.create({
+          data: {
+            demandeId,
+            technicianId: user.id,
+            amount: dto.amount,
+            currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
+            description,
+          },
+          include: this.quoteInclude(),
+        });
     });
 
     return this.toApiQuote(quote);
@@ -287,6 +302,7 @@ export class CollaborationService {
       const quote = await tx.quote.update({
         where: { id: quoteId },
         data: { status: action === 'accept' ? 'ACCEPTED' : 'REJECTED' },
+        include: this.quoteInclude(),
       });
       if (action === 'accept') {
         // Traçabilité (Sprint 8.1) : le montant final de la mission est le
@@ -543,6 +559,7 @@ export class CollaborationService {
             initialTravelFee: pricing.travelFee,
             initialServiceFee: pricing.serviceFee,
           },
+          include: this.quoteInclude(),
         });
 
         return {
@@ -643,6 +660,7 @@ export class CollaborationService {
     const quotes = await this.prisma.quote.findMany({
       where: { demandeId },
       orderBy: { createdAt: 'desc' },
+      include: this.quoteInclude(),
     });
     const acceptedQuote =
       quotes.find((q) => q.status === 'ACCEPTED') ?? quotes[0] ?? null;
@@ -703,6 +721,8 @@ export class CollaborationService {
             description: acceptedQuote.description,
             status: acceptedQuote.status,
             source: acceptedQuote.source,
+            catalogDiagnostic: acceptedQuote.catalogDiagnostic ?? null,
+            catalogIntervention: acceptedQuote.catalogIntervention ?? null,
             breakdown:
               acceptedQuote.source === 'CATALOG'
                 ? {

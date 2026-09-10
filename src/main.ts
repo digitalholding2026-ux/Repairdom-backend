@@ -25,9 +25,17 @@ async function bootstrap() {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  // En production, l'accès cross-origin doit être restreint aux origines
+  // explicites (frontend Vercel). Sans elles, le démarrage échoue plutôt que
+  // d'ouvrir implicitement l'API à toutes les origines.
+  const isProduction = config.get<string>('NODE_ENV') === 'production';
+  if (isProduction && (!corsOrigins || corsOrigins.length === 0)) {
+    throw new Error('CORS_ORIGINS is required in production (comma-separated list of allowed origins).');
+  }
+
   app.enableCors({
     // `origin: true` reflète l'origine appelante ; les cookies HttpOnly sont
-    // transmis avec `credentials: true`.
+    // transmis avec `credentials: true`. Uniquement hors production.
     origin: corsOrigins?.length ? corsOrigins : true,
     credentials: true,
   });

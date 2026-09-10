@@ -687,15 +687,12 @@ export class CatalogService {
         });
 
     await this.seedSmartphoneBrands(domain.id);
+    await this.seedSmartphoneProblems(domain.id);
 
-    if (existing) {
-      return {
-        message: 'Le domaine Smartphone existe déjà. Marques et modèles vérifiés.',
-        domainId: domain.id,
-      };
-    }
-
-    return this.seedSmartphoneProblems(domain.id);
+    return {
+      message: 'Domaine Smartphone vérifié.',
+      domainId: domain.id,
+    };
   }
 
   private async seedSmartphoneBrands(domainId: string) {
@@ -1071,20 +1068,23 @@ export class CatalogService {
 
     let problemSort = 0;
     for (const p of problems) {
-      const problem = await this.prisma.problem.create({
-        data: {
+      const problem = await this.prisma.problem.upsert({
+        where: { domainId_slug: { domainId, slug: p.slug } },
+        create: {
           domainId,
           name: p.name,
           slug: p.slug,
           description: p.description,
           sortOrder: problemSort++,
         },
+        update: { name: p.name, sortOrder: problemSort++ },
       });
 
       let diagSort = 0;
       for (const d of p.diags) {
-        const diagnostic = await this.prisma.catalogDiagnostic.create({
-          data: {
+        const diagnostic = await this.prisma.catalogDiagnostic.upsert({
+          where: { problemId_slug: { problemId: problem.id, slug: d.slug } },
+          create: {
             problemId: problem.id,
             name: d.name,
             slug: d.slug,
@@ -1093,12 +1093,14 @@ export class CatalogService {
             estimatedTime: d.estimatedTime,
             sortOrder: diagSort++,
           },
+          update: { name: d.name, sortOrder: diagSort++ },
         });
 
         let intervSort = 0;
         for (const i of d.interventions) {
-          const intervention = await this.prisma.catalogIntervention.create({
-            data: {
+          const intervention = await this.prisma.catalogIntervention.upsert({
+            where: { diagnosticId_slug: { diagnosticId: diagnostic.id, slug: i.slug } },
+            create: {
               diagnosticId: diagnostic.id,
               name: i.name,
               slug: i.slug,
@@ -1109,11 +1111,15 @@ export class CatalogService {
               partsNote: i.partsNote ?? null,
               sortOrder: intervSort++,
             },
+            update: { name: i.name, sortOrder: intervSort++ },
           });
 
           if (i.pricing) {
-            await this.prisma.pricing.create({
-              data: {
+            // update: {} = pas d'écrasement des prix existants, préservant
+            // les ajustements manuels de l'admin.
+            await this.prisma.pricing.upsert({
+              where: { interventionId: intervention.id },
+              create: {
                 interventionId: intervention.id,
                 minPrice: i.pricing.minPrice,
                 referencePrice: i.pricing.referencePrice,
@@ -1123,6 +1129,7 @@ export class CatalogService {
                 currency: 'XAF',
                 priceMode: 'range',
               },
+              update: {},
             });
           }
         }
@@ -1130,7 +1137,7 @@ export class CatalogService {
     }
 
     return {
-      message: 'Domaine Smartphone créé avec succès.',
+      message: 'Domaine Smartphone vérifié.',
       domainId,
       problemsCount: problems.length,
     };

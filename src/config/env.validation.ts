@@ -56,5 +56,11 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
     throw new Error(errors.toString());
   }
 
+  // En production, un secret signé stable est obligatoire : sans lui, chaque
+  // redéploiement involontaire invaliderait toutes les sessions des clients.
+  if (validatedConfig.NODE_ENV === Environment.Production && !validatedConfig.JWT_SECRET) {
+    throw new Error('JWT_SECRET is required in production.');
+  }
+
   return validatedConfig;
 }

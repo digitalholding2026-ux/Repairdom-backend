@@ -153,4 +153,28 @@ export class ReviewsService {
     });
     return this.toReputation(aggregate._avg.rating ?? null, aggregate._count ?? 0);
   }
+
+  /** Réputation d'un technicien : publique dans le contexte authentifié
+   *  (profil technicien consulté par les clients et les autres techniciens). */
+  async getTechnicianReputation(_user: RequestUser, targetId: string): Promise<ReputationDto> {
+    return this.getReputation(targetId);
+  }
+
+  /** Réputation d'un client : réservée au client lui-même ou au technicien
+   *  ayant réellement travaillé avec lui (mission confirmée non requise).
+   *  Empêche l'espionnage de la réputation d'inconnus. */
+  async getClientReputation(user: RequestUser, targetId: string): Promise<ReputationDto> {
+    const isOwner = user.role === 'CLIENT' && user.id === targetId;
+    const isMissionTechnician =
+      user.role === 'TECHNICIAN' &&
+      (await this.prisma.demande.findFirst({
+        where: { clientId: targetId, technicianId: user.id },
+        select: { id: true },
+      })) !== null;
+
+    if (!isOwner && !isMissionTechnician) {
+      throw new ForbiddenException('Vous ne pouvez pas consulter la réputation de ce client.');
+    }
+    return this.getReputation(targetId);
+  }
 }
