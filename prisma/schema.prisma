@@ -74,6 +74,7 @@ model User {
   quotes              Quote[]
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
+  pricingHistory      PricingHistory[]
 }
 
 model Demande {
@@ -230,4 +231,125 @@ model Review {
 
   @@unique([demandeId, authorId])
   @@index([targetId])
+}
+
+/* ── Catalogue RepairDom ────────────────────────────────────────── */
+
+model ServiceDomain {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  name        String
+  slug        String   @unique
+  description String?
+  icon        String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  problems Problem[]
+
+  @@index([isActive])
+}
+
+model Problem {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  domainId    String
+  name        String
+  slug        String
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  domain      ServiceDomain     @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  diagnostics CatalogDiagnostic[]
+
+  @@unique([domainId, slug])
+  @@index([domainId])
+  @@index([isActive])
+}
+
+model CatalogDiagnostic {
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  problemId      String
+  name           String
+  slug           String
+  description    String?
+  confidence     String?
+  difficulty     String?
+  estimatedTime  String?
+  internalNotes  String?
+  isActive       Boolean  @default(true)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  problem       Problem             @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  interventions CatalogIntervention[]
+
+  @@unique([problemId, slug])
+  @@index([problemId])
+  @@index([isActive])
+}
+
+model CatalogIntervention {
+  id              String   @id @default(dbgenerated("gen_random_uuid()"))
+  diagnosticId    String
+  name            String
+  slug            String
+  description     String?
+  difficulty      String?
+  estimatedTime   String?
+  needsParts      Boolean  @default(false)
+  partsNote       String?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  diagnostic CatalogDiagnostic @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
+  pricing    Pricing[]
+
+  @@unique([diagnosticId, slug])
+  @@index([diagnosticId])
+  @@index([isActive])
+}
+
+model Pricing {
+  id              String   @id @default(dbgenerated("gen_random_uuid()"))
+  interventionId  String
+  minPrice        Int?
+  referencePrice  Int?
+  maxPrice        Int?
+  technicianPrice Int?
+  customerPrice   Int?
+  travelFee       Int?
+  serviceFee      Int?
+  currency        String   @default("XAF")
+  priceMode       String   @default("fixed")
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  intervention CatalogIntervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
+  history      PricingHistory[]
+
+  @@unique([interventionId])
+  @@index([interventionId])
+}
+
+model PricingHistory {
+  id              String   @id @default(dbgenerated("gen_random_uuid()"))
+  pricingId       String
+  adminId         String
+  previousValues  Json
+  newValues       Json
+  reason          String?
+  createdAt       DateTime @default(now())
+
+  pricing Pricing @relation(fields: [pricingId], references: [id], onDelete: Cascade)
+
+  @@index([pricingId])
+  @@index([adminId])
 }
