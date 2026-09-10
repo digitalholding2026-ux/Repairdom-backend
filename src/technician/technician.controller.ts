@@ -112,6 +112,11 @@ export class TechnicianController {
     return this.technicianService.listMine(user.id);
   }
 
+  @Get('my-demandes/history')
+  listMineHistory(@CurrentUser() user: RequestUser) {
+    return this.technicianService.listMineHistory(user.id);
+  }
+
   @Get('demandes/:id')
   getDemandeDetail(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.technicianService.getDemandeDetail(user.id, id);

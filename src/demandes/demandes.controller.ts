@@ -24,6 +24,11 @@ export class DemandesController {
     return this.demandesService.listForClient(user.id);
   }
 
+  @Get('my/history')
+  listHistory(@CurrentUser() user: RequestUser) {
+    return this.demandesService.listForClientHistory(user.id);
+  }
+
   @Get(':id')
   findOne(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.demandesService.findForClient(user.id, id);

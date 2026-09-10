@@ -416,12 +416,42 @@ export class TechnicianService {
 
   async listMine(userId: string) {
     const demandes = await this.prisma.demande.findMany({
-      where: { technicianId: userId },
+      where: {
+        technicianId: userId,
+        status: { notIn: ['CONFIRMED', 'CANCELED'] },
+      },
       orderBy: { createdAt: 'desc' },
       take: 50,
       include: this.deviceInclude,
     });
     return demandes.map((d) => toApiDemande(d));
+  }
+
+  /* Historique : uniquement les demandes terminées (CONFIRMED) ou annulées
+   * (CANCELED) pour lesquelles ce technicien est bien l'intervenant assigné. */
+  async listMineHistory(userId: string) {
+    const demandes = await this.prisma.demande.findMany({
+      where: {
+        technicianId: userId,
+        status: { in: ['CONFIRMED', 'CANCELED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      include: this.deviceInclude,
+    });
+    return Promise.all(
+      demandes.map(async (d) => {
+        const api = toApiDemande(d);
+        const client = await this.prisma.user.findUnique({
+          where: { id: d.clientId },
+          select: { id: true, firstName: true, lastName: true },
+        });
+        const clientReputation = client
+          ? await this.reviews.getReputation(client.id)
+          : { averageRating: null, totalReviews: 0 };
+        return { ...api, client: client ?? null, clientReputation };
+      }),
+    );
   }
 
   async getDemandeDetail(userId: string, demandeId: string) {

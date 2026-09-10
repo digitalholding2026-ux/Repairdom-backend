@@ -316,9 +316,27 @@ export class DemandesService {
     return { domainId, brandId, modelId, problemId, category };
   }
 
+  /* Missions actives : tout sauf le terminal (confirmé / annulé).
+   * L'historique est exposé séparément via listForClientHistory. */
   async listForClient(clientId: string) {
     const demandes = await this.prisma.demande.findMany({
-      where: { clientId },
+      where: {
+        clientId,
+        status: { notIn: ['CONFIRMED', 'CANCELED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      include: this.clientInclude(),
+    });
+    return demandes.map((demande) => toApiDemande(this.withTechnician(demande)));
+  }
+
+  async listForClientHistory(clientId: string) {
+    const demandes = await this.prisma.demande.findMany({
+      where: {
+        clientId,
+        status: { in: ['CONFIRMED', 'CANCELED'] },
+      },
       orderBy: { createdAt: 'desc' },
       take: 100,
       include: this.clientInclude(),
