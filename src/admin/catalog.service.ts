@@ -570,7 +570,7 @@ export class CatalogService {
 
   /* ── Pricing ────────────────────────────────────────────────── */
 
-  /* Politique de visibilité tarifaire partagée (voir pricing-visibility.ts).
+  /* Politique de visibilité tarifaire partagée (voir pricing-visibility.ts). */
 
   async getPricing(interventionId: string) {
     const pricing = await this.prisma.pricing.findUnique({

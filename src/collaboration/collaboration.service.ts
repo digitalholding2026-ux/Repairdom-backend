@@ -311,7 +311,15 @@ export class CollaborationService {
     }
     const demande = await this.prisma.demande.findUnique({
       where: { id: demandeId },
-      select: { id: true, status: true, domainId: true, brandId: true, modelId: true, problemId: true },
+      select: {
+        id: true,
+        status: true,
+        technicianId: true,
+        domainId: true,
+        brandId: true,
+        modelId: true,
+        problemId: true,
+      },
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
     if (demande.technicianId !== user.id) throw new NotFoundException('Demande introuvable.');
@@ -334,7 +342,16 @@ export class CollaborationService {
         interventions: {
           where: { isActive: true },
           orderBy: { sortOrder: 'asc' },
-          select: { id: true, name: true, description: true, difficulty: true, estimatedTime: true, needsParts: true, partsNote: true },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            description: true,
+            difficulty: true,
+            estimatedTime: true,
+            needsParts: true,
+            partsNote: true,
+          },
         },
       },
     });
