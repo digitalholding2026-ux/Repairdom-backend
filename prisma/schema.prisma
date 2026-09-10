@@ -309,7 +309,7 @@ model CatalogIntervention {
   updatedAt       DateTime @updatedAt
 
   diagnostic CatalogDiagnostic @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
-  pricing    Pricing[]
+pricing Pricing?
 
   @@unique([diagnosticId, slug])
   @@index([diagnosticId])
@@ -348,7 +348,8 @@ model PricingHistory {
   reason          String?
   createdAt       DateTime @default(now())
 
-  pricing Pricing @relation(fields: [pricingId], references: [id], onDelete: Cascade)
+  pricing Pricing   @relation(fields: [pricingId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [adminId], references: [id], onDelete: Restrict)
 
   @@index([pricingId])
   @@index([adminId])
