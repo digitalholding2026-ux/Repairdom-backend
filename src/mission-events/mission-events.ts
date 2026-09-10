@@ -24,6 +24,7 @@ export type DemandeEventType =
   | 'TECHNICIAN_ASSIGNED'
   | 'TECHNICIAN_ACCEPTED'
   | 'DIAGNOSTIC_SELECTED'
+  | 'MANUAL_DIAGNOSTIC_DECLARED'
   | 'QUOTE_CREATED'
   | 'NEGOTIATION_REQUESTED'
   | 'QUOTE_ACCEPTED'
@@ -108,6 +109,7 @@ export function eventLabel(type: string): string {
     TECHNICIAN_ASSIGNED: 'Technicien assigné',
     TECHNICIAN_ACCEPTED: 'Mission acceptée par le technicien',
     DIAGNOSTIC_SELECTED: 'Diagnostic enregistré',
+    MANUAL_DIAGNOSTIC_DECLARED: 'Diagnostic non référencé déclaré',
     QUOTE_CREATED: 'Tarif proposé',
     NEGOTIATION_REQUESTED: 'Négociation demandée',
     QUOTE_ACCEPTED: 'Tarif accepté',

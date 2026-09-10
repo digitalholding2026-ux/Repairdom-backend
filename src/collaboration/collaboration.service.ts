@@ -102,6 +102,17 @@ export class CollaborationService {
     }
   }
 
+  /** Sprint 8.4 — Gouvernance du diagnostic : le backend est la seule autorité.
+   *  Aucune action de diagnostic (catalogue, non référencé) ni de tarif manuel
+   *  avant l'acceptation de la mission par le technicien (status ACCEPTED). */
+  private assertDiagnosticAllowed(status: string) {
+    if (status !== 'ACCEPTED') {
+      throw new ForbiddenException(
+        'La mission doit être acceptée avant de pouvoir établir un diagnostic.',
+      );
+    }
+  }
+
   private toApiMessage(message: {
     id: string;
     content: string;
@@ -122,6 +133,10 @@ export class CollaborationService {
     id: string;
     content: string;
     recommendation: string | null;
+    mode: 'CATALOG' | 'MANUAL';
+    proposedIntervention: string | null;
+    justification: string | null;
+    notes: string | null;
     technicianId: string;
     createdAt: Date;
     technician: { id: string; firstName: string; lastName: string | null };
@@ -130,6 +145,10 @@ export class CollaborationService {
       id: diagnostic.id,
       content: diagnostic.content,
       recommendation: diagnostic.recommendation,
+      mode: diagnostic.mode,
+      proposedIntervention: diagnostic.proposedIntervention,
+      justification: diagnostic.justification,
+      notes: diagnostic.notes,
       technicianId: diagnostic.technicianId,
       technician: diagnostic.technician,
       createdAt: diagnostic.createdAt.toISOString(),
@@ -226,6 +245,7 @@ export class CollaborationService {
     }
     const demande = await this.requireAccess(user, demandeId);
     this.assertOpen(demande.status);
+    this.assertDiagnosticAllowed(demande.status);
 
     const content = dto.content.trim();
     if (!content) throw new BadRequestException('Le diagnostic ne peut pas être vide.');
@@ -236,6 +256,7 @@ export class CollaborationService {
         technicianId: user.id,
         content,
         recommendation: dto.recommendation?.trim() || null,
+        mode: 'MANUAL',
       },
       include: { technician: { select: { id: true, firstName: true, lastName: true } } },
     });
@@ -258,6 +279,7 @@ export class CollaborationService {
     }
     const demande = await this.requireAccess(user, demandeId);
     this.assertOpen(demande.status);
+    this.assertDiagnosticAllowed(demande.status);
 
     // Mission issue du catalogue : le tarif auto fait foi tant que le client n'a
     // pas demandé une négociation. Le technicien ne peut intervenir qu'après.
@@ -397,6 +419,7 @@ export class CollaborationService {
     if (!demande) throw new NotFoundException('Demande introuvable.');
     if (demande.technicianId !== user.id) throw new NotFoundException('Demande introuvable.');
     this.assertOpen(demande.status);
+    this.assertDiagnosticAllowed(demande.status);
 
     // Le problème est retenu quand il correspond au domaine ET (générique
     // « marque/modèle vides » OU ancré sur la marque/le modèle de la demande).
@@ -517,6 +540,7 @@ export class CollaborationService {
     if (!demande) throw new NotFoundException('Demande introuvable.');
     if (demande.technicianId !== user.id) throw new NotFoundException('Demande introuvable.');
     this.assertOpen(demande.status);
+    this.assertDiagnosticAllowed(demande.status);
 
     // Barrière KYC : le catalogue (prix auto + négociation) n'est accessible
     // qu'aux techniciens au profil validé.
@@ -593,6 +617,7 @@ export class CollaborationService {
             technicianId: user.id,
             content,
             recommendation,
+            mode: 'CATALOG',
             catalogDiagnosticId: diag.id,
             catalogInterventionId: intervention.id,
           },
@@ -645,7 +670,10 @@ export class CollaborationService {
       });
     }
 
-    // Mode MANUAL (« Autre anomalie ») : diagnostic libre sans tarif auto.
+    // Mode MANUAL (« diagnostic non référencé », Sprint 8.4) : diagnostic
+    // déclaré librement par le technicien (diagnostic observé, intervention
+    // proposée, justification, note libre), SANS tarif automatique — le tarif
+    // manuel est réservé à ce parcours.
     const content = dto.content?.trim();
     if (!content || content.length < 10) {
       throw new BadRequestException('Décrivez l\'anomalie constatée (10 caractères minimum).');
@@ -661,14 +689,20 @@ export class CollaborationService {
           technicianId: user.id,
           content,
           recommendation: dto.recommendation?.trim() || null,
+          mode: 'MANUAL',
+          proposedIntervention: dto.proposedIntervention?.trim() || null,
+          justification: dto.justification?.trim() || null,
+          notes: dto.notes?.trim() || null,
           catalogDiagnosticId: null,
           catalogInterventionId: null,
         },
         include: { technician: { select: { id: true, firstName: true, lastName: true } } },
       });
+      // Sprint 8.4 : trace d'événement DÉDIÉE au diagnostic non référencé,
+      // distincte du DIAGNOSTIC_SELECTED (catalogue).
       await recordEvent(tx, {
         demandeId,
-        type: 'DIAGNOSTIC_SELECTED',
+        type: 'MANUAL_DIAGNOSTIC_DECLARED',
         actorUserId: user.id,
       });
       return { mode: 'MANUAL', diagnostic: this.toApiDiagnostic(diagnostic), quote: null };
@@ -902,6 +936,10 @@ export class CollaborationService {
             id: latestDiagnostic.id,
             content: latestDiagnostic.content,
             recommendation: latestDiagnostic.recommendation,
+            mode: latestDiagnostic.mode,
+            proposedIntervention: latestDiagnostic.proposedIntervention,
+            justification: latestDiagnostic.justification,
+            notes: latestDiagnostic.notes,
             technician: latestDiagnostic.technician,
             createdAt: latestDiagnostic.createdAt.toISOString(),
           }

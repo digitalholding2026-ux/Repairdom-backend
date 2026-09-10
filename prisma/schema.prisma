@@ -30,6 +30,9 @@ enum DemandeEventType {
   TECHNICIAN_ASSIGNED
   TECHNICIAN_ACCEPTED
   DIAGNOSTIC_SELECTED
+  // Sprint 8.4 : trace dédiée du diagnostic non référencé (déclaré librement),
+  // distincte du DIAGNOSTIC_SELECTED du catalogue.
+  MANUAL_DIAGNOSTIC_DECLARED
   QUOTE_CREATED
   NEGOTIATION_REQUESTED
   QUOTE_ACCEPTED
@@ -51,6 +54,15 @@ enum NotificationType {
   SCHEDULED
   COMPLETED
   CONFIRMED
+}
+
+// Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
+// CATALOG : diagnostic sélectionné dans le catalogue RepairDom (pricing auto).
+// MANUAL : « diagnostic non référencé », déclaré librement par le technicien
+// (intervention proposée + justification + note libre) avec tarif manuel.
+enum DiagnosticMode {
+  CATALOG
+  MANUAL
 }
 
 enum MediaKind {
@@ -278,6 +290,14 @@ model Diagnostic {
   technicianId   String
   content        String
   recommendation String?
+  // Sprint 8.4 — Gouvernance du diagnostic : mode explicite d'origine du
+  // diagnostic (CATALOG = catalogue RepairDom, MANUAL = non référencé).
+  mode DiagnosticMode @default(MANUAL)
+  // Sprint 8.4 — diagnostic non référencé : intervention proposée, justification
+  // du diagnostic et note fréquemment libre. NULL pour les diagnostics catalogue.
+  proposedIntervention String?
+  justification        String?
+  notes                String?
   // Lien optionnel vers le catalogue (Sprint 8.1) : diagnostic sélectionné
   // par le technicien + intervention correspondante. NULL = anomalie libre.
   catalogDiagnosticId   String?
