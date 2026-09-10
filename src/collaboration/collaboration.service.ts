@@ -331,14 +331,18 @@ export class CollaborationService {
     // NB : Prisma n'accepte pas null comme membre d'un filtre `in` — le cas
     // « générique » doit être exprimé explicitement via un OR (sinon
     // PrismaClientValidationError -> 500 sur cette route).
-    const problemWhere: Prisma.ProblemWhereInput = { isActive: true, AND: [] };
-    if (demande.domainId) problemWhere.domainId = demande.domainId;
+    const problemAnd: Prisma.ProblemWhereInput[] = [];
     if (demande.brandId !== null) {
-      problemWhere.AND!.push({ OR: [{ brandId: null }, { brandId: demande.brandId }] });
+      problemAnd.push({ OR: [{ brandId: null }, { brandId: demande.brandId }] });
     }
     if (demande.modelId !== null) {
-      problemWhere.AND!.push({ OR: [{ modelId: null }, { modelId: demande.modelId }] });
+      problemAnd.push({ OR: [{ modelId: null }, { modelId: demande.modelId }] });
     }
+    const problemWhere: Prisma.ProblemWhereInput = {
+      isActive: true,
+      ...(demande.domainId ? { domainId: demande.domainId } : {}),
+      ...(problemAnd.length > 0 ? { AND: problemAnd } : {}),
+    };
 
     const candidates = await this.prisma.catalogDiagnostic.findMany({
       where: { isActive: true, problem: problemWhere },
