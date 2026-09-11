@@ -139,7 +139,14 @@ model User {
   firstName           String
   lastName            String?
   phone               String?
+  city                String?
+  address             String?
+  whatsapp            String?
+  avatarUrl           String?
   email               String              @unique
+  emailVerified       Boolean             @default(true)
+  emailVerificationToken String?
+  emailVerificationExpiresAt DateTime?
   passwordHash        String
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
@@ -159,6 +166,19 @@ model User {
   notifications       Notification[]
   financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
+}
+
+// Sprint UX CLIENT — zones de service (villes) couvertes par RepairDom.
+// Catalogue administrable : les villes NE sont PAS codées en dur côté
+// frontend ; l'API publique expose uniquement les zones actives.
+model ServiceCity {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  name      String
+  slug      String   @unique
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Demande {

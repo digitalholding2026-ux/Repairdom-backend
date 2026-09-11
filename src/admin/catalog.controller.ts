@@ -30,6 +30,8 @@ import {
   UpdateBrandDto,
   CreateModelDto,
   UpdateModelDto,
+  CreateCityDto,
+  UpdateCityDto,
 } from './dto/catalog.dto.js';
 
 @Controller('admin/catalog')
@@ -191,6 +193,23 @@ export class CatalogController {
     @CurrentUser() user: RequestUser,
   ) {
     return this.catalog.updatePricing(interventionId, dto, user.id);
+  }
+
+  /* ── ServiceCity (zones de service) ─────────────────────────── */
+
+  @Get('cities')
+  listCities() {
+    return this.catalog.listCities();
+  }
+
+  @Post('cities')
+  createCity(@Body() dto: CreateCityDto) {
+    return this.catalog.createCity(dto);
+  }
+
+  @Patch('cities/:id')
+  updateCity(@Param('id') id: string, @Body() dto: UpdateCityDto) {
+    return this.catalog.updateCity(id, dto);
   }
 
   /* ── Seed ───────────────────────────────────────────────────── */

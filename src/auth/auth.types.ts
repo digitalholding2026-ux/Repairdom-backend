@@ -4,8 +4,14 @@ export interface AuthUser {
   id: string;
   role: UserRole;
   firstName: string;
+  lastName: string | null;
   phone: string | null;
   email: string;
+  emailVerified: boolean;
+  avatarUrl: string | null;
+  city: string | null;
+  address: string | null;
+  whatsapp: string | null;
   createdAt: Date;
 }
 

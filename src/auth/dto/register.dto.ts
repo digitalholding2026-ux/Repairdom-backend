@@ -17,22 +17,33 @@ export class RegisterDto {
   @MaxLength(80)
   firstName: string;
 
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
   @MaxLength(80)
-  lastName?: string;
+  lastName: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(20)
   phone?: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  whatsapp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  address?: string;
+
   @IsEmail()
   @MaxLength(200)
   email: string;
 
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
   @MaxLength(128)
   password: string;
 

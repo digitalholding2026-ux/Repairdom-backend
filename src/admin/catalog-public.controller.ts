@@ -41,4 +41,9 @@ export class CatalogPublicController {
   ) {
     return this.catalog.listPublicProblems(domainId, brandId, modelId);
   }
+
+  @Get('cities')
+  listCities() {
+    return this.catalog.listPublicCities();
+  }
 }

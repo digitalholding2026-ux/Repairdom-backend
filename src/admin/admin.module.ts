@@ -5,11 +5,12 @@ import { AdminController } from './admin.controller.js';
 import { AdminService } from './admin.service.js';
 import { CatalogController } from './catalog.controller.js';
 import { CatalogPublicController } from './catalog-public.controller.js';
+import { CityPublicController } from './city-public.controller.js';
 import { CatalogService } from './catalog.service.js';
 
 @Module({
   imports: [AuthModule, TechnicianModule],
-  controllers: [AdminController, CatalogController, CatalogPublicController],
+  controllers: [AdminController, CatalogController, CatalogPublicController, CityPublicController],
   providers: [AdminService, CatalogService],
 })
 export class AdminModule {}

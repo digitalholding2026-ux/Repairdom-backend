@@ -470,3 +470,45 @@ export class UpdatePricingDto {
   @MaxLength(500)
   reason?: string;
 }
+
+/* ── ServiceCity (villes / zones de service) ──────────────────── */
+
+export class CreateCityDto {
+  @IsString()
+  @MaxLength(100)
+  name: string;
+
+  @IsString()
+  @MaxLength(100)
+  slug: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateCityDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  slug?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}

@@ -41,6 +41,39 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   SUPABASE_SERVICE_ROLE_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  FRONTEND_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SMTP_HOST?: string;
+
+  @IsOptional()
+  @IsString()
+  SMTP_PORT?: string;
+
+  @IsOptional()
+  @IsString()
+  SMTP_SECURE?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SMTP_USER?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SMTP_PASS?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SMTP_FROM?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

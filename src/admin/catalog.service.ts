@@ -16,6 +16,8 @@ import type {
   UpdateBrandDto,
   CreateModelDto,
   UpdateModelDto,
+  CreateCityDto,
+  UpdateCityDto,
 } from './dto/catalog.dto.js';
 
 @Injectable()
@@ -1311,5 +1313,58 @@ export class CatalogService {
       domainId,
       problemsCount: problems.length,
     };
+  }
+
+  /* ── ServiceCity (zones de service) ─────────────────────────── */
+
+  /** Vue publique : uniquement les villes actives, triées (ordre admin puis nom). */
+  async listPublicCities() {
+    return this.prisma.serviceCity.findMany({
+      where: { isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true },
+    });
+  }
+
+  /** Vue admin : toutes les villes (actives ou non). */
+  async listCities() {
+    return this.prisma.serviceCity.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+  }
+
+  async createCity(dto: CreateCityDto) {
+    const slug = dto.slug.trim().toLowerCase();
+    const existing = await this.prisma.serviceCity.findUnique({ where: { slug } });
+    if (existing) throw new BadRequestException('Ce slug existe déjà.');
+    return this.prisma.serviceCity.create({
+      data: {
+        name: dto.name.trim(),
+        slug,
+        isActive: dto.isActive ?? true,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+  }
+
+  async updateCity(id: string, dto: UpdateCityDto) {
+    const city = await this.prisma.serviceCity.findUnique({ where: { id } });
+    if (!city) throw new NotFoundException('Ville introuvable.');
+    if (dto.slug) {
+      const slug = dto.slug.trim().toLowerCase();
+      const conflict = await this.prisma.serviceCity.findFirst({
+        where: { slug, NOT: { id } },
+      });
+      if (conflict) throw new BadRequestException('Ce slug existe déjà.');
+    }
+    return this.prisma.serviceCity.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
   }
 }
