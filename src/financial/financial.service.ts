@@ -41,6 +41,28 @@ export interface QuoteSnapshot {
   initialTravelFee: number | null;
 }
 
+/** Aggrégat financier d'une mission DU POINT DE VUE du client (lecture UI). */
+export interface ClientMissionFinance {
+  demandeId: string;
+  reference: string;
+  status: string;
+  scheduledAt: string | null;
+  repair: number;
+  travel: number;
+  fee: number;
+  totalDebit: number;
+  refunded: boolean;
+  refundAmount: number;
+}
+
+/** Filtres de supervision financière ADMIN (tous optionnels). */
+export interface AdminFinanceFilters {
+  mode?: FinancialTransactionMode;
+  from?: Date;
+  to?: Date;
+  reference?: string;
+}
+
 /**
  * Sprint 8.7-FIN — Moteur financier RepairDom (SIMULATION).
  *
@@ -363,6 +385,134 @@ export class FinancialService {
     return this.getBalance(userId, mode);
   }
 
+  /* ── Lecteurs UI (routes READ-ONLY, userId TOUJOURS issu du JWT) ── */
+
+  /** Synthèse client « Mon solde » (Sprint 8.7-FIN-UI).
+   *  Le solde, les totaux et l'historique sont calculés côté backend ;
+   *  le frontend ne recalcule JAMAIS le solde depuis des données partielles. */
+  async getClientFinanceSummary(userId: string) {
+    const mode = this.getMode();
+    const balance = await this.getClientBalance(userId, mode);
+
+    const rows = await this.prisma.financialTransaction.findMany({
+      where: { userId, mode },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      include: {
+        demande: {
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+            scheduledAt: true,
+          },
+        },
+      },
+    });
+
+    let totalCredit = 0;
+    let totalDebit = 0;
+    const missions = new Map<string, ClientMissionFinance>();
+    const transactions = rows.map((t) => {
+      if (t.status === 'VALIDATED') {
+        if (t.direction === 'CREDIT') totalCredit += t.amount;
+        else totalDebit += t.amount;
+      }
+
+      // Regroupement par mission (si liée) : réparation / transport / frais /
+      // total débité / remboursement. Les composantes sont lues depuis les
+      // métadonnées serveur écrites au débit — jamais recalculées côté UI.
+      if (t.demandeId && t.demande) {
+        const mission = missions.get(t.demandeId) ?? {
+          demandeId: t.demandeId,
+          reference: t.demande.reference,
+          status: t.demande.status,
+          scheduledAt: t.demande.scheduledAt
+            ? t.demande.scheduledAt.toISOString()
+            : null,
+          repair: 0,
+          travel: 0,
+          fee: 0,
+          totalDebit: 0,
+          refunded: false,
+          refundAmount: 0,
+        };
+        const meta = (t.metadata ?? {}) as {
+          repair?: number;
+          travel?: number;
+          fee?: number;
+        };
+        if (t.type === 'CLIENT_MISSION_DEBIT' && t.direction === 'DEBIT') {
+          mission.repair += meta.repair ?? t.amount;
+          mission.travel += meta.travel ?? 0;
+          mission.totalDebit += t.amount;
+        }
+        if (t.type === 'CLIENT_FEE' && t.direction === 'DEBIT') {
+          mission.fee += t.amount;
+        }
+        if (t.type === 'REVERSAL' && t.direction === 'CREDIT') {
+          mission.refunded = true;
+          mission.refundAmount += t.amount;
+        }
+        missions.set(t.demandeId, mission);
+      }
+
+      return {
+        id: t.id,
+        type: t.type,
+        direction: t.direction,
+        amount: t.amount,
+        status: t.status,
+        mode: t.mode,
+        reference: t.reference,
+        reversalOfId: t.reversalOfId,
+        createdAt: t.createdAt.toISOString(),
+        metadata: (t.metadata ?? null) as Record<string, unknown> | null,
+        demande: t.demande
+          ? {
+              id: t.demande.id,
+              reference: t.demande.reference,
+              status: t.demande.status,
+              scheduledAt: t.demande.scheduledAt
+                ? t.demande.scheduledAt.toISOString()
+                : null,
+            }
+          : null,
+      };
+    });
+
+    return {
+      mode,
+      currency: FINANCIAL_CURRENCY,
+      balance,
+      totals: { credit: totalCredit, debit: totalDebit, net: totalCredit - totalDebit },
+      missions: [...missions.values()].sort((a, b) =>
+        (b.scheduledAt ?? '').localeCompare(a.scheduledAt ?? ''),
+      ),
+      transactions,
+    };
+  }
+
+  /** Transactions technicien réglées (répertoire partagé UI/admin). */
+  private async loadTechnicianTransactions(userId: string, mode: FinancialTransactionMode) {
+    return this.prisma.financialTransaction.findMany({
+      where: { userId, mode, status: 'VALIDATED' },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+      include: {
+        demande: {
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+            scheduledAt: true,
+            client: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+    });
+  }
+
   /** Finances technicien : réparation, transport, frais, brut, net,
    *  disponible et historique des écritures liées aux missions. */
   async getTechnicianFinances(userId: string, mode: FinancialTransactionMode) {
@@ -423,6 +573,113 @@ export class FinancialService {
       net,
       available: net,
       history,
+    };
+  }
+
+  /** Synthèse technicien « Mes revenus » (Sprint 8.7-FIN-UI).
+   *  Gross/nett/available et le découpage par mission sont calculés côté
+   *  backend. Le transport est toujours une composante du revenu technicien,
+   *  jamais un frais RepairDom. */
+  async getTechnicianFinanceSummary(userId: string) {
+    const mode = this.getMode();
+    const rows = await this.loadTechnicianTransactions(userId, mode);
+
+    let repairRevenue = 0;
+    let travelRevenue = 0;
+    let platformFees = 0;
+    let netRevenue = 0;
+    const missionsById = new Map<
+      string,
+      {
+        demandeId: string;
+        reference: string;
+        status: string;
+        scheduledAt: string | null;
+        settledAt: Date | null;
+        repair: number;
+        travel: number;
+        fees: number;
+        gross: number;
+        net: number;
+      }
+    >();
+
+    const transactions = rows.map((t) => {
+      const signed = t.direction === 'CREDIT' ? t.amount : -t.amount;
+      netRevenue += signed;
+      if (t.type === 'TECHNICIAN_REPAIR_REVENUE') repairRevenue += t.amount;
+      if (t.type === 'TECHNICIAN_TRAVEL_REVENUE') travelRevenue += t.amount;
+      if (t.type === 'TECHNICIAN_FEE') platformFees += t.amount;
+
+      if (t.demandeId && t.demande) {
+        const mission = missionsById.get(t.demandeId) ?? {
+          demandeId: t.demandeId,
+          reference: t.demande.reference,
+          status: t.demande.status,
+          scheduledAt: t.demande.scheduledAt
+            ? t.demande.scheduledAt.toISOString()
+            : null,
+          settledAt: null,
+          repair: 0,
+          travel: 0,
+          fees: 0,
+          gross: 0,
+          net: 0,
+        };
+        if (t.type === 'TECHNICIAN_REPAIR_REVENUE') mission.repair += t.amount;
+        if (t.type === 'TECHNICIAN_TRAVEL_REVENUE') mission.travel += t.amount;
+        if (t.type === 'TECHNICIAN_FEE') mission.fees += t.amount;
+        if (!mission.settledAt || t.createdAt > mission.settledAt) {
+          mission.settledAt = t.createdAt;
+        }
+        missionsById.set(t.demandeId, mission);
+      }
+
+      return {
+        id: t.id,
+        type: t.type,
+        direction: t.direction,
+        amount: t.amount,
+        status: t.status,
+        mode: t.mode,
+        reference: t.reference,
+        reversalOfId: t.reversalOfId,
+        createdAt: t.createdAt.toISOString(),
+        demande: t.demande
+          ? {
+              id: t.demande.id,
+              reference: t.demande.reference,
+              status: t.demande.status,
+              scheduledAt: t.demande.scheduledAt
+                ? t.demande.scheduledAt.toISOString()
+                : null,
+              client: t.demande.client,
+            }
+          : null,
+      };
+    });
+
+    const missions = [...missionsById.values()]
+      .map((m) => ({
+        ...m,
+        gross: m.repair + m.travel,
+        net: m.repair + m.travel - m.fees,
+        settledAt: m.settledAt ? m.settledAt.toISOString() : null,
+      }))
+      .sort((a, b) => (b.settledAt ?? '').localeCompare(a.settledAt ?? ''));
+
+    const grossRevenue = repairRevenue + travelRevenue;
+    return {
+      mode,
+      currency: FINANCIAL_CURRENCY,
+      grossRevenue,
+      repairRevenue,
+      travelRevenue,
+      platformFees,
+      netRevenue,
+      available: netRevenue,
+      missions,
+      transactions,
     };
   }
 
@@ -511,6 +768,278 @@ export class FinancialService {
 
     const mismatched = missions.filter((m) => !m.reconciled);
     return { totalMissions: missions.length, mismatches: mismatched, expectedPerMission: TOTAL_PLATFORM_FEES };
+  }
+
+  /* ── Supervision ADMIN (Sprint 8.7-FIN-UI) ───────────────────── */
+
+  /** Synthèse globale « Finances RepairDom » par mode (SIMULATION / REAL).
+   *  Les filtres (mode, période, référence mission) sont appliqués CÔTÉ
+   *  BACKEND ; le frontend affiche un résultat déjà agrégé et n'invente
+   *  jamais les totaux ni l'état de réconciliation. */
+  async getAdminFinanceSummary(filters: AdminFinanceFilters = {}) {
+    const modes: FinancialTransactionMode[] = ['SIMULATION', 'REAL'];
+    const results: Record<string, unknown> = {};
+    for (const mode of modes) {
+      results[mode] = await this.computeAdminModeFinance(mode, filters);
+    }
+    return {
+      currency: FINANCIAL_CURRENCY,
+      expectedPerMission: {
+        clientFee: CLIENT_PLATFORM_FEE,
+        technicianFee: TECHNICIAN_PLATFORM_FEE,
+        total: TOTAL_PLATFORM_FEES,
+      },
+      results,
+    };
+  }
+
+  private async computeAdminModeFinance(
+    mode: FinancialTransactionMode,
+    filters: AdminFinanceFilters,
+  ) {
+    const where: Prisma.FinancialTransactionWhereInput = { mode };
+    if (filters.from || filters.to) {
+      where.createdAt = {
+        ...(filters.from ? { gte: filters.from } : {}),
+        ...(filters.to ? { lte: filters.to } : {}),
+      };
+    }
+    if (filters.reference) {
+      where.demande = {
+        reference: { contains: filters.reference.trim(), mode: 'insensitive' },
+      };
+    }
+
+    const rows = await this.prisma.financialTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+      include: {
+        demande: {
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+            createdAt: true,
+            client: { select: { id: true, firstName: true, lastName: true } },
+            technician: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+      },
+    });
+
+    let repair = 0;
+    let travel = 0;
+    let clientFees = 0;
+    let technicianFees = 0;
+    let clientDebits = 0;
+    let technicianGross = 0;
+    const missionsById = new Map<
+      string,
+      {
+        demandeId: string;
+        reference: string | null;
+        status: string | null;
+        date: string | null;
+        client: { id: string; firstName: string; lastName: string } | null;
+        technician: { id: string; firstName: string; lastName: string } | null;
+        repair: number;
+        travel: number;
+        clientFee: number;
+        technicianFee: number;
+        technicianNet: number;
+        repairDomRevenue: number;
+        reconciled: boolean;
+        lastActivity: string;
+      }
+    >();
+    let hasAnyFinancialTransaction = false;
+
+    for (const t of rows) {
+      hasAnyFinancialTransaction = true;
+      if (t.status !== 'VALIDATED') continue;
+      if (t.type === 'TECHNICIAN_REPAIR_REVENUE' && t.direction === 'CREDIT') {
+        repair += t.amount;
+        technicianGross += t.amount;
+      }
+      if (t.type === 'TECHNICIAN_TRAVEL_REVENUE' && t.direction === 'CREDIT') {
+        travel += t.amount;
+        technicianGross += t.amount;
+      }
+      if (t.type === 'CLIENT_FEE' && t.direction === 'DEBIT') clientFees += t.amount;
+      if (t.type === 'TECHNICIAN_FEE' && t.direction === 'DEBIT') technicianFees += t.amount;
+      if (t.type === 'CLIENT_MISSION_DEBIT' && t.direction === 'DEBIT') clientDebits += t.amount;
+
+      if (t.demandeId) {
+        const mission = missionsById.get(t.demandeId) ?? {
+          demandeId: t.demandeId,
+          reference: t.demande?.reference ?? null,
+          status: t.demande?.status ?? null,
+          date: t.demande?.createdAt ? t.demande.createdAt.toISOString() : null,
+          client: t.demande?.client ?? null,
+          technician: t.demande?.technician ?? null,
+          repair: 0,
+          travel: 0,
+          clientFee: 0,
+          technicianFee: 0,
+          technicianNet: 0,
+          repairDomRevenue: 0,
+          reconciled: true,
+          lastActivity: t.createdAt.toISOString(),
+        };
+        if (t.type === 'TECHNICIAN_REPAIR_REVENUE') mission.repair += t.amount;
+        if (t.type === 'TECHNICIAN_TRAVEL_REVENUE') mission.travel += t.amount;
+        if (t.type === 'CLIENT_FEE') mission.clientFee += t.amount;
+        if (t.type === 'TECHNICIAN_FEE') mission.technicianFee += t.amount;
+        mission.technicianNet = mission.repair + mission.travel - mission.technicianFee;
+        mission.repairDomRevenue = mission.clientFee + mission.technicianFee;
+        mission.reconciled =
+          mission.repairDomRevenue === TOTAL_PLATFORM_FEES &&
+          mission.clientFee > 0 &&
+          mission.technicianFee > 0;
+        if (t.createdAt.toISOString() > mission.lastActivity) {
+          mission.lastActivity = t.createdAt.toISOString();
+        }
+        missionsById.set(t.demandeId, mission);
+      }
+    }
+
+    const missions = [...missionsById.values()].sort((a, b) =>
+      b.lastActivity.localeCompare(a.lastActivity),
+    );
+    const reconciledMissions = missions.filter((m) => m.reconciled).length;
+    const mismatchMissions = missions.length - reconciledMissions;
+
+    return {
+      mode,
+      totals: {
+        missionsCount: missions.length,
+        transactionsCount: rows.length,
+        hasAnyFinancialTransaction,
+        repair,
+        travel,
+        clientFees,
+        technicianFees,
+        repairDomRevenue: clientFees + technicianFees,
+        technicianGross,
+        technicianNet: technicianGross - technicianFees,
+        clientDebits,
+      },
+      missions,
+      reconciliation: {
+        missionsCount: missions.length,
+        reconciledMissions,
+        mismatchMissions,
+        ok: missions.length === 0 ? null : mismatchMissions === 0,
+        expectedPerMission: TOTAL_PLATFORM_FEES,
+      },
+    };
+  }
+
+  /** Détail financier d'une mission pour l'ADMIN (supervision) : mission +
+   *  quote accepté (snapshot) + transactions ledger immuables. Les données
+   *  sensibles non financières (KYC, storagePath, JWT…) ne sont pas exposées. */
+  async getAdminMissionFinance(demandeId: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      select: {
+        id: true,
+        reference: true,
+        status: true,
+        createdAt: true,
+        finalAmount: true,
+        client: { select: { id: true, firstName: true, lastName: true } },
+        technician: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+    if (!demande) throw new NotFoundException('Demande introuvable.');
+
+    const quote = await this.prisma.quote.findFirst({
+      where: { demandeId, status: 'ACCEPTED' },
+      select: {
+        id: true,
+        amount: true,
+        currency: true,
+        travelAmount: true,
+        initialTravelFee: true,
+        createdAt: true,
+      },
+    });
+
+    const rows = await this.prisma.financialTransaction.findMany({
+      where: { demandeId },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, role: true } },
+      },
+    });
+
+    const sum = (type: FinancialTransactionType, direction: FinancialTransactionDirection) =>
+      rows
+        .filter((t) => t.type === type && t.direction === direction && t.status === 'VALIDATED')
+        .reduce((acc, t) => acc + t.amount, 0);
+
+    const technicianRepair = sum('TECHNICIAN_REPAIR_REVENUE', 'CREDIT');
+    const technicianTravel = sum('TECHNICIAN_TRAVEL_REVENUE', 'CREDIT');
+    const technicianFee = sum('TECHNICIAN_FEE', 'DEBIT');
+    const clientFee = sum('CLIENT_FEE', 'DEBIT');
+    const clientMissionDebit = sum('CLIENT_MISSION_DEBIT', 'DEBIT');
+    const reversalCredit = rows
+      .filter((t) => t.type === 'REVERSAL' && t.direction === 'CREDIT' && t.status === 'VALIDATED')
+      .reduce((acc, t) => acc + t.amount, 0);
+    const repairDomRevenue = clientFee + technicianFee;
+
+    return {
+      demande: {
+        id: demande.id,
+        reference: demande.reference,
+        status: demande.status,
+        createdAt: demande.createdAt.toISOString(),
+        finalAmount: demande.finalAmount,
+        client: demande.client,
+        technician: demande.technician,
+      },
+      quote: quote
+        ? (() => {
+            const split = this.splitQuote(quote);
+            return {
+              id: quote.id,
+              amount: quote.amount,
+              currency: quote.currency,
+              createdAt: quote.createdAt.toISOString(),
+              repair: split.repairAmount,
+              travel: split.travelAmount,
+            };
+          })()
+        : null,
+      financials: {
+        clientMissionDebit,
+        clientFee,
+        technicianRepair,
+        technicianTravel,
+        technicianFee,
+        netTechnician: technicianRepair + technicianTravel - technicianFee,
+        repairDomRevenue,
+        expectedRepairDomRevenue: TOTAL_PLATFORM_FEES,
+        reconciled: repairDomRevenue === TOTAL_PLATFORM_FEES,
+        clientRefunded: reversalCredit > 0,
+        clientRefundAmount: reversalCredit,
+      },
+      transactions: rows.map((t) => ({
+        id: t.id,
+        userId: t.userId,
+        user: t.user,
+        demandeId: t.demandeId,
+        type: t.type,
+        direction: t.direction,
+        amount: t.amount,
+        status: t.status,
+        mode: t.mode,
+        reference: t.reference,
+        reversalOfId: t.reversalOfId,
+        createdAt: t.createdAt.toISOString(),
+      })),
+    };
   }
 
   /* ── Provisionnement simulateur (ADMIN uniquement) ──────────── */
