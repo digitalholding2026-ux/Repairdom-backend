@@ -13,6 +13,7 @@ import type { SendMessageDto } from './dto/send-message.dto.js';
 import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
+import { FinancialService } from '../financial/financial.service.js';
 import {
   buildNotification,
   createNotification,
@@ -46,7 +47,10 @@ interface AccessibleDemande {
 
 @Injectable()
 export class CollaborationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly financial: FinancialService,
+  ) {}
 
   private async requireAccess(user: RequestUser, demandeId: string): Promise<AccessibleDemande> {
     const demande = await this.prisma.demande.findUnique({
@@ -338,6 +342,13 @@ export class CollaborationService {
     const description = dto.description.trim();
     if (!description) throw new BadRequestException('La description du tarif ne peut pas être vide.');
 
+    // Sprint 8.7-FIN : cohérence de la décomposition réparation / transport.
+    if (dto.travelAmount != null && dto.travelAmount > dto.amount) {
+      throw new BadRequestException(
+        'Le montant du transport ne peut pas dépasser le montant total du tarif.',
+      );
+    }
+
     const quote = await this.prisma.$transaction(async (tx) => {
       const accepted = await tx.quote.findFirst({
         where: { demandeId, status: 'ACCEPTED' },
@@ -369,6 +380,10 @@ export class CollaborationService {
           currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
           description,
           diagnosticId: diagnostic?.id ?? null,
+          // Sprint 8.7-FIN : composante transport saisie par le technicien
+          // (0 par défaut pour un tarif manuel). Le montant de réparation
+          // est déduit (repairAmount = amount − travelAmount).
+          travelAmount: dto.travelAmount ?? 0,
         },
         include: this.quoteInclude(),
       });
@@ -397,27 +412,61 @@ export class CollaborationService {
     demandeId: string,
     quoteId: string,
     action: 'accept' | 'reject',
-  ) {    if (user.role !== 'CLIENT') {
+  ) {
+    if (user.role !== 'CLIENT') {
       throw new ForbiddenException('Seul le client propriétaire peut répondre à une proposition.');
     }
     const demande = await this.requireAccess(user, demandeId);
     this.assertOpen(demande.status);
 
-    const quote = await this.prisma.quote.findFirst({
+    // Pré-contrôle (UX / fast-path) : la vraie exclusivité est garantie dans
+    // la transaction par le claim atomique ci-dessous.
+    const pre = await this.prisma.quote.findFirst({
       where: { id: quoteId, demandeId },
+      select: { id: true, status: true },
     });
-    if (!quote) throw new NotFoundException('Proposition introuvable.');
-    if (quote.status !== 'PENDING') {
-      throw new ConflictException('Cette proposition a déjà été traitée.');
-    }
+    if (!pre) throw new NotFoundException('Proposition introuvable.');
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      const quote = await tx.quote.update({
+      // Sprint 8.7-FIN — claim atomique : seul ce qui est encore PENDING peut
+      // passer ACCEPTED/REJECTED. Un double clic / appel concurrent n'obtient
+      // jamais count !== 0 (le second appel renvoie ConflictException, le
+      // débit n'est jamais dupliqué).
+      let claim: { count: number };
+      try {
+        claim = await tx.quote.updateMany({
+          where: { id: quoteId, demandeId, status: 'PENDING' },
+          data: { status: action === 'accept' ? 'ACCEPTED' : 'REJECTED' },
+        });
+      } catch (error) {
+        // Contrainte BDD « un seul tarif ACCEPTED par mission » (index
+        // partiel) : course concurrente entre deux acceptations différentes.
+        if ((error as { code?: string }).code === 'P2002') {
+          throw new ConflictException('Un tarif a déjà été accepté pour cette demande.');
+        }
+        throw error;
+      }
+      if (claim.count !== 1) {
+        throw new ConflictException('Cette proposition a déjà été traitée.');
+      }
+
+      const quote = await tx.quote.findUniqueOrThrow({
         where: { id: quoteId },
-        data: { status: action === 'accept' ? 'ACCEPTED' : 'REJECTED' },
         include: this.quoteInclude(),
       });
+
       if (action === 'accept') {
+        // Sprint 8.7-FIN : le client paie au moment de la validation du
+        // tarif — débit réparation+transport + frais RepairDom 100 XAF,
+        // ATOMIQUES avec l'acceptation (même transaction). Montants
+        // recalculés côté serveur depuis le snapshot du tarif, jamais depuis
+        // un montant fourni par le frontend. Références serveur idempotentes.
+        await this.financial.debitClientAtAcceptance(tx, {
+          demandeId,
+          clientId: demande.clientId,
+          quote,
+          actorUserId: user.id,
+        });
         // Traçabilité (Sprint 8.1) : le montant final de la mission est le
         // montant accepté du tarif.
         await tx.demande.update({
@@ -706,6 +755,9 @@ export class CollaborationService {
             initialReferencePrice: pricing.referencePrice,
             initialTravelFee: pricing.travelFee,
             initialServiceFee: pricing.serviceFee,
+            // Sprint 8.7-FIN : composante transport du tarif auto = snapshot
+            // du travelFee du catalogue (règle uniforme avec le MANUAL).
+            travelAmount: pricing.travelFee,
           },
           include: this.quoteInclude(),
         });

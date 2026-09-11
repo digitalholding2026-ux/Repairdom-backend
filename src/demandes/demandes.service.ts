@@ -6,6 +6,7 @@ import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
 import { assertTransition } from './demandes-lifecycle.js';
 import { ALLOWED_CATEGORIES } from './categories.js';
+import { FinancialService } from '../financial/financial.service.js';
 import {
   buildNotification,
   createNotification,
@@ -190,7 +191,10 @@ export function labelForCategory(category: string): string {
 
 @Injectable()
 export class DemandesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly financial: FinancialService,
+  ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
     const medias = dto.medias ?? [];
@@ -402,6 +406,27 @@ export class DemandesService {
             buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
           );
         }
+      }
+
+      // Sprint 8.7-FIN — règlement financier ATOMIQUE avec la transition :
+      //   CONFIRMED → rémunération du technicien (réparation + transport
+      //              − frais RepairDom 150), aucune écriture à COMPLETED.
+      //   CANCELED  → contrepassation intégrale du client s'il avait été
+      //              débité (réparation + transport + frais 100).
+      // Dans les deux cas rien n'est écrit si la mission est legacy (aucune
+      // transaction financière rétroactive). Tout est idempotent.
+      if (dto.status === 'CONFIRMED') {
+        await this.financial.settleTechnicianAtConfirmation(tx, {
+          demandeId: current.id,
+          technicianId: current.technicianId,
+          createdById: clientId,
+        });
+      }
+      if (dto.status === 'CANCELED') {
+        await this.financial.reverseClientDebitIfAny(tx, {
+          demandeId: current.id,
+          clientId,
+        });
       }
 
       return updated;

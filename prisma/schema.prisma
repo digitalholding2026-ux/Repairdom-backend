@@ -91,6 +91,36 @@ enum QuoteSource {
   MANUAL
 }
 
+// Sprint 8.7-FIN — Ledger financier de simulation (source de vérité financière).
+// Le montant d'une écriture est toujours à interpréter avec sa `direction` :
+//   solde = Σ(CREDIT) − Σ(DEBIT) sur les écritures VALIDATED d'un mode donné.
+// Un ledger est IMMUABLE : aucune modification/suppression via l'API. Toute
+// correction passe par une écriture REVERSAL liée via `reversalOfId`.
+enum FinancialTransactionType {
+  INITIAL_TEST_CREDIT
+  CLIENT_MISSION_DEBIT
+  CLIENT_FEE
+  TECHNICIAN_REPAIR_REVENUE
+  TECHNICIAN_TRAVEL_REVENUE
+  TECHNICIAN_FEE
+  REVERSAL
+}
+
+enum FinancialTransactionDirection {
+  CREDIT
+  DEBIT
+}
+
+enum FinancialTransactionStatus {
+  VALIDATED
+  REVERSED
+}
+
+enum FinancialTransactionMode {
+  SIMULATION
+  REAL
+}
+
 enum KycStatus {
   NOT_SUBMITTED
   PENDING
@@ -127,6 +157,8 @@ model User {
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
   demandeEvents       DemandeEvent[]
   notifications       Notification[]
+  financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
+  financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
 }
 
 model Demande {
@@ -169,6 +201,7 @@ model Demande {
   reviews     Review[]
   events      DemandeEvent[]
   notifications Notification[]
+  financialTransactions FinancialTransaction[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -347,6 +380,13 @@ model Quote {
   initialReferencePrice Int?
   initialTravelFee      Int?
   initialServiceFee     Int?
+  // Sprint 8.7-FIN — composante « transport » du tarif total. Renseigné pour
+  // les quotes CATALOG (snapshot initialTravelFee) et pour les quotes MANUAL
+  // (travelAmount saisi par le technicien, sinon 0). Règle :
+  //   repairAmount = Quote.amount - travelAmount ; travelAmount >= 0.
+  // Le transport appartient à 100 % au technicien et n'est jamais soumis aux
+  // frais RepairDom.
+  travelAmount  Int?
   createdAt    DateTime    @default(now())
 
   demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
@@ -564,4 +604,45 @@ model PricingHistory {
 
   @@index([pricingId])
   @@index([adminId])
+}
+
+// Sprint 8.7-FIN — Ledger financier immuable (source de vérité financière).
+//
+// Règles d'intégrité (appliquées par le moteur financier, voir src/financial) :
+//  - Aucune écriture utilisateur n'est possible via l'API (aucune route de
+//    création/modification/suppression de transaction exposée au frontend).
+//  - Seul le serveur crée des écritures, atomiquement avec la transition
+//    métier qui les motive (acceptation d'un quote, confirmation, annulation).
+//  - `reference` est UNIQUE : clé d'idempotence serveur (un seul débit/crédit
+//    par événement métier, résistant au double clic / retry / double appel).
+//  - Le `mode` (SIMULATION/REAL) est décidé côté serveur via FINANCIAL_MODE ;
+//    jamais par le frontend. Les références intègrent le mode.
+//  - `reversalOfId` lie une écriture REVERSAL à l'écriture initiale qu'elle
+//    annule. Les écritures originales ne sont JAMAIS modifiées ni supprimées.
+//  - Le solde n'est jamais stocké : il se calcule par somme des montants
+//    (CREDIT − DEBIT) des écritures VALIDATED d'un mode donné.
+model FinancialTransaction {
+  id            String                        @id @default(dbgenerated("gen_random_uuid()"))
+  userId        String
+  demandeId     String?
+  type          FinancialTransactionType
+  direction     FinancialTransactionDirection
+  amount        Int
+  status        FinancialTransactionStatus @default(VALIDATED)
+  mode          FinancialTransactionMode   @default(SIMULATION)
+  reference     String                        @unique
+  reversalOfId  String?
+  metadata      Json?
+  createdById   String?
+  createdAt     DateTime                      @default(now())
+
+  user        User                   @relation("FinancialTransactionOwner", fields: [userId], references: [id], onDelete: Restrict)
+  demande     Demande?               @relation(fields: [demandeId], references: [id], onDelete: SetNull)
+  reversalOf  FinancialTransaction?  @relation("FinancialTransactionReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversals   FinancialTransaction[] @relation("FinancialTransactionReversal")
+  createdBy   User?                  @relation("FinancialTransactionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([demandeId, createdAt])
+  @@index([mode, userId])
 }

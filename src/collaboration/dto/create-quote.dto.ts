@@ -9,6 +9,15 @@ export class CreateQuoteDto {
   @Max(QUOTE_MAX_AMOUNT)
   amount: number;
 
+  // Sprint 8.7-FIN — composante transport du tarif manuel.
+  // Règle : 0 ≤ travelAmount ≤ amount ; repairAmount = amount − travelAmount.
+  // Le transport est toujours reversé à 100 % au technicien (jamais soumis
+  // aux frais RepairDom).
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  travelAmount?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(8)
