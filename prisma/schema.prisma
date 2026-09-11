@@ -82,6 +82,15 @@ enum QuoteStatus {
   REJECTED
 }
 
+// Sprint 8.6 — Origine d'un tarif.
+// CATALOG : tarif automatique RepairDom, généré depuis le Pricing catalogue
+//           (snapshot figé, indépendant des modifications ultérieures).
+// MANUAL  : tarif manuel, exclusivement lié à un « diagnostic non référencé ».
+enum QuoteSource {
+  CATALOG
+  MANUAL
+}
+
 enum KycStatus {
   NOT_SUBMITTED
   PENDING
@@ -308,6 +317,7 @@ model Diagnostic {
   technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
   catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
+  quotes      Quote[]
 
   @@index([demandeId])
   @@index([catalogDiagnosticId])
@@ -326,7 +336,12 @@ model Quote {
   // MANUAL : saisi par le technicien (fallback contrôlé) — comportement historique.
   // CATALOG : généré automatiquement par RepairDom depuis le Pricing catalogue
   // (snapshot figé, indépendant des modifications ultérieures du catalogue).
-  source                String @default("MANUAL")
+  source                QuoteSource @default(MANUAL)
+  // Sprint 8.6 : lien au diagnostic de mission qui motive ce tarif. Permet de
+  // relier chaque proposition (CATALOG ou MANUAL) à son diagnostic (mode,
+  // intervention proposée, justification, notes). NULL pour les propositions
+  // créées avant le Sprint 8.6 (aucun diagnostic n'existait encore).
+  diagnosticId          String?
   catalogDiagnosticId   String?
   catalogInterventionId String?
   initialReferencePrice Int?
@@ -336,10 +351,12 @@ model Quote {
 
   demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  diagnostic Diagnostic?       @relation(fields: [diagnosticId], references: [id], onDelete: SetNull)
   catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
 
   @@index([demandeId])
+  @@index([diagnosticId])
   @@index([catalogDiagnosticId])
   @@index([catalogInterventionId])
 }

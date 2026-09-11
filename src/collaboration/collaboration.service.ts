@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import type { QuoteSource } from '../generated/prisma/enums.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import type { SendMessageDto } from './dto/send-message.dto.js';
 import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
@@ -155,24 +156,38 @@ export class CollaborationService {
     };
   }
 
-  private toApiQuote(quote: {
-    id: string;
-    demandeId: string;
-    technicianId: string;
-    amount: number;
-    currency: string;
-    description: string;
-    status: string;
-    source: string;
-    catalogDiagnosticId: string | null;
-    catalogInterventionId: string | null;
-    catalogDiagnostic: { id: string; name: string } | null;
-    catalogIntervention: { id: string; name: string } | null;
-    initialReferencePrice: number | null;
-    initialTravelFee: number | null;
-    initialServiceFee: number | null;
-    createdAt: Date;
-  }) {
+  private toApiQuote(
+    quote: {
+      id: string;
+      demandeId: string;
+      technicianId: string;
+      amount: number;
+      currency: string;
+      description: string;
+      status: string;
+      source: QuoteSource;
+      diagnosticId: string | null;
+      catalogDiagnosticId: string | null;
+      catalogInterventionId: string | null;
+      catalogDiagnostic: { id: string; name: string } | null;
+      catalogIntervention: { id: string; name: string } | null;
+      diagnostic: {
+        id: string;
+        mode: string;
+        content: string;
+        proposedIntervention: string | null;
+        justification: string | null;
+        notes: string | null;
+        catalogDiagnostic: { id: string; name: string } | null;
+        catalogIntervention: { id: string; name: string } | null;
+      } | null;
+      initialReferencePrice: number | null;
+      initialTravelFee: number | null;
+      initialServiceFee: number | null;
+      createdAt: Date;
+    },
+    userRole: string,
+  ) {
     return {
       id: quote.id,
       demandeId: quote.demandeId,
@@ -182,6 +197,21 @@ export class CollaborationService {
       description: quote.description,
       status: quote.status,
       source: quote.source,
+      diagnosticId: quote.diagnosticId,
+      // Diagnostic de mission associé au tarif (Sprint 8.6) : permet de
+      // conserver la chaîne Quote → Diagnostic → Demande → Technicien.
+      diagnostic: quote.diagnostic
+        ? {
+            id: quote.diagnostic.id,
+            mode: quote.diagnostic.mode,
+            content: quote.diagnostic.content,
+            proposedIntervention: quote.diagnostic.proposedIntervention,
+            justification: quote.diagnostic.justification,
+            notes: quote.diagnostic.notes,
+            catalogDiagnostic: quote.diagnostic.catalogDiagnostic,
+            catalogIntervention: quote.diagnostic.catalogIntervention,
+          }
+        : null,
       catalogDiagnosticId: quote.catalogDiagnosticId,
       catalogInterventionId: quote.catalogInterventionId,
       // Noms structurés (Sprint 8.2.5) : le frontend cesse de parser la
@@ -192,7 +222,11 @@ export class CollaborationService {
         ? {
             referencePrice: quote.initialReferencePrice,
             travelFee: quote.initialTravelFee,
-            serviceFee: quote.initialServiceFee,
+            // Sprint 8.6 : le serviceFee (coût interne) n'est jamais exposé au
+            // client — réservé au technicien assigné et à l'administrateur.
+            ...(userRole === 'CLIENT'
+              ? {}
+              : { serviceFee: quote.initialServiceFee }),
           }
         : null,
       createdAt: quote.createdAt.toISOString(),
@@ -203,6 +237,18 @@ export class CollaborationService {
     return {
       catalogDiagnostic: { select: { id: true, name: true } },
       catalogIntervention: { select: { id: true, name: true } },
+      diagnostic: {
+        select: {
+          id: true,
+          mode: true,
+          content: true,
+          proposedIntervention: true,
+          justification: true,
+          notes: true,
+          catalogDiagnostic: { select: { id: true, name: true } },
+          catalogIntervention: { select: { id: true, name: true } },
+        },
+      },
     } as const;
   }
 
@@ -270,7 +316,7 @@ export class CollaborationService {
       orderBy: { createdAt: 'desc' },
       include: this.quoteInclude(),
     });
-    return quotes.map((quote) => this.toApiQuote(quote));
+    return quotes.map((quote) => this.toApiQuote(quote, user.role));
   }
 
   async createQuote(user: RequestUser, demandeId: string, dto: CreateQuoteDto) {
@@ -306,6 +352,15 @@ export class CollaborationService {
         data: { status: 'REJECTED' },
       });
 
+      // Sprint 8.6 : rattache le tarif manuel à son diagnostic de mission
+      // (dernier diagnostic de ce technicien pour cette mission), pour
+      // conserver la chaîne Quote → Diagnostic → Demande → Technicien.
+      const diagnostic = await tx.diagnostic.findFirst({
+        where: { demandeId, technicianId: user.id },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+
       const quote = await tx.quote.create({
         data: {
           demandeId,
@@ -313,6 +368,7 @@ export class CollaborationService {
           amount: dto.amount,
           currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
           description,
+          diagnosticId: diagnostic?.id ?? null,
         },
         include: this.quoteInclude(),
       });
@@ -333,7 +389,7 @@ export class CollaborationService {
       return quote;
     });
 
-    return this.toApiQuote(quote);
+    return this.toApiQuote(quote, user.role);
   }
 
   async respondToQuote(
@@ -392,7 +448,7 @@ export class CollaborationService {
 
       return quote;
     });
-    return this.toApiQuote(updated);
+    return this.toApiQuote(updated, user.role);
   }
 
   /* ── Sprint 8.1 : catalogue → mission ─────────────────────────── */
@@ -635,6 +691,7 @@ export class CollaborationService {
             currency: pricing.currency || DEFAULT_QUOTE_CURRENCY,
             description: `Tarif RepairDom — ${intervention.name} (${diag.name})`,
             source: 'CATALOG',
+            diagnosticId: diagnostic.id,
             catalogDiagnosticId: diag.id,
             catalogInterventionId: intervention.id,
             initialReferencePrice: pricing.referencePrice,
@@ -665,7 +722,7 @@ export class CollaborationService {
         return {
           mode: 'CATALOG',
           diagnostic: this.toApiDiagnostic(diagnostic),
-          quote: this.toApiQuote(quote),
+          quote: this.toApiQuote(quote, user.role),
         };
       });
     }
@@ -952,6 +1009,17 @@ export class CollaborationService {
             description: acceptedQuote.description,
             status: acceptedQuote.status,
             source: acceptedQuote.source,
+            diagnosticId: acceptedQuote.diagnosticId,
+            diagnostic: acceptedQuote.diagnostic
+              ? {
+                  id: acceptedQuote.diagnostic.id,
+                  mode: acceptedQuote.diagnostic.mode,
+                  content: acceptedQuote.diagnostic.content,
+                  proposedIntervention: acceptedQuote.diagnostic.proposedIntervention,
+                  justification: acceptedQuote.diagnostic.justification,
+                  notes: acceptedQuote.diagnostic.notes,
+                }
+              : null,
             catalogDiagnostic: acceptedQuote.catalogDiagnostic ?? null,
             catalogIntervention: acceptedQuote.catalogIntervention ?? null,
             breakdown:
@@ -959,7 +1027,11 @@ export class CollaborationService {
                 ? {
                     referencePrice: acceptedQuote.initialReferencePrice,
                     travelFee: acceptedQuote.initialTravelFee,
-                    serviceFee: acceptedQuote.initialServiceFee,
+                    // Sprint 8.6 : le serviceFee (coût interne) n'est jamais
+                    // exposé au client — réservé à l'administrateur.
+                    ...(user.role === 'CLIENT'
+                      ? {}
+                      : { serviceFee: acceptedQuote.initialServiceFee }),
                   }
                 : null,
           }

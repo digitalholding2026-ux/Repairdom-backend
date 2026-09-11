@@ -601,18 +601,18 @@ export class CatalogService {
       where: { interventionId: dto.interventionId },
     });
     if (existing) throw new BadRequestException('Une tarification existe déjà pour cette intervention.');
-    return this.prisma.pricing.create({
-      data: {
-        interventionId: dto.interventionId,
-        minPrice: dto.minPrice ?? null,
-        referencePrice: dto.referencePrice ?? null,
-        maxPrice: dto.maxPrice ?? null,
-        travelFee: dto.travelFee ?? null,
-        serviceFee: dto.serviceFee ?? null,
-        currency: dto.currency?.trim().toUpperCase() || 'XAF',
-        priceMode: dto.priceMode?.trim() || 'fixed',
-      },
-    });
+    const data = {
+      interventionId: dto.interventionId,
+      minPrice: dto.minPrice ?? null,
+      referencePrice: dto.referencePrice ?? null,
+      maxPrice: dto.maxPrice ?? null,
+      travelFee: dto.travelFee ?? null,
+      serviceFee: dto.serviceFee ?? null,
+      currency: dto.currency?.trim().toUpperCase() || 'XAF',
+      priceMode: dto.priceMode?.trim() || 'fixed',
+    };
+    this.assertPricingValid(data);
+    return this.prisma.pricing.create({ data });
   }
 
   async updatePricing(interventionId: string, dto: UpdatePricingDto, adminId: string) {
@@ -628,7 +628,16 @@ export class CatalogService {
       priceMode: pricing.priceMode,
       isActive: pricing.isActive,
     };
-    const newData: Record<string, unknown> = {};
+    const newData: {
+      minPrice?: number | null;
+      referencePrice?: number | null;
+      maxPrice?: number | null;
+      travelFee?: number | null;
+      serviceFee?: number | null;
+      currency?: string;
+      priceMode?: string;
+      isActive?: boolean;
+    } = {};
     if (dto.minPrice !== undefined) newData.minPrice = dto.minPrice ?? null;
     if (dto.referencePrice !== undefined) newData.referencePrice = dto.referencePrice ?? null;
     if (dto.maxPrice !== undefined) newData.maxPrice = dto.maxPrice ?? null;
@@ -637,6 +646,18 @@ export class CatalogService {
     if (dto.currency !== undefined) newData.currency = dto.currency.trim().toUpperCase();
     if (dto.priceMode !== undefined) newData.priceMode = dto.priceMode.trim();
     if (dto.isActive !== undefined) newData.isActive = dto.isActive;
+
+    if (Object.keys(newData).length > 0) {
+      // Sprint 8.6 : la règle porte sur la valeur résultante (fusion partielle).
+      this.assertPricingValid({
+        minPrice: newData.minPrice !== undefined ? newData.minPrice : pricing.minPrice,
+        referencePrice:
+          newData.referencePrice !== undefined ? newData.referencePrice : pricing.referencePrice,
+        maxPrice: newData.maxPrice !== undefined ? newData.maxPrice : pricing.maxPrice,
+        travelFee: newData.travelFee !== undefined ? newData.travelFee : pricing.travelFee,
+        serviceFee: newData.serviceFee !== undefined ? newData.serviceFee : pricing.serviceFee,
+      });
+    }
 
     if (Object.keys(newData).length === 0) return pricing;
 
@@ -657,6 +678,45 @@ export class CatalogService {
       });
       return updated;
     });
+  }
+
+  /* Sprint 8.6 — Validation métier du Pricing. Le backend est la seule
+   * autorité (le frontend ne fait jamais foi). Règles :
+   *  - aucun montant négatif (min/reference/max/travel/service) ;
+   *  - quand les trois bornes sont renseignées : min <= reference <= max.
+   * Les champs nullable sont autorisés (min/max absents = cotation fixe).
+   * Les messages sont explicites pour l'administrateur. */
+  private assertPricingValid(input: {
+    minPrice: number | null;
+    referencePrice: number | null;
+    maxPrice: number | null;
+    travelFee: number | null;
+    serviceFee: number | null;
+  }) {
+    const { minPrice, referencePrice, maxPrice, travelFee, serviceFee } = input;
+    const negative: string[] = [];
+    if (minPrice !== null && minPrice < 0) negative.push(`minPrice (${minPrice})`);
+    if (referencePrice !== null && referencePrice < 0) negative.push(`referencePrice (${referencePrice})`);
+    if (maxPrice !== null && maxPrice < 0) negative.push(`maxPrice (${maxPrice})`);
+    if (travelFee !== null && travelFee < 0) negative.push(`travelFee (${travelFee})`);
+    if (serviceFee !== null && serviceFee < 0) negative.push(`serviceFee (${serviceFee})`);
+    if (negative.length > 0) {
+      throw new BadRequestException(
+        `Les montants du tarif ne peuvent pas être négatifs : ${negative.join(', ')}.`,
+      );
+    }
+    if (minPrice !== null && referencePrice !== null && maxPrice !== null) {
+      if (minPrice > referencePrice) {
+        throw new BadRequestException(
+          `Le prix minimal (${minPrice}) ne peut pas être supérieur au prix de référence (${referencePrice}).`,
+        );
+      }
+      if (referencePrice > maxPrice) {
+        throw new BadRequestException(
+          `Le prix de référence (${referencePrice}) ne peut pas être supérieur au prix maximal (${maxPrice}).`,
+        );
+      }
+    }
   }
 
   /* ── Seed: Smartphone domain ────────────────────────────────── */
