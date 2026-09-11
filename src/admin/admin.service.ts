@@ -10,11 +10,15 @@ import {
   KYC_BUCKET,
   SupabaseStorageService,
 } from '../technician/supabase-storage.service.js';
+import { Role } from '../generated/prisma/enums.js';
 import type { KycStatus } from '../generated/prisma/enums.js';
 import type { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
 
 const ALLOWED_KYC_STATUSES: KycStatus[] = ['NOT_SUBMITTED', 'PENDING', 'VERIFIED', 'REJECTED'];
+
+/* Nombre max de comptes clients retournés par la recherche admin. */
+export const ADMIN_CLIENT_SEARCH_LIMIT = 20;
 
 /** Durée de validité des signed URLs de consultation KYC : 5 minutes. */
 export const KYC_SIGNED_URL_TTL_SECONDS = 300;
@@ -428,6 +432,45 @@ export class AdminService {
       events: demande.events.map(toApiEvent),
       createdAt: demande.createdAt.toISOString(),
       updatedAt: demande.updatedAt.toISOString(),
+    };
+  }
+
+  /* ── Rechargement des comptes de test (Sprint 8.7 — simulateur) ─ */
+  /* Recherche de comptes CLIENT pour la sélection dans le formulaire
+   * admin « Créditer un compte de test ». Lecture seule, réservée ADMIN :
+   * n'expose que l'identité minimale nécessaire à la sélection
+   * (id / prénom / nom / email) — jamais de données financières, KYC,
+   * ni autre donnée sensible. */
+  async searchClientUsers(query: string) {
+    const q = query.trim();
+    if (!q) return { items: [] };
+
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: Role.CLIENT,
+        OR: [
+          { firstName: { contains: q, mode: 'insensitive' } },
+          { lastName: { contains: q, mode: 'insensitive' } },
+          { email: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+      },
+      orderBy: { firstName: 'asc' },
+      take: ADMIN_CLIENT_SEARCH_LIMIT,
+    });
+
+    return {
+      items: users.map((user) => ({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+      })),
     };
   }
 }

@@ -52,4 +52,9 @@ export class AdminController {
   ) {
     return this.adminService.updateKycStatus(technicianId, user.id, dto);
   }
+
+  @Get('users/clients')
+  searchClients(@Query('q') q?: string) {
+    return this.adminService.searchClientUsers(q ?? '');
+  }
 }
