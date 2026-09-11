@@ -14,6 +14,7 @@ import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 import { FinancialService } from '../financial/financial.service.js';
+import { CLIENT_PLATFORM_FEE } from '../financial/financial-fees.js';
 import {
   buildNotification,
   createNotification,
@@ -188,6 +189,7 @@ export class CollaborationService {
       initialReferencePrice: number | null;
       initialTravelFee: number | null;
       initialServiceFee: number | null;
+      travelAmount: number | null;
       createdAt: Date;
     },
     userRole: string,
@@ -222,6 +224,15 @@ export class CollaborationService {
       // description pour retrouver le libellé du diagnostic / de l'intervention.
       catalogDiagnostic: quote.catalogDiagnostic,
       catalogIntervention: quote.catalogIntervention,
+      // Sprint 8.7-FIN-UI : décomposition autoritative du tarif. Le frontend
+      // n'additionne rien lui-même : `repair`/`travel` reflètent la règle
+      // repairAmount = amount − travelAmount, `clientFee` est la valeur du
+      // moteur (100 XAF), et `totalToDebit` = amount + clientFee correspond
+      // EXACTEMENT à ce qui sera débité à l'acceptation.
+      repair: quote.amount - (quote.travelAmount ?? quote.initialTravelFee ?? 0),
+      travel: quote.travelAmount ?? quote.initialTravelFee ?? 0,
+      clientFee: CLIENT_PLATFORM_FEE,
+      totalToDebit: quote.amount + CLIENT_PLATFORM_FEE,
       breakdown: quote.source === 'CATALOG'
         ? {
             referencePrice: quote.initialReferencePrice,
