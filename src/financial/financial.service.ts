@@ -841,10 +841,11 @@ export class FinancialService {
         reference: string | null;
         status: string | null;
         date: string | null;
-        client: { id: string; firstName: string; lastName: string } | null;
-        technician: { id: string; firstName: string; lastName: string } | null;
+        client: { id: string; firstName: string; lastName: string | null } | null;
+        technician: { id: string; firstName: string; lastName: string | null } | null;
         repair: number;
         travel: number;
+        clientDebit: number;
         clientFee: number;
         technicianFee: number;
         technicianNet: number;
@@ -880,6 +881,7 @@ export class FinancialService {
           technician: t.demande?.technician ?? null,
           repair: 0,
           travel: 0,
+          clientDebit: 0,
           clientFee: 0,
           technicianFee: 0,
           technicianNet: 0,
@@ -889,6 +891,8 @@ export class FinancialService {
         };
         if (t.type === 'TECHNICIAN_REPAIR_REVENUE') mission.repair += t.amount;
         if (t.type === 'TECHNICIAN_TRAVEL_REVENUE') mission.travel += t.amount;
+        if (t.type === 'CLIENT_MISSION_DEBIT' && t.direction === 'DEBIT')
+          mission.clientDebit += t.amount;
         if (t.type === 'CLIENT_FEE') mission.clientFee += t.amount;
         if (t.type === 'TECHNICIAN_FEE') mission.technicianFee += t.amount;
         mission.technicianNet = mission.repair + mission.travel - mission.technicianFee;
