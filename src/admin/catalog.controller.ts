@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -85,6 +86,11 @@ export class CatalogController {
     return this.catalog.listModels(brandId);
   }
 
+  @Get('models/:id')
+  getModel(@Param('id') id: string) {
+    return this.catalog.getModel(id);
+  }
+
   @Post('models')
   createModel(@Body() dto: CreateModelDto) {
     return this.catalog.createModel(dto);
@@ -98,8 +104,12 @@ export class CatalogController {
   /* ── Problem ────────────────────────────────────────────────── */
 
   @Get('domains/:domainId/problems')
-  listProblems(@Param('domainId') domainId: string) {
-    return this.catalog.listProblems(domainId);
+  listProblems(
+    @Param('domainId') domainId: string,
+    @Query('brandId') brandId?: string,
+    @Query('modelId') modelId?: string,
+  ) {
+    return this.catalog.listProblems(domainId, brandId, modelId);
   }
 
   @Get('problems/:id')

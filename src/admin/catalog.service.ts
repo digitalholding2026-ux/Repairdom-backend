@@ -38,6 +38,10 @@ export class CatalogService {
       where: { id },
       include: {
         problems: {
+          // Sprint 8.6.5 : seule la vue « générique » est exposée à la racine
+          // du domaine. Les problèmes rattachés à une marque/modèle sont
+          // visibles via leur page marque / modèle.
+          where: { brandId: null, modelId: null },
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
           include: { _count: { select: { diagnostics: true } } },
         },
@@ -165,6 +169,17 @@ export class CatalogService {
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       include: { _count: { select: { problems: true } } },
     });
+  }
+
+  async getModel(id: string) {
+    const model = await this.prisma.deviceModel.findUnique({
+      where: { id },
+      include: {
+        brand: { include: { domain: true } },
+      },
+    });
+    if (!model) throw new NotFoundException('Modèle introuvable.');
+    return model;
   }
 
   async createModel(dto: CreateModelDto) {
@@ -356,10 +371,23 @@ export class CatalogService {
       dto.modelId ?? undefined,
     );
     const slug = dto.slug.trim().toLowerCase();
+    // Sprint 8.6.5 — unicité scopée par (domaine, marque, modèle, slug) :
+    // deux problèmes de même libellé sur des modèles différents sont autorisés
+    // uniquement s'ils ont des scopes différents. Le scope est exactement
+    // celui de la création (générique si brandId/modelId absents).
     const existing = await this.prisma.problem.findFirst({
-      where: { domainId: dto.domainId, slug },
+      where: {
+        domainId: dto.domainId,
+        brandId: dto.brandId ?? null,
+        modelId: dto.modelId ?? null,
+        slug,
+      },
     });
-    if (existing) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
+    if (existing) {
+      throw new BadRequestException(
+        'Ce slug existe déjà pour ce périmètre (même domaine, marque et modèle).',
+      );
+    }
     return this.prisma.problem.create({
       data: {
         domainId: dto.domainId,
@@ -386,10 +414,24 @@ export class CatalogService {
     }
     if (dto.slug) {
       const slug = dto.slug.trim().toLowerCase();
+      // Sprint 8.6.5 — l'unicité du slug est évaluée sur le scope EFFECTIF du
+      // problème après mise à jour (domaine + marque + modèle + slug).
+      const effectiveBrandId = dto.brandId === undefined ? problem.brandId : (dto.brandId ?? null);
+      const effectiveModelId = dto.modelId === undefined ? problem.modelId : (dto.modelId ?? null);
       const conflict = await this.prisma.problem.findFirst({
-        where: { domainId: problem.domainId, slug, NOT: { id } },
+        where: {
+          domainId: problem.domainId,
+          brandId: effectiveBrandId,
+          modelId: effectiveModelId,
+          slug,
+          NOT: { id },
+        },
       });
-      if (conflict) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
+      if (conflict) {
+        throw new BadRequestException(
+          'Ce slug existe déjà pour ce périmètre (même domaine, marque et modèle).',
+        );
+      }
     }
     return this.prisma.problem.update({
       where: { id },
@@ -1128,17 +1170,27 @@ export class CatalogService {
 
     let problemSort = 0;
     for (const p of problems) {
-      const problem = await this.prisma.problem.upsert({
-        where: { domainId_slug: { domainId, slug: p.slug } },
-        create: {
-          domainId,
-          name: p.name,
-          slug: p.slug,
-          description: p.description,
-          sortOrder: problemSort++,
-        },
-        update: { name: p.name, sortOrder: problemSort++ },
+      // Sprint 8.6.5 — la clé unique `domainId_slug` a été remplacée par un
+      // index fonctionnel scopé par marque/modèle (voir migration
+      // problem_scoped_slug). Le seed recherche donc le problème générique
+      // (ni marque ni modèle) par (domaine, slug) avant de créer/mettre à jour.
+      const existingProblem = await this.prisma.problem.findFirst({
+        where: { domainId, slug: p.slug, brandId: null, modelId: null },
       });
+      const problem = existingProblem
+        ? await this.prisma.problem.update({
+            where: { id: existingProblem.id },
+            data: { name: p.name, sortOrder: problemSort++ },
+          })
+        : await this.prisma.problem.create({
+            data: {
+              domainId,
+              name: p.name,
+              slug: p.slug,
+              description: p.description,
+              sortOrder: problemSort++,
+            },
+          });
 
       let diagSort = 0;
       for (const d of p.diags) {

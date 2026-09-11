@@ -39,6 +39,11 @@ export class AdminController {
     return this.adminService.getKycDocumentUrl(technicianId, documentId);
   }
 
+  @Get('demandes/reference/:reference')
+  getDemandeByReference(@Param('reference') reference: string) {
+    return this.adminService.getDemandeByReference(reference);
+  }
+
   @Patch('kyc/:technicianId/status')
   updateKycStatus(
     @Param('technicianId') technicianId: string,

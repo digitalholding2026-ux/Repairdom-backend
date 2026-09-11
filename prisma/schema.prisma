@@ -466,8 +466,14 @@ model Problem {
   diagnostics CatalogDiagnostic[]
   demandes    Demande[]
 
-  @@unique([domainId, slug])
+  // L'unicité effective du slug est scopée par (domainId, brandId, modelId) :
+  // garantie par un INDEX UNIQUE FONCTIONNEL créé manuellement en migration
+  // (Prisma n'exprime pas les index fonctionnels) :
+  //   UNIQUE (domainId, COALESCE(brandId,''), COALESCE(modelId,''), slug)
+  // La même contrainte est vérifiée au niveau applicatif dans
+  // catalog.service.ts (createProblem / updateProblem).
   @@index([domainId])
+  @@index([domainId, slug])
   @@index([brandId])
   @@index([modelId])
   @@index([isActive])
