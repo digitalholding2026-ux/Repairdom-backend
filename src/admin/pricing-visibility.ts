@@ -23,6 +23,7 @@ export interface PricingRaw {
     id: string;
     pricingId: string;
     adminId: string;
+    admin: { id: string; firstName: string; lastName: string | null } | null;
     previousValues: unknown;
     newValues: unknown;
     reason: string | null;
@@ -44,7 +45,16 @@ export function toAdminPricing(pricing: PricingRaw) {
     isActive: pricing.isActive,
     createdAt: pricing.createdAt,
     updatedAt: pricing.updatedAt,
-    history: pricing.history ?? [],
+    history: (pricing.history ?? []).map((h) => ({
+      id: h.id,
+      pricingId: h.pricingId,
+      adminId: h.adminId,
+      admin: h.admin ?? null,
+      previousValues: h.previousValues,
+      newValues: h.newValues,
+      reason: h.reason,
+      createdAt: h.createdAt,
+    })),
   };
 }
 

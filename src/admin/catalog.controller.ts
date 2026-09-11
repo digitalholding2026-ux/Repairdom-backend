@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -196,6 +197,12 @@ export class CatalogController {
 
   @Post('seed/smartphone')
   seedSmartphone() {
+    // Sprint 8.7 — le seed est un outil de développement/initialisation
+    // contrôlé : il ne doit jamais être déclenchable en production (il peut
+    // autrement approfondir le référentiel sans validation administrée).
+    if (process.env.NODE_ENV === 'production') {
+      throw new ForbiddenException('Le seed n\'est pas disponible en production.');
+    }
     return this.catalog.seedSmartphoneDomain();
   }
 }

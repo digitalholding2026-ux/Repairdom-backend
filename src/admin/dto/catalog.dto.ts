@@ -419,6 +419,10 @@ export class CreatePricingDto {
   @IsString()
   @MaxLength(30)
   priceMode?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 export class UpdatePricingDto {

@@ -624,6 +624,11 @@ export class CatalogService {
         history: {
           orderBy: { createdAt: 'desc' },
           take: 50,
+          include: {
+            // Sprint 8.7 : le nom de l'admin auteur est exposé dans l'historique
+            // (lecture seule, réservé ADMIN via le bundle admin catalogue).
+            admin: { select: { id: true, firstName: true, lastName: true } },
+          },
         },
       },
     });
@@ -634,7 +639,7 @@ export class CatalogService {
     };
   }
 
-  async createPricing(dto: CreatePricingDto, _adminId: string) {
+  async createPricing(dto: CreatePricingDto, adminId: string) {
     const intervention = await this.prisma.catalogIntervention.findUnique({
       where: { id: dto.interventionId },
     });
@@ -652,9 +657,35 @@ export class CatalogService {
       serviceFee: dto.serviceFee ?? null,
       currency: dto.currency?.trim().toUpperCase() || 'XAF',
       priceMode: dto.priceMode?.trim() || 'fixed',
+      isActive: dto.isActive ?? true,
     };
     this.assertPricingValid(data);
-    return this.prisma.pricing.create({ data });
+    // Sprint 8.7 — la création initiale est journalisée dans PricingHistory
+    // (même transaction) : chaque tarif dispose d'un historique exploitable
+    // dès son origine, sans système d'historique parallèle. PricingHistory est
+    // immuable : aucune entrée n'est ensuite modifiée ni supprimée.
+    return this.prisma.$transaction(async (tx) => {
+      const pricing = await tx.pricing.create({ data });
+      await tx.pricingHistory.create({
+        data: {
+          pricingId: pricing.id,
+          adminId,
+          previousValues: {
+            minPrice: null,
+            referencePrice: null,
+            maxPrice: null,
+            travelFee: null,
+            serviceFee: null,
+            currency: null,
+            priceMode: null,
+            isActive: null,
+          },
+          newValues: data,
+          reason: 'Création initiale',
+        },
+      });
+      return pricing;
+    });
   }
 
   async updatePricing(interventionId: string, dto: UpdatePricingDto, adminId: string) {
@@ -736,6 +767,21 @@ export class CatalogService {
     serviceFee: number | null;
   }) {
     const { minPrice, referencePrice, maxPrice, travelFee, serviceFee } = input;
+
+    // Sprint 8.7 — un tarif « tout vide » n'a aucun sens métier : interdire la
+    // création/modification d'une ligne de prix sans le moindre montant.
+    if (
+      minPrice === null &&
+      referencePrice === null &&
+      maxPrice === null &&
+      travelFee === null &&
+      serviceFee === null
+    ) {
+      throw new BadRequestException(
+        'Le tarif doit comporter au moins un montant (prix min, prix de référence, prix max, frais de déplacement ou frais RepairDom).',
+      );
+    }
+
     const negative: string[] = [];
     if (minPrice !== null && minPrice < 0) negative.push(`minPrice (${minPrice})`);
     if (referencePrice !== null && referencePrice < 0) negative.push(`referencePrice (${referencePrice})`);
@@ -747,17 +793,26 @@ export class CatalogService {
         `Les montants du tarif ne peuvent pas être négatifs : ${negative.join(', ')}.`,
       );
     }
-    if (minPrice !== null && referencePrice !== null && maxPrice !== null) {
-      if (minPrice > referencePrice) {
-        throw new BadRequestException(
-          `Le prix minimal (${minPrice}) ne peut pas être supérieur au prix de référence (${referencePrice}).`,
-        );
-      }
-      if (referencePrice > maxPrice) {
-        throw new BadRequestException(
-          `Le prix de référence (${referencePrice}) ne peut pas être supérieur au prix maximal (${maxPrice}).`,
-        );
-      }
+
+    // Sprint 8.7 — vérifications par paires, indépendantes de la présence de la
+    // troisième borne : les valeurs null restent valides (cotation fixe
+    // lorsqu'aucune fourchette n'est renseignée). Exemples valides :
+    //   30000 / 35000 / 40000 ; null / 35000 / 40000 ;
+    //   30000 / 35000 / null ; 30000 / null / 40000.
+    if (minPrice !== null && referencePrice !== null && minPrice > referencePrice) {
+      throw new BadRequestException(
+        `Le prix minimal (${minPrice}) ne peut pas être supérieur au prix de référence (${referencePrice}).`,
+      );
+    }
+    if (referencePrice !== null && maxPrice !== null && referencePrice > maxPrice) {
+      throw new BadRequestException(
+        `Le prix de référence (${referencePrice}) ne peut pas être supérieur au prix maximal (${maxPrice}).`,
+      );
+    }
+    if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+      throw new BadRequestException(
+        `Le prix minimal (${minPrice}) ne peut pas être supérieur au prix maximal (${maxPrice}).`,
+      );
     }
   }
 
@@ -857,7 +912,9 @@ export class CatalogService {
           slug: brand.slug,
           sortOrder: brandSort++,
         },
-        update: { name: brand.name, sortOrder: brandSort++ },
+        // Sprint 8.7 — seed non destructif : ne jamais écraser les données
+        // métier déjà administrées (libellés, descriptions, activations, tri).
+        update: {},
       });
       let modelSort = 0;
       for (const model of brand.models) {
@@ -869,7 +926,7 @@ export class CatalogService {
             slug: model.slug,
             sortOrder: modelSort++,
           },
-          update: { name: model.name, sortOrder: modelSort++ },
+          update: {},
         });
       }
     }
@@ -1178,10 +1235,7 @@ export class CatalogService {
         where: { domainId, slug: p.slug, brandId: null, modelId: null },
       });
       const problem = existingProblem
-        ? await this.prisma.problem.update({
-            where: { id: existingProblem.id },
-            data: { name: p.name, sortOrder: problemSort++ },
-          })
+        ? existingProblem
         : await this.prisma.problem.create({
             data: {
               domainId,
@@ -1205,7 +1259,8 @@ export class CatalogService {
             estimatedTime: d.estimatedTime,
             sortOrder: diagSort++,
           },
-          update: { name: d.name, sortOrder: diagSort++ },
+          // Sprint 8.7 — seed non destructif.
+          update: {},
         });
 
         let intervSort = 0;
@@ -1223,7 +1278,8 @@ export class CatalogService {
               partsNote: i.partsNote ?? null,
               sortOrder: intervSort++,
             },
-            update: { name: i.name, sortOrder: intervSort++ },
+            // Sprint 8.7 — seed non destructif.
+            update: {},
           });
 
           if (i.pricing) {

@@ -644,6 +644,15 @@ export class CollaborationService {
       if (!pricing || !pricing.isActive) {
         throw new BadRequestException('Ce diagnostic n\'a pas de tarif actif dans le catalogue.');
       }
+      // Sprint 8.7 — défense en profondeur : un tarif « exploitable » exige un
+      // prix de référence. On refuse la cotation automatique plutôt que
+      // d'émettre un devis à 0 XAF ou de prendre minPrice/maxPrice en fallback
+      // (le backend reste l'autorité, quel que soit le comportement de l'UI).
+      if (pricing.referencePrice === null) {
+        throw new BadRequestException(
+          'Ce tarif du catalogue ne comporte pas de prix de référence : la cotation automatique est impossible.',
+        );
+      }
 
       const content =
         (dto.content?.trim() ??
