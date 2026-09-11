@@ -23,7 +23,7 @@ export interface PricingRaw {
     id: string;
     pricingId: string;
     adminId: string;
-    admin: { id: string; firstName: string; lastName: string | null } | null;
+    user: { id: string; firstName: string; lastName: string | null } | null;
     previousValues: unknown;
     newValues: unknown;
     reason: string | null;
@@ -49,7 +49,9 @@ export function toAdminPricing(pricing: PricingRaw) {
       id: h.id,
       pricingId: h.pricingId,
       adminId: h.adminId,
-      admin: h.admin ?? null,
+      // La relation Prisma réelle s'appelle `user` ; le contrat API de
+      // l'admin expose l'auteur sous le nom `admin` (inchangé).
+      admin: h.user ?? null,
       previousValues: h.previousValues,
       newValues: h.newValues,
       reason: h.reason,

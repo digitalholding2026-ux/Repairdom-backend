@@ -627,7 +627,9 @@ export class CatalogService {
           include: {
             // Sprint 8.7 : le nom de l'admin auteur est exposé dans l'historique
             // (lecture seule, réservé ADMIN via le bundle admin catalogue).
-            admin: { select: { id: true, firstName: true, lastName: true } },
+            // NB : la relation réelle PricingHistory → User est nommée `user`
+            // dans schema.prisma (le serializer l'expose sous le nom `admin`).
+            user: { select: { id: true, firstName: true, lastName: true } },
           },
         },
       },
