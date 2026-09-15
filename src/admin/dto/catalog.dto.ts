@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min, ValidateIf } from 'class-validator';
 
 /* ── ServiceDomain ────────────────────────────────────────────── */
 
@@ -426,30 +426,39 @@ export class CreatePricingDto {
 }
 
 export class UpdatePricingDto {
+  // Les champs tarifaires acceptent `null` pour « effacer » une borne ou un
+  // frais (ex. bascule d'une fourchette vers une cotation fixe). La valence
+  // finale (non-négatifs, min <= reference <= max) est garantie par
+  // CatalogService.assertPricingValid sur la valeur fusionnée.
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsInt()
   @Min(0)
-  minPrice?: number;
+  minPrice?: number | null;
 
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsInt()
   @Min(0)
-  referencePrice?: number;
+  referencePrice?: number | null;
 
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsInt()
   @Min(0)
-  maxPrice?: number;
+  maxPrice?: number | null;
 
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsInt()
   @Min(0)
-  travelFee?: number;
+  travelFee?: number | null;
 
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsInt()
   @Min(0)
-  serviceFee?: number;
+  serviceFee?: number | null;
 
   @IsOptional()
   @IsString()
