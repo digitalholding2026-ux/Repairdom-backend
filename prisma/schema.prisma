@@ -139,7 +139,11 @@ model User {
   firstName           String
   lastName            String?
   phone               String?
+  // Sprint 8.7 — `city` texte libre conservé (affichage/transition) ;
+  // `cityId` référence structurée nullable pendant la transition.
   city                String?
+  cityId              String?
+  cityRef             ServiceCity? @relation("CityClients", fields: [cityId], references: [id], onDelete: SetNull)
   address             String?
   whatsapp            String?
   avatarUrl           String?
@@ -179,6 +183,54 @@ model ServiceCity {
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Sprint 8.7 — références structurées vers les entités qui utilisent la ville.
+  // ON DELETE SET NULL : la suppression d'une ville casse la FK mais JAMAIS les
+  // chaînes textuelles historiques (User.city / Demande.city restent intactes).
+  zones       Zone[]               @relation("CityZones")
+  clients     User[]               @relation("CityClients")
+  technicians TechnicianProfile[]  @relation("CityTechnicians")
+  demandes    Demande[]            @relation("CityDemandes")
+}
+
+// Sprint 8.7 — Zones (quartiers/secteurs) rattachées à une ServiceCity.
+// Référentiel administrable via l'API admin ; alimenté progressivement (aucun
+// quartier n'est inventé par le système). Le slug est unique au sein de la
+// ville pour éviter les collisions entre villes différentes.
+model Zone {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  cityId    String
+  name      String
+  slug      String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  city     ServiceCity @relation("CityZones", fields: [cityId], references: [id], onDelete: Cascade)
+  coverages TechnicianZoneCoverage[]
+
+  @@unique([cityId, slug])
+  @@index([cityId])
+  @@index([isActive])
+}
+
+// Sprint 8.7 — Couverture géographique d'un technicien (N ↔ N).
+// Un technicien couvre plusieurs zones ; une zone peut être couverte par
+// plusieurs techniciens. Table de jointure explicite : le matching
+// géographique s'appuiera dessus dans un sprint dédié (celui-ci ne fait que
+// poser la structure, sans toucher au matching textuel existant).
+model TechnicianZoneCoverage {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
+  technicianProfileId String
+  zoneId              String
+  createdAt           DateTime @default(now())
+
+  technicianProfile TechnicianProfile @relation(fields: [technicianProfileId], references: [id], onDelete: Cascade)
+  zone              Zone               @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([technicianProfileId, zoneId])
+  @@index([zoneId])
 }
 
 model Demande {
@@ -187,7 +239,13 @@ model Demande {
   status      DemandeStatus @default(SUBMITTED)
   category    String
   description String
+  // Sprint 8.7 — `city` reste le snapshot texte historique de la mission
+  // (JAMAIS supprimé ni rendu optionnel) ; `cityId` est une référence
+  // optionnelle vers ServiceCity. Un ON DELETE SET NULL garantit qu'une ville
+  // supprimée/modifiée du référentiel ne casse jamais l'historique.
   city        String
+  cityId      String?
+  cityRef     ServiceCity?     @relation("CityDemandes", fields: [cityId], references: [id], onDelete: SetNull)
   neighborhood String?
   address     String?
   landmark    String?
@@ -272,7 +330,11 @@ model TechnicianProfile {
   id         String   @id @default(dbgenerated("gen_random_uuid()"))
   userId     String   @unique
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Sprint 8.7 — `city` texte libre conservé (donnée existante/affichable) ;
+  // `cityId` référence structurée nullable. `zoneCoverages` = couverture N↔N.
   city       String
+  cityId     String?
+  cityRef    ServiceCity? @relation("CityTechnicians", fields: [cityId], references: [id], onDelete: SetNull)
   categories String[]
   isAvailable Boolean @default(false)
   avatarUrl  String?
@@ -284,6 +346,7 @@ model TechnicianProfile {
   kycRejectionReason String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+  zoneCoverages TechnicianZoneCoverage[]
 }
 
 model KycDocument {

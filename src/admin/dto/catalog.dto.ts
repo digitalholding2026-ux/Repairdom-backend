@@ -521,3 +521,48 @@ export class UpdateCityDto {
   @Min(0)
   sortOrder?: number;
 }
+
+/* ── Zone (quartiers/secteurs d'une ServiceCity) ────────────────── */
+
+export class CreateZoneDto {
+  @IsString()
+  cityId: string;
+
+  @IsString()
+  @MaxLength(150)
+  name: string;
+
+  @IsString()
+  @MaxLength(150)
+  slug: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateZoneDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  slug?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}

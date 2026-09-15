@@ -32,6 +32,8 @@ import {
   UpdateModelDto,
   CreateCityDto,
   UpdateCityDto,
+  CreateZoneDto,
+  UpdateZoneDto,
 } from './dto/catalog.dto.js';
 
 @Controller('admin/catalog')
@@ -210,6 +212,23 @@ export class CatalogController {
   @Patch('cities/:id')
   updateCity(@Param('id') id: string, @Body() dto: UpdateCityDto) {
     return this.catalog.updateCity(id, dto);
+  }
+
+  /* ── Zone (quartiers/secteurs d'une ville) ───────────────────── */
+
+  @Get('cities/:cityId/zones')
+  listZones(@Param('cityId') cityId: string) {
+    return this.catalog.listZones(cityId);
+  }
+
+  @Post('zones')
+  createZone(@Body() dto: CreateZoneDto) {
+    return this.catalog.createZone(dto);
+  }
+
+  @Patch('zones/:id')
+  updateZone(@Param('id') id: string, @Body() dto: UpdateZoneDto) {
+    return this.catalog.updateZone(id, dto);
   }
 
   /* ── Seed ───────────────────────────────────────────────────── */

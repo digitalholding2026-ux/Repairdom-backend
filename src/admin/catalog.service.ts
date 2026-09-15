@@ -18,6 +18,8 @@ import type {
   UpdateModelDto,
   CreateCityDto,
   UpdateCityDto,
+  CreateZoneDto,
+  UpdateZoneDto,
 } from './dto/catalog.dto.js';
 
 @Injectable()
@@ -1317,12 +1319,22 @@ export class CatalogService {
 
   /* ── ServiceCity (zones de service) ─────────────────────────── */
 
-  /** Vue publique : uniquement les villes actives, triées (ordre admin puis nom). */
+  /** Vue publique : uniquement les villes actives, triées (ordre admin puis nom),
+   *  et leurs zones actives (Sprint 8.7 — extension compatible : le frontend
+   *  continue de lire id/name, `zones` est un ajout). */
   async listPublicCities() {
     return this.prisma.serviceCity.findMany({
       where: { isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        zones: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          select: { id: true, name: true },
+        },
+      },
     });
   }
 
@@ -1358,6 +1370,60 @@ export class CatalogService {
       if (conflict) throw new BadRequestException('Ce slug existe déjà.');
     }
     return this.prisma.serviceCity.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+  }
+
+  /* ── Zone (quartiers/secteurs d'une ville) ───────────────────── */
+
+  /** Vue admin : toutes les zones d'une ville (actives ou non). */
+  async listZones(cityId: string) {
+    const city = await this.prisma.serviceCity.findUnique({ where: { id: cityId } });
+    if (!city) throw new NotFoundException('Ville introuvable.');
+    return this.prisma.zone.findMany({
+      where: { cityId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+  }
+
+  async createZone(dto: CreateZoneDto) {
+    const city = await this.prisma.serviceCity.findUnique({ where: { id: dto.cityId } });
+    if (!city) throw new NotFoundException('Ville introuvable.');
+    const slug = dto.slug.trim().toLowerCase();
+    // Le slug est unique AU SEIN de la ville (même design que brand/modèle) :
+    // deux villes différentes peuvent avoir une « centre-ville » homonyme.
+    const existing = await this.prisma.zone.findUnique({
+      where: { cityId_slug: { cityId: dto.cityId, slug } },
+    });
+    if (existing) throw new BadRequestException('Ce slug existe déjà pour cette ville.');
+    return this.prisma.zone.create({
+      data: {
+        cityId: dto.cityId,
+        name: dto.name.trim(),
+        slug,
+        isActive: dto.isActive ?? true,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+  }
+
+  async updateZone(id: string, dto: UpdateZoneDto) {
+    const zone = await this.prisma.zone.findUnique({ where: { id } });
+    if (!zone) throw new NotFoundException('Zone introuvable.');
+    if (dto.slug) {
+      const slug = dto.slug.trim().toLowerCase();
+      const conflict = await this.prisma.zone.findFirst({
+        where: { cityId: zone.cityId, slug, NOT: { id } },
+      });
+      if (conflict) throw new BadRequestException('Ce slug existe déjà pour cette ville.');
+    }
+    return this.prisma.zone.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
