@@ -496,12 +496,12 @@ export class TechnicianService {
       };
     }
 
-    const isCityMatch = isCityMatch(demande.cityId, demande.city, profile.cityId, profile.city);
+    const cityMatches = isCityMatch(demande.cityId, demande.city, profile.cityId, profile.city);
     const isCategoryMatch = profile.categories.some(
       (c) => normalizeCategory(c) === normalizeCategory(demande.category),
     );
     const isAvailable =
-      isMatchingStatus(demande.status) && isCityMatch && isCategoryMatch && !demande.technicianId;
+      isMatchingStatus(demande.status) && cityMatches && isCategoryMatch && !demande.technicianId;
 
     if (!isAvailable) {
       throw new NotFoundException('Demande introuvable.');
@@ -523,12 +523,12 @@ export class TechnicianService {
       const current = await tx.demande.findUnique({ where: { id: demandeId } });
       if (!current) return null;
 
-      const isCityMatch = isCityMatch(current.cityId, current.city, profile.cityId, profile.city);
+      const cityMatches = isCityMatch(current.cityId, current.city, profile.cityId, profile.city);
       const isCategoryMatch = profile.categories.some(
         (c) => normalizeCategory(c) === normalizeCategory(current.category),
       );
       const isEligible =
-        isMatchingStatus(current.status) && isCityMatch && isCategoryMatch && !current.technicianId;
+        isMatchingStatus(current.status) && cityMatches && isCategoryMatch && !current.technicianId;
       if (!isEligible) return null;
 
       const updated = await tx.demande.updateMany({
