@@ -54,6 +54,18 @@ function normalizeCategory(value: string): string {
   return normalizeValue(value);
 }
 
+function isCityMatch(
+  demandeCityId: string | null,
+  demandeCity: string,
+  technicianCityId: string | null,
+  technicianCity: string,
+): boolean {
+  if (demandeCityId && technicianCityId) {
+    return demandeCityId === technicianCityId;
+  }
+  return normalizeCity(demandeCity) === normalizeCity(technicianCity);
+}
+
 export interface PublicTechnicianProfile {
   id: string;
   firstName: string;
@@ -391,7 +403,6 @@ export class TechnicianService {
 
   async listAvailable(userId: string) {
     const profile = await this.requireProfile(userId);
-    const normalizedCity = normalizeCity(profile.city);
     const normalizedCategories = profile.categories.map((c) => normalizeCategory(c));
     const demandes = await this.prisma.demande.findMany({
       where: {
@@ -405,7 +416,7 @@ export class TechnicianService {
     return demandes
       .filter(
         (d) =>
-          normalizeCity(d.city) === normalizedCity &&
+          isCityMatch(d.cityId, d.city, profile.cityId, profile.city) &&
           normalizedCategories.includes(normalizeCategory(d.category)),
       )
       .sort((a, b) => {
@@ -485,7 +496,7 @@ export class TechnicianService {
       };
     }
 
-    const isCityMatch = normalizeCity(demande.city) === normalizeCity(profile.city);
+    const isCityMatch = isCityMatch(demande.cityId, demande.city, profile.cityId, profile.city);
     const isCategoryMatch = profile.categories.some(
       (c) => normalizeCategory(c) === normalizeCategory(demande.category),
     );
@@ -512,7 +523,7 @@ export class TechnicianService {
       const current = await tx.demande.findUnique({ where: { id: demandeId } });
       if (!current) return null;
 
-      const isCityMatch = normalizeCity(current.city) === normalizeCity(profile.city);
+      const isCityMatch = isCityMatch(current.cityId, current.city, profile.cityId, profile.city);
       const isCategoryMatch = profile.categories.some(
         (c) => normalizeCategory(c) === normalizeCategory(current.category),
       );
