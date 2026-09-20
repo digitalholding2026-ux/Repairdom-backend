@@ -33,12 +33,14 @@ export class EmailService {
     const apiKey = this.config.get<string>('RESEND_API_KEY');
     this.apiKey = apiKey && apiKey.trim() ? apiKey : null;
     // Adresse d'expédition : EMAIL_FROM prime, puis l'ancien SMTP_FROM
-    // (compatibilité), puis le défaut. Doit correspondre à un domaine
-    // vérifié dans Resend, sinon l'API rejette l'envoi (voir logs).
+    // (compatibilité), puis le défaut de premier fonctionnement Resend
+    // (`onboarding@resend.dev`, expéditeur de test officiel utilisable sans
+    // domaine vérifié). Pour l'adresse définitive, définir EMAIL_FROM vers
+    // un domaine vérifié dans Resend, sans changer de code.
     this.from =
       this.config.get<string>('EMAIL_FROM') ??
       this.config.get<string>('SMTP_FROM') ??
-      'Relio <noreply@repairdom.app>';
+      'Relio <onboarding@resend.dev>';
     if (!this.apiKey) {
       this.logger.warn(
         'RESEND_API_KEY non définie : les e-mails (vérification de compte) ne seront pas envoyés. ' +
