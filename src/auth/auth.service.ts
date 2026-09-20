@@ -23,6 +23,7 @@ import {
 import type { RegisterDto } from './dto/register.dto.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { UpdateMeDto } from './dto/update-me.dto.js';
+import { resolveCityId } from '../geo/city-reference.js';
 import { EmailService } from './email.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -132,6 +133,12 @@ export class AuthService {
 
     const passwordHash = await hashPassword(dto.password);
 
+    // Sprint 8.8.2 (règle D) — résolution non bloquante du texte de ville vers
+    // le référentiel actif. Correspondance unique → cityId ; sinon null, sans
+    // rejeter l'inscription et sans modifier le texte saisi.
+    const cityText = dto.city?.trim() || null;
+    const cityId = await resolveCityId(this.prisma, cityText);
+
     // Comptes CLIENT : vérification email obligatoire avant premier accès.
     // Les techniciens sont vérifiés d'office (parcours approuvé par l'admin).
     const requireEmailVerification = !isTechnician;
@@ -147,7 +154,8 @@ export class AuthService {
             lastName: dto.lastName.trim(),
             phone: dto.phone ?? null,
             whatsapp: dto.whatsapp ?? null,
-            city: dto.city?.trim() ?? null,
+            city: cityText,
+            cityId,
             address: dto.address?.trim() ?? null,
             email: dto.email.toLowerCase().trim(),
             passwordHash,
@@ -165,6 +173,7 @@ export class AuthService {
             data: {
               userId: created.id,
               city: dto.city!.trim(),
+              cityId,
               categories: dto.categories!,
             },
           });
@@ -254,6 +263,12 @@ export class AuthService {
   async updateMe(id: string, dto: UpdateMeDto): Promise<AuthUser> {
     const found = await this.prisma.user.findUnique({ where: { id } });
     if (!found) throw new NotFoundException('Compte introuvable.');
+    // Sprint 8.8.2 (règle D) — la ville textuelle reste la donnée saisie ;
+    // `cityId` est (re)résolu à chaque modification : texte non résolu ou vide
+    // → null, sans rejeter la mise à jour (un texte modifié doit effacer un
+    // `cityId` devenu obsolète plutôt que de le conserver).
+    const cityText = dto.city !== undefined ? dto.city?.trim() || null : undefined;
+    const cityId = dto.city !== undefined ? await resolveCityId(this.prisma, cityText) : undefined;
     const updated = await this.prisma.user.update({
       where: { id },
       data: {
@@ -265,7 +280,7 @@ export class AuthService {
         ...(dto.whatsapp !== undefined
           ? { whatsapp: dto.whatsapp?.trim() || null }
           : {}),
-        ...(dto.city !== undefined ? { city: dto.city?.trim() || null } : {}),
+        ...(dto.city !== undefined ? { city: cityText, cityId } : {}),
         ...(dto.address !== undefined ? { address: dto.address?.trim() || null } : {}),
       },
     });

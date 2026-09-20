@@ -18,6 +18,8 @@ import {
 } from '../mission-events/mission-events.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
+import { resolveCityId } from '../geo/city-reference.js';
+import { filterActiveCoverageZoneIdsForCity, isZoneMatch } from '../geo/geo-matching.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -66,6 +68,35 @@ function isCityMatch(
   return normalizeCity(demandeCity) === normalizeCity(technicianCity);
 }
 
+/* Sprint 8.8.2 (règles A + B) — éligibilité géographique complète, centrale
+ * et UNIQUE : les trois parcours (recherche, détail, acceptation) l'utilisent
+ * telle quelle, sans variante locale.
+ * 1. Verrou ville INCHANGÉ (`isCityMatch`, 8.8.1) : une zone commune ne peut
+ *    jamais compenser deux `cityId` renseignés et différents.
+ * 2. Zone (`isZoneMatch`, règle B) évaluée UNIQUEMENT si la ville matche. */
+export interface GeoEligibilityInput {
+  demandeCityId: string | null;
+  demandeCity: string;
+  technicianCityId: string | null;
+  technicianCity: string;
+  demandeZoneId: string | null;
+  technicianActiveZoneIds: readonly string[];
+}
+
+export function isGeoEligible(input: GeoEligibilityInput): boolean {
+  if (
+    !isCityMatch(
+      input.demandeCityId,
+      input.demandeCity,
+      input.technicianCityId,
+      input.technicianCity,
+    )
+  ) {
+    return false;
+  }
+  return isZoneMatch(input.demandeZoneId, input.technicianActiveZoneIds);
+}
+
 export interface PublicTechnicianProfile {
   id: string;
   firstName: string;
@@ -73,6 +104,8 @@ export interface PublicTechnicianProfile {
   phone: string | null;
   avatarUrl: string | null;
   city: string;
+  // Sprint 8.8.2 — la couverture reste une donnée personnelle (GET
+  // /technician/coverage) : le profil public n'expose ni `cityId` ni zones.
   categories: string[];
   specialties: string[];
   bio: string | null;
@@ -88,6 +121,7 @@ interface PrivateProfileRow {
   id: string;
   userId: string;
   city: string;
+  cityId: string | null;
   categories: string[];
   isAvailable: boolean;
   avatarUrl: string | null;
@@ -110,9 +144,13 @@ export class TechnicianService {
   ) {}
 
   /** Contexte appareil (catalogue, Sprint 8.1) sur les demandes techniques :
-   *  à rejoindre à tout `include`/`select` de demande côté technicien. */
+   *  à rejoindre à tout `include`/`select` de demande côté technicien.
+   *  Sprint 8.8.2 : la zone et la ville structurées sont jointes pour le
+   *  matching et la sérialisation (sans exposer d'adresse privée). */
   private readonly deviceInclude = {
     medias: true,
+    zoneRef: { select: { id: true, name: true, slug: true, cityId: true } },
+    cityRef: { select: { id: true, name: true, slug: true } },
     domain: { select: { id: true, name: true, slug: true } },
     brand: { select: { id: true, name: true, slug: true } },
     model: { select: { id: true, name: true, slug: true } },
@@ -146,10 +184,14 @@ export class TechnicianService {
           'Profil technicien incomplet. Veuillez compléter votre profil.',
         );
       }
+      // Sprint 8.8.2 (règle D) — résolution non bloquante : correspondance
+      // unique active → cityId, sinon null, sans modifier le texte saisi.
+      const cityId = await resolveCityId(this.prisma, dto.city.trim());
       profile = await this.prisma.technicianProfile.create({
         data: {
           userId,
           city: dto.city.trim(),
+          cityId,
           categories: dto.categories,
           isAvailable: dto.isAvailable ?? false,
           avatarUrl: dto.avatarUrl ?? null,
@@ -161,10 +203,14 @@ export class TechnicianService {
         include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
       });
     } else {
+      // Un texte de ville modifié invalide le `cityId` précédent : il est
+      // re-résolu (ou remis à null) au lieu d'être conservé tel quel.
+      const cityId =
+        dto.city !== undefined ? await resolveCityId(this.prisma, dto.city.trim()) : undefined;
       profile = await this.prisma.technicianProfile.update({
         where: { userId },
         data: {
-          ...(dto.city !== undefined ? { city: dto.city.trim() } : {}),
+          ...(dto.city !== undefined ? { city: dto.city.trim(), cityId } : {}),
           ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
           ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
           ...(dto.avatarUrl !== undefined ? { avatarUrl: dto.avatarUrl } : {}),
@@ -179,6 +225,122 @@ export class TechnicianService {
 
     const completedInterventions = await this.completedInterventionsCount(userId);
     return this.serializePrivate(profile, completedInterventions);
+  }
+
+  /* Sprint 8.8.2 — couvertures géographiques du technicien connecté.
+   * Lecture strictement personnelle : aucun identifiant de tiers n'est
+   * accepté, l'utilisateur ne voit que sa propre couverture. */
+  async getCoverage(userId: string) {
+    const profile = await this.requireProfile(userId);
+    return this.coverageView(profile.id);
+  }
+
+  private async coverageView(technicianProfileId: string) {
+    const coverages = await this.prisma.technicianZoneCoverage.findMany({
+      where: { technicianProfileId },
+      include: {
+        zone: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            isActive: true,
+            cityId: true,
+            city: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
+      orderBy: [{ zone: { sortOrder: 'asc' } }, { zone: { name: 'asc' } }],
+    });
+    return coverages.map((coverage) => ({
+      zoneId: coverage.zone.id,
+      name: coverage.zone.name,
+      slug: coverage.zone.slug,
+      isActive: coverage.zone.isActive,
+      city: coverage.zone.city,
+    }));
+  }
+
+  /* Sprint 8.8.2 (règles C + F) — remplacement idempotent de la couverture.
+   * 1. Le profil doit posséder un `cityId` (sinon aucune couverture
+   *    intra-ville ne peut être validée → 400 explicite).
+   * 2. Chaque zone doit exister, être active et appartenir au `cityId` du
+   *    profil (intra-ville uniquement pour ce sprint).
+   * 3. TOUTES les validations réussissent AVANT toute écriture : un échec
+   *    laisse les couvertures précédentes intactes.
+   * 4. Remplacement transactionnel (deleteMany + createMany) : rejouer la
+   *    même charge produit le même état (idempotence). */
+  async setCoverage(userId: string, zoneIds: string[]) {
+    const profile = await this.requireProfile(userId);
+
+    if (!profile.cityId) {
+      throw new BadRequestException(
+        'Votre ville de référence n’est pas rattachée au référentiel. Mettez à jour votre ville d’intervention avant de déclarer vos zones couvertes.',
+      );
+    }
+
+    const uniqueZoneIds = [...new Set(zoneIds)];
+
+    if (uniqueZoneIds.length > 0) {
+      const zones = await this.prisma.zone.findMany({
+        where: { id: { in: uniqueZoneIds } },
+        select: { id: true, isActive: true, cityId: true },
+      });
+      const foundById = new Map(zones.map((zone) => [zone.id, zone]));
+      for (const zoneId of uniqueZoneIds) {
+        const zone = foundById.get(zoneId);
+        if (!zone) {
+          throw new NotFoundException('Zone introuvable.');
+        }
+        if (!zone.isActive) {
+          throw new BadRequestException('Cette zone n’est plus disponible.');
+        }
+        if (zone.cityId !== profile.cityId) {
+          throw new BadRequestException(
+            'Cette zone n’appartient pas à votre ville d’intervention.',
+          );
+        }
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.technicianZoneCoverage.deleteMany({
+        where: { technicianProfileId: profile.id },
+      });
+      if (uniqueZoneIds.length > 0) {
+        await tx.technicianZoneCoverage.createMany({
+          data: uniqueZoneIds.map((zoneId) => ({
+            technicianProfileId: profile.id,
+            zoneId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    return this.getCoverage(userId);
+  }
+
+  /** Identifiants des zones couvertes retenues pour le matching (GEO-04 :
+   *  actives ET appartenant à la ville de référence courante du profil).
+   *  Filtrage défensif sans suppression : un changement de ville neutralise
+   *  immédiatement les anciennes couvertures, les lignes restant en base. */
+  private async activeCoverageZoneIds(
+    technicianProfileId: string,
+    technicianCityId: string | null,
+  ): Promise<string[]> {
+    if (!technicianCityId) return [];
+    const coverages = await this.prisma.technicianZoneCoverage.findMany({
+      where: {
+        technicianProfileId,
+        zone: { isActive: true, cityId: technicianCityId },
+      },
+      select: {
+        zoneId: true,
+        zone: { select: { isActive: true, cityId: true } },
+      },
+    });
+    return filterActiveCoverageZoneIdsForCity(coverages, technicianCityId);
   }
 
   async uploadAvatar(userId: string, file: UploadedAvatarFile | undefined) {
@@ -380,6 +542,9 @@ export class TechnicianService {
     return {
       id: profile.userId,
       city: profile.city,
+      // Sprint 8.8.2 — `cityId` structuré exposé dans les réponses privées
+      // (le profil public n'y a pas accès, voir `PublicTechnicianProfile`).
+      cityId: profile.cityId ?? null,
       categories: profile.categories,
       isAvailable: profile.isAvailable,
       avatarUrl: profile.avatarUrl,
@@ -404,6 +569,9 @@ export class TechnicianService {
   async listAvailable(userId: string) {
     const profile = await this.requireProfile(userId);
     const normalizedCategories = profile.categories.map((c) => normalizeCategory(c));
+    // Sprint 8.8.2 — UNE seule lecture des couvertures actives pour tout le
+    // filtrage (pas de requête par demande, pas de N+1).
+    const coverageZoneIds = await this.activeCoverageZoneIds(profile.id, profile.cityId);
     const demandes = await this.prisma.demande.findMany({
       where: {
         status: { in: ['SUBMITTED', 'PENDING'] },
@@ -416,8 +584,14 @@ export class TechnicianService {
     return demandes
       .filter(
         (d) =>
-          isCityMatch(d.cityId, d.city, profile.cityId, profile.city) &&
-          normalizedCategories.includes(normalizeCategory(d.category)),
+          isGeoEligible({
+            demandeCityId: d.cityId,
+            demandeCity: d.city,
+            technicianCityId: profile.cityId,
+            technicianCity: profile.city,
+            demandeZoneId: d.zoneId,
+            technicianActiveZoneIds: coverageZoneIds,
+          }) && normalizedCategories.includes(normalizeCategory(d.category)),
       )
       .sort((a, b) => {
         // Les demandes « dès que possible » passent en premier (signal de priorité) ;
@@ -496,12 +670,21 @@ export class TechnicianService {
       };
     }
 
-    const cityMatches = isCityMatch(demande.cityId, demande.city, profile.cityId, profile.city);
+    // Sprint 8.8.2 — même éligibilité géographique que recherche/acceptation.
+    const coverageZoneIds = await this.activeCoverageZoneIds(profile.id, profile.cityId);
+    const isGeoOk = isGeoEligible({
+      demandeCityId: demande.cityId,
+      demandeCity: demande.city,
+      technicianCityId: profile.cityId,
+      technicianCity: profile.city,
+      demandeZoneId: demande.zoneId,
+      technicianActiveZoneIds: coverageZoneIds,
+    });
     const isCategoryMatch = profile.categories.some(
       (c) => normalizeCategory(c) === normalizeCategory(demande.category),
     );
     const isAvailable =
-      isMatchingStatus(demande.status) && cityMatches && isCategoryMatch && !demande.technicianId;
+      isMatchingStatus(demande.status) && isGeoOk && isCategoryMatch && !demande.technicianId;
 
     if (!isAvailable) {
       throw new NotFoundException('Demande introuvable.');
@@ -519,16 +702,41 @@ export class TechnicianService {
       );
     }
 
+    // Sprint 8.8.2 (GEO-05) — l'atomicité reste portée par le `updateMany`
+    // gardé ci-dessous ; les couvertures sont relues DANS la transaction
+    // pour éviter toute lecture obsolète (modification de couverture ou
+    // désactivation de zone entre la lecture et l'acceptation).
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findUnique({ where: { id: demandeId } });
       if (!current) return null;
 
-      const cityMatches = isCityMatch(current.cityId, current.city, profile.cityId, profile.city);
+      const coverages = profile.cityId
+        ? await tx.technicianZoneCoverage.findMany({
+            where: {
+              technicianProfileId: profile.id,
+              zone: { isActive: true, cityId: profile.cityId },
+            },
+            select: {
+              zoneId: true,
+              zone: { select: { isActive: true, cityId: true } },
+            },
+          })
+        : [];
+      const coverageZoneIds = filterActiveCoverageZoneIdsForCity(coverages, profile.cityId);
+
+      const isGeoOk = isGeoEligible({
+        demandeCityId: current.cityId,
+        demandeCity: current.city,
+        technicianCityId: profile.cityId,
+        technicianCity: profile.city,
+        demandeZoneId: current.zoneId,
+        technicianActiveZoneIds: coverageZoneIds,
+      });
       const isCategoryMatch = profile.categories.some(
         (c) => normalizeCategory(c) === normalizeCategory(current.category),
       );
       const isEligible =
-        isMatchingStatus(current.status) && cityMatches && isCategoryMatch && !current.technicianId;
+        isMatchingStatus(current.status) && isGeoOk && isCategoryMatch && !current.technicianId;
       if (!isEligible) return null;
 
       const updated = await tx.demande.updateMany({

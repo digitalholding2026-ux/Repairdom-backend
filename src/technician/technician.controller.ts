@@ -3,6 +3,7 @@ import {
   Get,
   Patch,
   Post,
+  Put,
   Delete,
   Param,
   Body,
@@ -21,6 +22,7 @@ import { Roles } from '../auth/roles.decorator.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
+import { UpdateCoverageDto } from './dto/update-coverage.dto.js';
 import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from './avatar-file.js';
 import {
@@ -43,6 +45,20 @@ export class TechnicianController {
   @Patch('profile')
   updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateTechnicianProfileDto) {
     return this.technicianService.updateProfile(user.id, dto);
+  }
+
+  /* Sprint 8.8.2 — couverture géographique personnelle (zones de la ville de
+   * référence). Routes strictement personnelles : aucun paramètre
+   * d'identifiant, le technicien connecté ne touche que sa couverture. */
+  @Get('coverage')
+  getCoverage(@CurrentUser() user: RequestUser) {
+    return this.technicianService.getCoverage(user.id);
+  }
+
+  @Put('coverage')
+  @HttpCode(HttpStatus.OK)
+  updateCoverage(@CurrentUser() user: RequestUser, @Body() dto: UpdateCoverageDto) {
+    return this.technicianService.setCoverage(user.id, dto.zoneIds);
   }
 
   @Post('profile/avatar')

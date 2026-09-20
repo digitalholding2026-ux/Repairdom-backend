@@ -209,6 +209,10 @@ model Zone {
 
   city     ServiceCity @relation("CityZones", fields: [cityId], references: [id], onDelete: Cascade)
   coverages TechnicianZoneCoverage[]
+  // Sprint 8.8.2 — rattachement structuré optionnel des demandes à une zone.
+  // Nullable + SetNull : les demandes historiques restent lisibles avec
+  // `zoneId = null`, aucun backfill depuis `neighborhood` (texte conservé).
+  demandes  Demande[]              @relation("ZoneDemandes")
 
   @@unique([cityId, slug])
   @@index([cityId])
@@ -246,6 +250,13 @@ model Demande {
   city        String
   cityId      String?
   cityRef     ServiceCity?     @relation("CityDemandes", fields: [cityId], references: [id], onDelete: SetNull)
+  // Sprint 8.8.2 — `zoneId` référence optionnelle vers Zone (quartier/secteur
+  // structuré). Nullable pendant la transition : les demandes créées sans zone
+  // ou avant ce sprint ont `zoneId = null` et suivent le parcours historique.
+  // ON DELETE SET NULL : la suppression d'une zone ne casse jamais l'historique
+  // (`city` / `neighborhood` textes restant intacts).
+  zoneId      String?
+  zoneRef     Zone?            @relation("ZoneDemandes", fields: [zoneId], references: [id], onDelete: SetNull)
   neighborhood String?
   address     String?
   landmark    String?
@@ -286,6 +297,7 @@ model Demande {
   @@index([clientId])
   @@index([technicianId])
   @@index([status])
+  @@index([zoneId])
   @@index([domainId])
   @@index([brandId])
   @@index([modelId])

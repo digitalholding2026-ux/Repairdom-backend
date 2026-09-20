@@ -82,6 +82,15 @@ export class CreateDemandeDto {
   @MaxLength(120)
   city: string;
 
+  /* Zone structurée (Sprint 8.8.2, règle E) — optionnelle pour rester
+   * compatible avec les demandes historiques. Si fournie, la ville
+   * structurée de la demande doit appartenir à la même ville que la zone. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  zoneId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(120)

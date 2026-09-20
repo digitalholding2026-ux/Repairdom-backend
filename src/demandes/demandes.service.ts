@@ -8,6 +8,10 @@ import { assertTransition } from './demandes-lifecycle.js';
 import { ALLOWED_CATEGORIES } from './categories.js';
 import { FinancialService } from '../financial/financial.service.js';
 import {
+  findCityMatches,
+  resolveCityIdFromCandidates,
+} from '../geo/city-reference.js';
+import {
   buildNotification,
   createNotification,
   eventTypeForStatus,
@@ -52,6 +56,13 @@ export interface DemandeRecord {
   category: string;
   description: string;
   city: string;
+  // Sprint 8.8.2 — références structurées (null en transition/historique).
+  // `zoneRef` reprend le nom exact de la relation Prisma (`Demande.zoneRef`) ;
+  // l'API continue d'exposer le champ `zone` (aucun changement frontend).
+  cityId: string | null;
+  zoneId: string | null;
+  zoneRef?: { id: string; name: string; slug: string; cityId: string } | null;
+  cityRef?: { id: string; name: string; slug: string } | null;
   neighborhood: string | null;
   address: string | null;
   landmark: string | null;
@@ -85,6 +96,12 @@ export function toApiDemande(demande: DemandeRecord) {
     categoryLabel: labelForCategory(demande.category),
     description: demande.description,
     city: demande.city,
+    // Sprint 8.8.2 — exposition additive (le frontend lit id/name ; le
+    // détail précis reste protégé par `toApiDemandePublic`, inchangé).
+    cityId: demande.cityId ?? null,
+    zoneId: demande.zoneId ?? null,
+    zone: demande.zoneRef ?? null,
+    cityRef: demande.cityRef ?? null,
     neighborhood: demande.neighborhood,
     address: demande.address,
     landmark: demande.landmark,
@@ -201,6 +218,9 @@ export class DemandesService {
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
+    // Sprint 8.8.2 (règles D + E) — rattachement géographique structuré,
+    // résolu AVANT la transaction : ville non bloquante + validation zone.
+    const geo = await this.resolveDemandeGeo(dto);
 
     for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
       const reference = generateReference();
@@ -212,6 +232,8 @@ export class DemandesService {
               category: device.category,
               description: dto.description,
               city: dto.city,
+              cityId: geo.cityId,
+              zoneId: geo.zoneId,
               neighborhood: dto.neighborhood ?? null,
               address: dto.address ?? null,
               landmark: dto.landmark ?? null,
@@ -336,6 +358,61 @@ export class DemandesService {
     return { domainId, brandId, modelId, problemId, category };
   }
 
+  /* Sprint 8.8.2 (règles D + E) — rattachement géographique structuré.
+   * - Sans `zoneId` : résolution non bloquante du texte de ville
+   *   (correspondance unique active → cityId, sinon null, texte conservé).
+   * - Avec `zoneId` : la zone doit exister et être active ; si la demande a
+   *   déjà un `cityId`, la zone doit appartenir à cette ville ; sinon le
+   *   `cityId` est dérivé de la zone, sauf contradiction explicite entre le
+   *   texte de ville (résolu sans ambiguïté vers une AUTRE ville) et la zone.
+   * Le texte original (`dto.city`) n'est jamais modifié ni remplacé. */
+  private async resolveDemandeGeo(dto: CreateDemandeDto): Promise<{
+    cityId: string | null;
+    zoneId: string | null;
+  }> {
+    const cities = await this.prisma.serviceCity.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, slug: true, isActive: true },
+    });
+    const resolvedCityId = resolveCityIdFromCandidates(cities, dto.city);
+
+    if (!dto.zoneId) {
+      return { cityId: resolvedCityId, zoneId: null };
+    }
+
+    const zone = await this.prisma.zone.findUnique({
+      where: { id: dto.zoneId },
+      include: { city: { select: { id: true, isActive: true } } },
+    });
+    if (!zone) throw new NotFoundException('Zone introuvable.');
+    if (!zone.isActive) {
+      throw new BadRequestException('Cette zone n’est plus disponible.');
+    }
+    if (!zone.city.isActive) {
+      throw new BadRequestException('La ville de cette zone n’est plus disponible.');
+    }
+
+    if (resolvedCityId) {
+      if (zone.cityId !== resolvedCityId) {
+        throw new BadRequestException(
+          'La zone sélectionnée n’appartient pas à la ville de la demande.',
+        );
+      }
+      return { cityId: resolvedCityId, zoneId: zone.id };
+    }
+
+    // Pas de `cityId` résolu : le texte reste la référence d'affichage, la
+    // zone devient la référence structurée — sauf si le texte désigne sans
+    // ambiguïté une AUTRE ville du référentiel (contradiction explicite).
+    const textMatches = findCityMatches(cities, dto.city);
+    if (textMatches.length === 1 && textMatches[0].id !== zone.cityId) {
+      throw new BadRequestException(
+        'La zone sélectionnée n’appartient pas à la ville de la demande.',
+      );
+    }
+    return { cityId: zone.cityId, zoneId: zone.id };
+  }
+
   /* Missions actives : tout sauf le terminal (confirmé / annulé).
    * L'historique est exposé séparément via listForClientHistory. */
   async listForClient(clientId: string) {
@@ -439,6 +516,8 @@ export class DemandesService {
   private clientInclude() {
     return {
       medias: true,
+      zoneRef: { select: { id: true, name: true, slug: true, cityId: true } },
+      cityRef: { select: { id: true, name: true, slug: true } },
       domain: { select: { id: true, name: true, slug: true } },
       brand: { select: { id: true, name: true, slug: true } },
       model: { select: { id: true, name: true, slug: true } },
@@ -462,6 +541,10 @@ export class DemandesService {
     category: string;
     description: string;
     city: string;
+    cityId: string | null;
+    zoneId: string | null;
+    zoneRef?: { id: string; name: string; slug: string; cityId: string } | null;
+    cityRef?: { id: string; name: string; slug: string } | null;
     neighborhood: string | null;
     address: string | null;
     landmark: string | null;
