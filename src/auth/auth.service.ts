@@ -37,7 +37,7 @@ import { AVATAR_BUCKET, SupabaseStorageService } from '../technician/supabase-st
 const EMAIL_INVALID_OR_EXPIRED =
   'Ce lien de vérification est invalide ou a expiré. Demandez un nouveau lien.';
 const EMAIL_VERIFICATION_REQUIRED =
-  'Votre adresse email doit être vérifiée avant de pouvoir accéder à RepairDom.';
+  'Votre adresse email doit être vérifiée avant de pouvoir accéder à Relio.';
 const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()

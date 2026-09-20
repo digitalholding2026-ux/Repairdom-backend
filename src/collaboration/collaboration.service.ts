@@ -758,7 +758,7 @@ export class CollaborationService {
             technicianId: user.id,
             amount,
             currency: pricing.currency || DEFAULT_QUOTE_CURRENCY,
-            description: `Tarif RepairDom — ${intervention.name} (${diag.name})`,
+            description: `Tarif Relio — ${intervention.name} (${diag.name})`,
             source: 'CATALOG',
             diagnosticId: diagnostic.id,
             catalogDiagnosticId: diag.id,

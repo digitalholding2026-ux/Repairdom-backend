@@ -784,7 +784,7 @@ export class CatalogService {
       serviceFee === null
     ) {
       throw new BadRequestException(
-        'Le tarif doit comporter au moins un montant (prix min, prix de référence, prix max, frais de déplacement ou frais RepairDom).',
+        'Le tarif doit comporter au moins un montant (prix min, prix de référence, prix max, frais de déplacement ou frais Relio).',
       );
     }
 
