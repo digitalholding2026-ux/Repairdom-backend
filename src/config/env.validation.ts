@@ -74,6 +74,16 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   SMTP_FROM?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  RESEND_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  EMAIL_FROM?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {
