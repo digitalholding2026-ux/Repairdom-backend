@@ -8,6 +8,13 @@ export const AVATAR_BUCKET = 'repairdom-profile-images';
  * les documents restent uniquement accessibles côté backend (service role). */
 export const KYC_BUCKET = 'repairdom-kyc-documents';
 
+/* Délais d’attente explicites : sans eux, un hang réseau (DNS qui ne répond
+ * pas, connexion gelée) pend indéfiniment jusqu’au timeout Railway. Avec eux,
+ * l’échec devient un timeout identifiable dans les logs. */
+const UPLOAD_TIMEOUT_MS = 30_000;
+const DELETE_TIMEOUT_MS = 15_000;
+const SIGN_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class SupabaseStorageService {
   private readonly logger = new Logger(SupabaseStorageService.name);
@@ -15,7 +22,10 @@ export class SupabaseStorageService {
   private readonly serviceRoleKey: string;
 
   constructor(config: ConfigService) {
-    this.baseUrl = config.get<string>('SUPABASE_URL') ?? '';
+    // Normalisation défensive : un slash final dans SUPABASE_URL doublait le
+    // séparateur (`//storage/v1/...`, toléré mais fragile). Format attendu :
+    // `https://<ref>.supabase.co` sans slash final ni chemin.
+    this.baseUrl = (config.get<string>('SUPABASE_URL') ?? '').replace(/\/+$/, '');
     this.serviceRoleKey = config.get<string>('SUPABASE_SERVICE_ROLE_KEY') ?? '';
   }
 
@@ -82,6 +92,7 @@ export class SupabaseStorageService {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ expiresIn: expiresInSeconds }),
+          signal: AbortSignal.timeout(SIGN_TIMEOUT_MS),
         },
       );
     } catch {
@@ -120,6 +131,34 @@ export class SupabaseStorageService {
     return safe ? ` Détail : ${safe}` : '';
   }
 
+  /* Chaîne de causes d’une erreur réseau, sans secret : `fetch` (undici)
+   * lève toujours `TypeError: fetch failed` ; la vraie raison (DNS
+   * `ENOTFOUND`, connexion refusée `ECONNREFUSED`, timeout, TLS…) est nichée
+   * dans `cause`, parfois sur plusieurs niveaux. Seuls type/message/code
+   * sont conservés (jamais d’en-tête, de clé, de JWT ni de contenu). */
+  private describeNetworkError(error: unknown): string {
+    const parts: string[] = [];
+    let current: unknown = error;
+    for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+      const code = (current as { code?: unknown }).code;
+      parts.push(
+        `${current.name}: ${current.message}${typeof code === 'string' ? ` [${code}]` : ''}`,
+      );
+      const next = (current as { cause?: unknown }).cause;
+      if (!next || next === current) break;
+      current = next;
+    }
+    return (parts.length > 0 ? parts.join(' ← ') : 'erreur inconnue').slice(0, 400);
+  }
+
+  private storageHost(): string {
+    try {
+      return new URL(this.baseUrl).hostname || 'inconnu';
+    } catch {
+      return 'URL invalide';
+    }
+  }
+
   private async uploadToBucket(
     bucket: string,
     path: string,
@@ -136,14 +175,15 @@ export class SupabaseStorageService {
           'x-upsert': 'false',
         },
         body: data as unknown as BodyInit,
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
       });
     } catch (error) {
-      // Erreur réseau/DNS/TLS : Supabase injoignable (jamais de secret ici,
-      // uniquement la nature de l’échec).
+      // Échec avant toute réponse HTTP (DNS, connexion refusée, TLS,
+      // timeout, URL mal formée) : journaliser la cause imbriquée réelle,
+      // le hostname visé et la taille — jamais de secret ni de contenu.
       this.logger.error(
-        `Upload stockage impossible (réseau) vers le bucket « ${bucket} » : ${
-          error instanceof Error ? error.message : 'erreur inconnue'
-        }.`,
+        `Upload stockage impossible (réseau) vers le bucket « ${bucket} » ` +
+          `(hôte ${this.storageHost()}, ${data.length} octets, ${contentType}) : ${this.describeNetworkError(error)}.`,
       );
       throw new BadGatewayException('Impossible d’enregistrer le fichier. Réessayez dans un instant.');
     }
@@ -166,8 +206,13 @@ export class SupabaseStorageService {
       response = await fetch(`${this.baseUrl}/storage/v1/object/${bucket}/${path}`, {
         method: 'DELETE',
         headers: this.storageHeaders(),
+        signal: AbortSignal.timeout(DELETE_TIMEOUT_MS),
       });
-    } catch {
+    } catch (error) {
+      this.logger.error(
+        `Suppression stockage impossible (réseau) pour le bucket « ${bucket} » ` +
+          `(hôte ${this.storageHost()}) : ${this.describeNetworkError(error)}.`,
+      );
       throw new BadGatewayException('Impossible de supprimer le fichier.');
     }
     if (!response.ok && response.status !== 404) {

@@ -81,4 +81,27 @@ describe('SupabaseStorageService — upload', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('slash final de SUPABASE_URL normalisé (pas de double slash)', async () => {
+    const fetchMock = mockFetchOnce({ status: 200, ok: true } as Response);
+    const service = new SupabaseStorageService(
+      mockConfig({
+        SUPABASE_URL: 'https://project.supabase.co///',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+      }) as never,
+    );
+    await service.uploadObject('clients/u/f.png', Buffer.from([1]), 'image/png');
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      'https://project.supabase.co/storage/v1/object/repairdom-profile-images/clients/u/f.png',
+    );
+  });
+
+  it('timeout AbortSignal transmis au fetch (pas de hang indéfini)', async () => {
+    const fetchMock = mockFetchOnce({ status: 200, ok: true } as Response);
+    const service = new SupabaseStorageService(CONFIGURED as never);
+    await service.uploadObject('clients/u/f.png', Buffer.from([1]), 'image/png');
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
 });
