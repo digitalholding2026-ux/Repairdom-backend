@@ -353,11 +353,12 @@ export class DemandesService {
         }
       }
 
-      // Sprint 8.7-FIN — règlement financier ATOMIQUE avec la transition :
-      //   CONFIRMED → rémunération du technicien (réparation + transport
-      //              − frais RepairDom 150), aucune écriture à COMPLETED.
+      // Règle Relio — règlement financier ATOMIQUE avec la transition :
+      //   CONFIRMED → rémunération du technicien (brut réparation + transport
+      //              2 000, moins commission Relio 2 %), aucune écriture à
+      //              COMPLETED (la commission n'est due qu'à la validation).
       //   CANCELED  → contrepassation intégrale du client s'il avait été
-      //              débité (réparation + transport + frais 100).
+      //              débité (brut + éventuels frais legacy).
       // Dans les deux cas rien n'est écrit si la mission est legacy (aucune
       // transaction financière rétroactive). Tout est idempotent.
       if (dto.status === 'CONFIRMED') {

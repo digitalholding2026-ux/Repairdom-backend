@@ -9,10 +9,9 @@ export class CreateQuoteDto {
   @Max(QUOTE_MAX_AMOUNT)
   amount: number;
 
-  // Sprint 8.7-FIN — composante transport du tarif manuel.
-  // Règle : 0 ≤ travelAmount ≤ amount ; repairAmount = amount − travelAmount.
-  // Le transport est toujours reversé à 100 % au technicien (jamais soumis
-  // aux frais RepairDom).
+  // Règle Relio : le transport standard (2 000 XAF) est figé par le backend.
+  // Champ conservé pour compatibilité d'API mais ignoré dans le calcul : le
+  // montant `amount` EST la réparation, quel que soit le devis (CATALOG/MANUAL).
   @IsOptional()
   @IsInt()
   @Min(0)

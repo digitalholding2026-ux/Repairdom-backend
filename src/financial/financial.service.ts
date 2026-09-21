@@ -16,8 +16,12 @@ import type {
 import {
   CLIENT_PLATFORM_FEE,
   FINANCIAL_CURRENCY,
+  RELIO_COMMISSION_RATE_DENOMINATOR,
+  RELIO_COMMISSION_RATE_NUMERATOR,
+  STANDARD_TRANSPORT_FEE,
   TECHNICIAN_PLATFORM_FEE,
   TOTAL_PLATFORM_FEES,
+  computeRelioCommission,
 } from './financial-fees.js';
 
 export type Tx = Prisma.TransactionClient;
@@ -167,26 +171,31 @@ export class FinancialService {
 
   /* ── Règles métier (bonnes fonctions, sous transaction métier) ── */
 
-  /** Découpe un quote en composantes réparation / transport.
-   *  CATALOG : travelAmount (snapshot du travelFee catalogue), sinon
-   *  initialTravelFee des anciens tarifs, sinon 0.
-   *  MANUAL  : travelAmount saisi par le technicien, sinon 0. Jamais inventé :
-   *  le transport est extrait du montant total, le reste est la réparation. */
+  /** Découpe un quote en composantes réparation / transport (règle Relio).
+   *  Le montant accepté du tarif EST le montant réparation ; le transport est
+   *  le standard fixe (2 000 XAF), identique en CATALOG et en MANUAL.
+   *  Les snapshots historiques (`travelAmount`, `initialTravelFee`) sont
+   *  conservés en base mais ne pilotent plus le calcul : ils restent lisibles
+   *  pour l'audit des missions antérieures. */
   splitQuote(input: QuoteSnapshot): { repairAmount: number; travelAmount: number } {
-    const travelAmount = input.travelAmount ?? input.initialTravelFee ?? 0;
-    const repairAmount = input.amount - travelAmount;
+    const repairAmount = input.amount;
     if (repairAmount < 0) {
-      throw new BadRequestException(
-        'Le montant du transport ne peut pas dépasser le montant total du tarif.',
-      );
+      throw new BadRequestException('Le montant du tarif ne peut pas être négatif.');
     }
-    return { repairAmount, travelAmount };
+    return { repairAmount, travelAmount: STANDARD_TRANSPORT_FEE };
   }
 
-  /** Acceptation d'un quote — débit client REPAIRDOM (atomique avec
+  /** Montant brut payé par le client : réparation + transport standard. */
+  grossForRepair(repairAmount: number): number {
+    return repairAmount + STANDARD_TRANSPORT_FEE;
+  }
+
+  /** Acceptation d'un quote — débit client Relio (atomique avec
    *  l'acceptation, dans la même transaction) :
-   *    CLIENT_MISSION_DEBIT : réparation + transport (montant total du quote)
-   *    CLIENT_FEE            : 100 XAF
+   *    CLIENT_MISSION_DEBIT : réparation (montant accepté) + transport 2 000
+   *  Le client ne paie AUCUNE commission Relio supplémentaire : aucune écriture
+   *  CLIENT_FEE n'est créée pour les nouvelles acceptations (les écritures
+   *  CLIENT_FEE antérieures restent immuables pour l'historique).
    *  Règle : le client paie au moment où il valide le tarif. Le débit utilise
    *  des références serveur idempotentes (quote + demande + mode). */
   async debitClientAtAcceptance(
@@ -200,41 +209,37 @@ export class FinancialService {
   ) {
     const mode = this.getMode();
     const { repairAmount, travelAmount } = this.splitQuote(args.quote);
+    const grossAmount = repairAmount + travelAmount;
 
     await this.record(tx, {
       userId: args.clientId,
       demandeId: args.demandeId,
       type: 'CLIENT_MISSION_DEBIT',
       direction: 'DEBIT',
-      amount: args.quote.amount,
+      amount: grossAmount,
       reference: `client-mission-debit:${args.demandeId}:${args.quote.id}:${mode}`,
       createdById: args.actorUserId,
       metadata: {
         repair: repairAmount,
         travel: travelAmount,
+        gross: grossAmount,
         currency: FINANCIAL_CURRENCY,
       },
-    });
-
-    await this.record(tx, {
-      userId: args.clientId,
-      demandeId: args.demandeId,
-      type: 'CLIENT_FEE',
-      direction: 'DEBIT',
-      amount: CLIENT_PLATFORM_FEE,
-      reference: `client-fee:${args.demandeId}:${args.quote.id}:${mode}`,
-      createdById: args.actorUserId,
-      metadata: { fee: CLIENT_PLATFORM_FEE, currency: FINANCIAL_CURRENCY },
     });
   }
 
   /** Confirmation de la mission — rémunération du technicien (atomique avec
    *  la transition CONFIRMED, dans la même transaction) :
-   *    TECHNICIAN_REPAIR_REVENUE CREDIT = réparation
-   *    TECHNICIAN_TRAVEL_REVENUE CREDIT = transport (100 % au technicien)
-   *    TECHNICIAN_FEE            DEBIT  = 150 XAF
-   *  Rien n'est crédité à COMPLETED. Missions legacy sans quote ACCEPTED :
-   *  aucune écriture (pas de transaction rétroactive). */
+   *    TECHNICIAN_REPAIR_REVENUE CREDIT = réparation (montant accepté)
+   *    TECHNICIAN_TRAVEL_REVENUE CREDIT = transport standard (2 000 XAF)
+   *    TECHNICIAN_FEE            DEBIT  = commission Relio 2 % du brut
+   *  Net technicien = brut − commission. Rien n'est crédité à COMPLETED :
+   *  la commission n'est due qu'à la validation finale (CONFIRMED), jamais à
+   *  la création, au dispatch, à l'acceptation technicien, au devis, à
+   *  l'acceptation du devis ni pendant la négociation.
+   *  Missions legacy sans quote ACCEPTED : aucune écriture (pas de transaction
+   *  rétroactive). Écritures idempotentes par `reference` (double validation =
+   *  aucun doublon). */
   async settleTechnicianAtConfirmation(
     tx: Tx,
     args: { demandeId: string; technicianId: string | null; createdById: string },
@@ -249,9 +254,11 @@ export class FinancialService {
     if (!quote) return;
 
     const { repairAmount, travelAmount } = this.splitQuote(quote);
+    const grossAmount = repairAmount + travelAmount;
+    const commission = computeRelioCommission(grossAmount);
 
-    // Une composante nulle (transport absent, ou réparation nulle quand le
-    // tarif ne couvre que le transport) ne donne pas lieu à une écriture.
+    // Une composante réparation nulle ne donne pas lieu à une écriture ; le
+    // transport standard (2 000) est toujours crédité au technicien.
     if (repairAmount > 0) {
       await this.record(tx, {
         userId: args.technicianId,
@@ -261,7 +268,12 @@ export class FinancialService {
         amount: repairAmount,
         reference: `technician-repair:${args.demandeId}:${quote.id}:${mode}`,
         createdById: args.createdById,
-        metadata: { repair: repairAmount, travel: travelAmount, currency: FINANCIAL_CURRENCY },
+        metadata: {
+          repair: repairAmount,
+          travel: travelAmount,
+          gross: grossAmount,
+          currency: FINANCIAL_CURRENCY,
+        },
       });
     }
 
@@ -274,7 +286,12 @@ export class FinancialService {
         amount: travelAmount,
         reference: `technician-travel:${args.demandeId}:${quote.id}:${mode}`,
         createdById: args.createdById,
-        metadata: { repair: repairAmount, travel: travelAmount, currency: FINANCIAL_CURRENCY },
+        metadata: {
+          repair: repairAmount,
+          travel: travelAmount,
+          gross: grossAmount,
+          currency: FINANCIAL_CURRENCY,
+        },
       });
     }
 
@@ -283,17 +300,23 @@ export class FinancialService {
       demandeId: args.demandeId,
       type: 'TECHNICIAN_FEE',
       direction: 'DEBIT',
-      amount: TECHNICIAN_PLATFORM_FEE,
+      amount: commission,
       reference: `technician-fee:${args.demandeId}:${quote.id}:${mode}`,
       createdById: args.createdById,
-      metadata: { fee: TECHNICIAN_PLATFORM_FEE, currency: FINANCIAL_CURRENCY },
+      metadata: {
+        fee: commission,
+        gross: grossAmount,
+        rateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
+        rateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        currency: FINANCIAL_CURRENCY,
+      },
     });
   }
 
   /** Annulation d'une mission déjà débitée — contrepassation atomique (même
    *  transaction que le passage à CANCELED) :
-   *    REVERSAL CREDIT = montant débité (réparation + transport)
-   *    REVERSAL CREDIT = frais client 100
+   *    REVERSAL CREDIT = montant débité (réparation + transport 2 000)
+   *    REVERSAL CREDIT = frais client legacy (100 XAF) s'ils existent
    *  Les écritures originales ne sont JAMAIS modifiées ni supprimées ;
    *  chaque contrepassation est liée par reversalOfId et idempotente. */
   async reverseClientDebitIfAny(tx: Tx, args: { demandeId: string; clientId: string }) {
@@ -683,9 +706,13 @@ export class FinancialService {
     };
   }
 
-  /** Réconciliation RepairDom par mission financièrement réglée :
-   *  CLIENT_FEE + TECHNICIAN_FEE = 250 XAF. Le transport et la réparation ne
-   *  sont jamais comptés comme revenu RepairDom ; Pricing.serviceFee non plus. */
+  /** Réconciliation Relio par mission financièrement réglée.
+   *  Nouvelle règle : revenu Relio = commission 2 % du brut technicien
+   *  (aucune commission client). Missions antérieures : les écritures
+   *  CLIENT_FEE legacy (100 XAF) restent comptées telles quelles et la mission
+   *  est réconciliée contre l'ancien attendu (100 + 150 = 250) — sans jamais
+   *  réécrire l'historique. Le transport et la réparation ne sont jamais
+   *  comptés comme revenu Relio ; Pricing.serviceFee non plus. */
   async getMissionFinancialSummary(demandeId: string, mode: FinancialTransactionMode) {
     this.ensureModeAllowed(mode);
     const rows = await this.prisma.financialTransaction.findMany({
@@ -720,54 +747,96 @@ export class FinancialService {
 
     const clientFee = sum('CLIENT_FEE', 'DEBIT');
     const technicianFee = sum('TECHNICIAN_FEE', 'DEBIT');
+    const clientMissionDebit = sum('CLIENT_MISSION_DEBIT', 'DEBIT');
     const repairDomRevenue = clientFee + technicianFee;
+    const isLegacyMission = clientFee > 0;
+    const expectedRepairDomRevenue = isLegacyMission
+      ? TOTAL_PLATFORM_FEES
+      : clientMissionDebit > 0
+        ? computeRelioCommission(clientMissionDebit)
+        : 0;
+    const reconciled = isLegacyMission
+      ? repairDomRevenue === TOTAL_PLATFORM_FEES
+      : clientMissionDebit > 0 &&
+        clientFee === 0 &&
+        technicianFee === expectedRepairDomRevenue &&
+        technicianFee > 0;
 
     return {
       demandeId,
       financials: {
-        clientMissionDebit: sum('CLIENT_MISSION_DEBIT', 'DEBIT'),
+        clientMissionDebit,
         clientFee,
         technicianRepair: sum('TECHNICIAN_REPAIR_REVENUE', 'CREDIT'),
         technicianTravel: sum('TECHNICIAN_TRAVEL_REVENUE', 'CREDIT'),
         technicianFee,
         repairDomRevenue,
-        expectedRepairDomRevenue: TOTAL_PLATFORM_FEES,
-        reconciled: repairDomRevenue === TOTAL_PLATFORM_FEES,
+        expectedRepairDomRevenue,
+        reconciled,
       },
       entries,
     };
   }
 
-  /** Vérifie la réconciliation globale 100 + 150 = 250 sur toutes les
-   *  missions du mode : aucune mission ne doit présenter d'écart. */
+  /** Vérifie la réconciliation globale des commissions Relio sur toutes les
+   *  missions du mode : aucune mission ne doit présenter d'écart.
+   *  Missions antérieures (avec CLIENT_FEE legacy) : attendu 100 + 150 = 250.
+   *  Nouvelles missions : attendu = 2 % du brut débité au client, sans
+   *  commission client. */
   async reconcileRepairDomFees(mode: FinancialTransactionMode) {
     this.ensureModeAllowed(mode);
-    const demandes = await this.prisma.financialTransaction.findMany({
-      where: { mode, type: { in: ['CLIENT_FEE', 'TECHNICIAN_FEE'] } },
+    const rows = await this.prisma.financialTransaction.findMany({
+      where: {
+        mode,
+        type: { in: ['CLIENT_MISSION_DEBIT', 'CLIENT_FEE', 'TECHNICIAN_FEE'] },
+      },
       select: { demandeId: true, type: true, direction: true, amount: true, status: true },
     });
 
     const byMission = new Map<
       string,
-      { clientFee: number; technicianFee: number }
+      { clientDebit: number; clientFee: number; technicianFee: number }
     >();
-    for (const t of demandes) {
+    for (const t of rows) {
       if (!t.demandeId || t.status !== 'VALIDATED') continue;
-      const bucket = byMission.get(t.demandeId) ?? { clientFee: 0, technicianFee: 0 };
+      const bucket = byMission.get(t.demandeId) ?? { clientDebit: 0, clientFee: 0, technicianFee: 0 };
+      if (t.type === 'CLIENT_MISSION_DEBIT' && t.direction === 'DEBIT')
+        bucket.clientDebit += t.amount;
       if (t.type === 'CLIENT_FEE' && t.direction === 'DEBIT') bucket.clientFee += t.amount;
       if (t.type === 'TECHNICIAN_FEE' && t.direction === 'DEBIT') bucket.technicianFee += t.amount;
       byMission.set(t.demandeId, bucket);
     }
 
-    const missions = [...byMission.entries()].map(([demandeId, fees]) => ({
-      demandeId,
-      ...fees,
-      total: fees.clientFee + fees.technicianFee,
-      reconciled: fees.clientFee + fees.technicianFee === TOTAL_PLATFORM_FEES,
-    }));
+    const missions = [...byMission.entries()]
+      .filter(([, fees]) => fees.clientFee > 0 || fees.technicianFee > 0)
+      .map(([demandeId, fees]) => {
+        const isLegacy = fees.clientFee > 0;
+        const expected = isLegacy
+          ? TOTAL_PLATFORM_FEES
+          : fees.clientDebit > 0
+            ? computeRelioCommission(fees.clientDebit)
+            : 0;
+        const total = fees.clientFee + fees.technicianFee;
+        const reconciled = isLegacy
+          ? total === TOTAL_PLATFORM_FEES
+          : fees.clientDebit > 0 &&
+            fees.clientFee === 0 &&
+            fees.technicianFee === expected &&
+            expected > 0;
+        return { demandeId, ...fees, total, expected, legacy: isLegacy, reconciled };
+      });
 
     const mismatched = missions.filter((m) => !m.reconciled);
-    return { totalMissions: missions.length, mismatches: mismatched, expectedPerMission: TOTAL_PLATFORM_FEES };
+    return {
+      totalMissions: missions.length,
+      mismatches: mismatched,
+      expectedPerMission: {
+        transport: STANDARD_TRANSPORT_FEE,
+        commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
+        commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        legacyTotal: TOTAL_PLATFORM_FEES,
+      },
+    };
   }
 
   /* ── Supervision ADMIN (Sprint 8.7-FIN-UI) ───────────────────── */
@@ -785,6 +854,10 @@ export class FinancialService {
     return {
       currency: FINANCIAL_CURRENCY,
       expectedPerMission: {
+        transport: STANDARD_TRANSPORT_FEE,
+        commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
+        commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        // Historique uniquement : ancien forfait 100 (client) + 150 (techno).
         clientFee: CLIENT_PLATFORM_FEE,
         technicianFee: TECHNICIAN_PLATFORM_FEE,
         total: TOTAL_PLATFORM_FEES,
@@ -897,10 +970,20 @@ export class FinancialService {
         if (t.type === 'TECHNICIAN_FEE') mission.technicianFee += t.amount;
         mission.technicianNet = mission.repair + mission.travel - mission.technicianFee;
         mission.repairDomRevenue = mission.clientFee + mission.technicianFee;
-        mission.reconciled =
-          mission.repairDomRevenue === TOTAL_PLATFORM_FEES &&
-          mission.clientFee > 0 &&
-          mission.technicianFee > 0;
+        // Missions antérieures (frais client legacy) : attendu 250.
+        // Nouvelles missions : commission 2 % du brut débité, sans frais client.
+        if (mission.clientFee > 0) {
+          mission.reconciled =
+            mission.repairDomRevenue === TOTAL_PLATFORM_FEES &&
+            mission.technicianFee > 0;
+        } else {
+          const expected =
+            mission.clientDebit > 0 ? computeRelioCommission(mission.clientDebit) : 0;
+          mission.reconciled =
+            mission.clientDebit > 0 &&
+            mission.technicianFee === expected &&
+            expected > 0;
+        }
         if (t.createdAt.toISOString() > mission.lastActivity) {
           mission.lastActivity = t.createdAt.toISOString();
         }
@@ -935,7 +1018,12 @@ export class FinancialService {
         reconciledMissions,
         mismatchMissions,
         ok: missions.length === 0 ? null : mismatchMissions === 0,
-        expectedPerMission: TOTAL_PLATFORM_FEES,
+        expectedPerMission: {
+          transport: STANDARD_TRANSPORT_FEE,
+          commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
+          commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+          legacyTotal: TOTAL_PLATFORM_FEES,
+        },
       },
     };
   }
@@ -992,6 +1080,18 @@ export class FinancialService {
       .filter((t) => t.type === 'REVERSAL' && t.direction === 'CREDIT' && t.status === 'VALIDATED')
       .reduce((acc, t) => acc + t.amount, 0);
     const repairDomRevenue = clientFee + technicianFee;
+    const isLegacyMission = clientFee > 0;
+    const expectedRepairDomRevenue = isLegacyMission
+      ? TOTAL_PLATFORM_FEES
+      : clientMissionDebit > 0
+        ? computeRelioCommission(clientMissionDebit)
+        : 0;
+    const reconciled = isLegacyMission
+      ? repairDomRevenue === TOTAL_PLATFORM_FEES
+      : clientMissionDebit > 0 &&
+        clientFee === 0 &&
+        technicianFee === expectedRepairDomRevenue &&
+        technicianFee > 0;
 
     return {
       demande: {
@@ -1024,8 +1124,8 @@ export class FinancialService {
         technicianFee,
         netTechnician: technicianRepair + technicianTravel - technicianFee,
         repairDomRevenue,
-        expectedRepairDomRevenue: TOTAL_PLATFORM_FEES,
-        reconciled: repairDomRevenue === TOTAL_PLATFORM_FEES,
+        expectedRepairDomRevenue,
+        reconciled,
         clientRefunded: reversalCredit > 0,
         clientRefundAmount: reversalCredit,
       },

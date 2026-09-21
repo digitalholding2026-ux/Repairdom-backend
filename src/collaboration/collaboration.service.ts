@@ -14,7 +14,7 @@ import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 import { FinancialService } from '../financial/financial.service.js';
-import { CLIENT_PLATFORM_FEE } from '../financial/financial-fees.js';
+import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
 import {
   buildNotification,
   createNotification,
@@ -224,15 +224,13 @@ export class CollaborationService {
       // description pour retrouver le libellé du diagnostic / de l'intervention.
       catalogDiagnostic: quote.catalogDiagnostic,
       catalogIntervention: quote.catalogIntervention,
-      // Sprint 8.7-FIN-UI : décomposition autoritative du tarif. Le frontend
-      // n'additionne rien lui-même : `repair`/`travel` reflètent la règle
-      // repairAmount = amount − travelAmount, `clientFee` est la valeur du
-      // moteur (100 XAF), et `totalToDebit` = amount + clientFee correspond
-      // EXACTEMENT à ce qui sera débité à l'acceptation.
-      repair: quote.amount - (quote.travelAmount ?? quote.initialTravelFee ?? 0),
-      travel: quote.travelAmount ?? quote.initialTravelFee ?? 0,
-      clientFee: CLIENT_PLATFORM_FEE,
-      totalToDebit: quote.amount + CLIENT_PLATFORM_FEE,
+      // Règle Relio : le montant accepté du tarif EST la réparation ; le
+      // transport standard (2 000 XAF) s'ajoute au brut payé par le client.
+      // Le client ne paie aucune commission : `totalToDebit` = brut, calculé
+      // côté backend — le frontend ne recalcule JAMAIS ces montants.
+      repair: quote.amount,
+      travel: STANDARD_TRANSPORT_FEE,
+      totalToDebit: quote.amount + STANDARD_TRANSPORT_FEE,
       breakdown: quote.source === 'CATALOG'
         ? {
             referencePrice: quote.initialReferencePrice,
@@ -353,13 +351,10 @@ export class CollaborationService {
     const description = dto.description.trim();
     if (!description) throw new BadRequestException('La description du tarif ne peut pas être vide.');
 
-    // Sprint 8.7-FIN : cohérence de la décomposition réparation / transport.
-    if (dto.travelAmount != null && dto.travelAmount > dto.amount) {
-      throw new BadRequestException(
-        'Le montant du transport ne peut pas dépasser le montant total du tarif.',
-      );
-    }
-
+    // Règle Relio : le montant manuel accepté EST la réparation ; le
+    // transport standard (2 000 XAF) est figé par le backend — la valeur
+    // éventuellement transmise dans `travelAmount` n'est jamais utilisée pour
+    // éviter toute divergence entre devis CATALOG et MANUAL.
     const quote = await this.prisma.$transaction(async (tx) => {
       const accepted = await tx.quote.findFirst({
         where: { demandeId, status: 'ACCEPTED' },
@@ -391,10 +386,10 @@ export class CollaborationService {
           currency: dto.currency?.trim().toUpperCase() || DEFAULT_QUOTE_CURRENCY,
           description,
           diagnosticId: diagnostic?.id ?? null,
-          // Sprint 8.7-FIN : composante transport saisie par le technicien
-          // (0 par défaut pour un tarif manuel). Le montant de réparation
-          // est déduit (repairAmount = amount − travelAmount).
-          travelAmount: dto.travelAmount ?? 0,
+          // Règle Relio : le montant manuel EST la réparation ; le transport
+          // standard (2 000 XAF) est figé en snapshot pour rester cohérent
+          // avec le parcours CATALOG (même formule, aucune logique distincte).
+          travelAmount: STANDARD_TRANSPORT_FEE,
         },
         include: this.quoteInclude(),
       });
@@ -467,9 +462,9 @@ export class CollaborationService {
       });
 
       if (action === 'accept') {
-        // Sprint 8.7-FIN : le client paie au moment de la validation du
-        // tarif — débit réparation+transport + frais RepairDom 100 XAF,
-        // ATOMIQUES avec l'acceptation (même transaction). Montants
+        // Règle Relio : le client paie au moment de la validation du tarif —
+        // débit brut (réparation acceptée + transport 2 000), SANS commission
+        // client, ATOMIQUE avec l'acceptation (même transaction). Montants
         // recalculés côté serveur depuis le snapshot du tarif, jamais depuis
         // un montant fourni par le frontend. Références serveur idempotentes.
         await this.financial.debitClientAtAcceptance(tx, {
@@ -478,11 +473,11 @@ export class CollaborationService {
           quote,
           actorUserId: user.id,
         });
-        // Traçabilité (Sprint 8.1) : le montant final de la mission est le
-        // montant accepté du tarif.
+        // Traçabilité : le montant final de la mission est le brut payé par
+        // le client (montant accepté + transport standard).
         await tx.demande.update({
           where: { id: demandeId },
-          data: { finalAmount: quote.amount },
+          data: { finalAmount: quote.amount + STANDARD_TRANSPORT_FEE },
         });
       }
 
@@ -749,9 +744,7 @@ export class CollaborationService {
           include: { technician: { select: { id: true, firstName: true, lastName: true } } },
         });
 
-        const amount =
-          (pricing.referencePrice ?? 0) +
-          (pricing.travelFee ?? 0);
+        const amount = pricing.referencePrice ?? 0;
         const quote = await tx.quote.create({
           data: {
             demandeId,
@@ -766,9 +759,12 @@ export class CollaborationService {
             initialReferencePrice: pricing.referencePrice,
             initialTravelFee: pricing.travelFee,
             initialServiceFee: pricing.serviceFee,
-            // Sprint 8.7-FIN : composante transport du tarif auto = snapshot
-            // du travelFee du catalogue (règle uniforme avec le MANUAL).
-            travelAmount: pricing.travelFee,
+            // Règle Relio : le montant du devis EST la réparation (prix de
+            // référence catalogue) ; le transport standard (2 000 XAF) est
+            // ajouté au brut au moment du règlement, jamais dans `amount`.
+            // `initialTravelFee` reste figé en snapshot pour l'audit
+            // historique, sans piloter le calcul.
+            travelAmount: STANDARD_TRANSPORT_FEE,
           },
           include: this.quoteInclude(),
         });
