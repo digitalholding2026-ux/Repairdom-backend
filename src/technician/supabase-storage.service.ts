@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /** Bucket public dédié aux photos de profil. */
@@ -10,6 +10,7 @@ export const KYC_BUCKET = 'repairdom-kyc-documents';
 
 @Injectable()
 export class SupabaseStorageService {
+  private readonly logger = new Logger(SupabaseStorageService.name);
   private readonly baseUrl: string;
   private readonly serviceRoleKey: string;
 
@@ -20,6 +21,19 @@ export class SupabaseStorageService {
 
   get isConfigured(): boolean {
     return this.baseUrl.length > 0 && this.serviceRoleKey.length > 0;
+  }
+
+  /* En-têtes exigés par la passerelle REST Supabase hébergée : `apikey` pour
+   * le routage projet + `Authorization: Bearer` (service role, contourne les
+   * RLS). Sans `apikey`, la passerelle répond 401 (« No API key found in
+   * request ») même avec un Bearer valide — d’où un 502 générique côté API.
+   * La clé n’est utilisée qu’en en-tête sortant, jamais journalisée. */
+  private storageHeaders(contentType?: string): Record<string, string> {
+    return {
+      apikey: this.serviceRoleKey,
+      Authorization: `Bearer ${this.serviceRoleKey}`,
+      ...(contentType ? { 'Content-Type': contentType } : {}),
+    };
   }
 
   async uploadObject(path: string, data: Buffer, contentType: string): Promise<void> {
@@ -64,7 +78,7 @@ export class SupabaseStorageService {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${this.serviceRoleKey}`,
+            ...this.storageHeaders(),
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ expiresIn: expiresInSeconds }),
@@ -118,16 +132,29 @@ export class SupabaseStorageService {
       response = await fetch(`${this.baseUrl}/storage/v1/object/${bucket}/${path}`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${this.serviceRoleKey}`,
-          'Content-Type': contentType,
+          ...this.storageHeaders(contentType),
           'x-upsert': 'false',
         },
         body: data as unknown as BodyInit,
       });
-    } catch {
+    } catch (error) {
+      // Erreur réseau/DNS/TLS : Supabase injoignable (jamais de secret ici,
+      // uniquement la nature de l’échec).
+      this.logger.error(
+        `Upload stockage impossible (réseau) vers le bucket « ${bucket} » : ${
+          error instanceof Error ? error.message : 'erreur inconnue'
+        }.`,
+      );
       throw new BadGatewayException('Impossible d’enregistrer le fichier. Réessayez dans un instant.');
     }
     if (!response.ok) {
+      // Réponse Supabase exploitable (401 clé, 403 politique, 404 bucket,
+      // 409 conflit, 5xx) : détail borné en log, message générique au client.
+      const detail = await this.safeErrorDetail(response);
+      this.logger.error(
+        `Upload stockage refusé par Supabase (HTTP ${response.status}) pour le bucket « ${bucket} » ` +
+          `(${data.length} octets, ${contentType}).${detail}`,
+      );
       throw new BadGatewayException('Impossible d’enregistrer le fichier. Réessayez dans un instant.');
     }
   }
@@ -138,14 +165,16 @@ export class SupabaseStorageService {
     try {
       response = await fetch(`${this.baseUrl}/storage/v1/object/${bucket}/${path}`, {
         method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${this.serviceRoleKey}`,
-        },
+        headers: this.storageHeaders(),
       });
     } catch {
       throw new BadGatewayException('Impossible de supprimer le fichier.');
     }
     if (!response.ok && response.status !== 404) {
+      const detail = await this.safeErrorDetail(response);
+      this.logger.error(
+        `Suppression stockage refusée par Supabase (HTTP ${response.status}) pour le bucket « ${bucket} ».${detail}`,
+      );
       throw new BadGatewayException('Impossible de supprimer le fichier.');
     }
   }
