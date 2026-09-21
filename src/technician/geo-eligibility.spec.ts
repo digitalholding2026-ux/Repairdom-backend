@@ -82,8 +82,7 @@ describe('isGeoEligible — matching ville + zone', () => {
     ).toBe(false);
   });
 
-  it('couverture d’une ancienne ville neutralisée → demande zonée non couverte → refusé', () => {
-    // GEO-04 : `activeCoverageZoneIds` ne retient que la ville courante ;
+  it('couverture d’une ancienne ville neutralisée → demande zonée non couverte → refusé', () => {    // GEO-04 : `activeCoverageZoneIds` ne retient que la ville courante ;
     // ici le technicien (ville B) ne retient rien de l’ancienne ville A.
     expect(
       eligible({
@@ -103,6 +102,126 @@ describe('isGeoEligible — matching ville + zone', () => {
         technicianCity: 'Yaoundé',
         demandeZoneId: 'z-a',
         technicianActiveZoneIds: ['z-b'],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isGeoEligible — cas métier A→F (matching intelligent)', () => {
+  it('cas A : client Douala / technicien Douala → MATCH', () => {
+    expect(
+      eligible({
+        demandeCityId: 'c-douala',
+        demandeCity: 'Douala',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+      }),
+    ).toBe(true);
+  });
+
+  it('cas B : client Douala (sans zone) / technicien Douala + Boko → MATCH', () => {
+    expect(
+      eligible({
+        demandeCityId: 'c-douala',
+        demandeCity: 'Douala',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+        demandeZoneId: null,
+        technicianActiveZoneIds: ['z-boko'],
+      }),
+    ).toBe(true);
+  });
+
+  it('cas C : Douala/Boko des deux côtés → MATCH', () => {
+    expect(
+      eligible({
+        demandeCityId: 'c-douala',
+        demandeCity: 'Douala',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+        demandeZoneId: 'z-boko',
+        technicianActiveZoneIds: ['z-boko'],
+      }),
+    ).toBe(true);
+  });
+
+  it('cas D : demande Boko / couverture Akwa → PAS de match', () => {
+    expect(
+      eligible({
+        demandeCityId: 'c-douala',
+        demandeCity: 'Douala',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+        demandeZoneId: 'z-boko',
+        technicianActiveZoneIds: ['z-akwa'],
+      }),
+    ).toBe(false);
+  });
+
+  it('cas E : ville inconnue → jamais de cityId inventé, repli sûr', () => {
+    // Textes incompatibles : exclu, sans cityId fabriqué.
+    expect(
+      eligible({
+        demandeCityId: null,
+        demandeCity: 'Ville Inconnue Xyz',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+      }),
+    ).toBe(false);
+  });
+
+  it('cas F : technicien multi-zones matche chaque zone compatible', () => {
+    const coverages = ['z-boko', 'z-akwa', 'z-bonamoussadi'];
+    for (const zone of coverages) {
+      expect(
+        eligible({
+          demandeCityId: 'c-douala',
+          demandeCity: 'Douala',
+          technicianCityId: 'c-douala',
+          technicianCity: 'Douala',
+          demandeZoneId: zone,
+          technicianActiveZoneIds: coverages,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      eligible({
+        demandeCityId: 'c-douala',
+        demandeCity: 'Douala',
+        technicianCityId: 'c-douala',
+        technicianCity: 'Douala',
+        demandeZoneId: 'z-autre',
+        technicianActiveZoneIds: coverages,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isGeoEligible — robustesse de saisie (cas 2/3/4/5/6)', () => {
+  it.each([
+    ['DOUALA', 'douala'],
+    ['Doualà', 'douala'],
+    ['  Douala  ', 'douala'],
+    ['Douala,', 'douala'],
+    ['Saint-Louis', 'Saint Louis'],
+  ])('fallback tolérant : %s ≡ %s', (demandeCity, technicianCity) => {
+    expect(
+      eligible({
+        demandeCityId: null,
+        demandeCity,
+        technicianCityId: null,
+        technicianCity,
+      }),
+    ).toBe(true);
+  });
+
+  it('pas de faux positif : Douala-Littoral ≠ Douala en fallback', () => {
+    expect(
+      eligible({
+        demandeCityId: null,
+        demandeCity: 'Douala-Littoral',
+        technicianCityId: null,
+        technicianCity: 'Douala',
       }),
     ).toBe(false);
   });

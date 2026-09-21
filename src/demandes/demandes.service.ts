@@ -10,6 +10,7 @@ import { FinancialService } from '../financial/financial.service.js';
 import {
   findCityMatches,
   resolveCityIdFromCandidates,
+  resolveGeoFromText,
 } from '../geo/city-reference.js';
 import {
   buildNotification,
@@ -164,6 +165,19 @@ export function isMatchingStatus(status: string): status is 'SUBMITTED' | 'PENDI
 
 export function isAsapMode(mode: string): boolean {
   return mode === 'ASAP';
+}
+
+/* Priorité d'affichage des opportunités (préservée à l'identique) :
+ * « dès que possible » d'abord, puis plus récent d'abord. Extraite en
+ * fonction pure et partagée pour testabilité (recherche technicien). */
+export function compareDemandePriority(
+  a: { requestedMode: string; createdAt: Date },
+  b: { requestedMode: string; createdAt: Date },
+): number {
+  const aAsap = isAsapMode(a.requestedMode);
+  const bAsap = isAsapMode(b.requestedMode);
+  if (aAsap !== bAsap) return aAsap ? -1 : 1;
+  return b.createdAt.getTime() - a.createdAt.getTime();
 }
 
 export function resolveRequestedAt(mode: string, requestedAt?: string): Date | null {
@@ -358,9 +372,10 @@ export class DemandesService {
     return { domainId, brandId, modelId, problemId, category };
   }
 
-  /* Sprint 8.8.2 (règles D + E) — rattachement géographique structuré.
-   * - Sans `zoneId` : résolution non bloquante du texte de ville
-   *   (correspondance unique active → cityId, sinon null, texte conservé).
+  /* Rattachement géographique structuré (canonique, non bloquant).
+   * - Sans `zoneId` : `resolveGeoFromText` (ville exacte → tête « ville,
+   *   région » → nom de zone seul → typo sûre, chaque niveau exigeant
+   *   unicité + activité ; sinon { null, null }, texte conservé).
    * - Avec `zoneId` : la zone doit exister et être active ; si la demande a
    *   déjà un `cityId`, la zone doit appartenir à cette ville ; sinon le
    *   `cityId` est dérivé de la zone, sauf contradiction explicite entre le
@@ -374,11 +389,16 @@ export class DemandesService {
       where: { isActive: true },
       select: { id: true, name: true, slug: true, isActive: true },
     });
-    const resolvedCityId = resolveCityIdFromCandidates(cities, dto.city);
 
     if (!dto.zoneId) {
-      return { cityId: resolvedCityId, zoneId: null };
+      const zones = await this.prisma.zone.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true, slug: true, cityId: true, isActive: true },
+      });
+      return resolveGeoFromText(cities, zones, dto.city);
     }
+
+    const resolvedCityId = resolveCityIdFromCandidates(cities, dto.city);
 
     const zone = await this.prisma.zone.findUnique({
       where: { id: dto.zoneId },

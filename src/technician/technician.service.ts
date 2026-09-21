@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { toApiDemande, toApiDemandePublic, isMatchingStatus, isAsapMode } from '../demandes/demandes.service.js';
+import { toApiDemande, toApiDemandePublic, isMatchingStatus, compareDemandePriority } from '../demandes/demandes.service.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import {
   buildNotification,
@@ -39,11 +39,18 @@ import {
 import type { KycDocumentType } from '../generated/prisma/enums.js';
 import { ReviewsService } from '../reviews/reviews.service.js';
 
+/* Normalisation du fallback 8.8.1 (comparaison tolérante) : minuscules,
+ * diacritiques supprimés, ponctuation/tirets neutralisés en espaces,
+ * espaces unifiés. La sémantique est inchangée (égalité après
+ * normalisation) ; seules des variantes purement typographiques
+ * (« Douala, » ≡ « Douala ») cessent d'être discriminées. */
 export function normalizeValue(value: string): string {
   return value
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
+    .replace(/[’‘′`´]/g, "'")
+    .replace(/[^a-z0-9' ]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
 }
@@ -593,14 +600,9 @@ export class TechnicianService {
             technicianActiveZoneIds: coverageZoneIds,
           }) && normalizedCategories.includes(normalizeCategory(d.category)),
       )
-      .sort((a, b) => {
-        // Les demandes « dès que possible » passent en premier (signal de priorité) ;
-        // à besoin équivalent, la plus récente d'abord.
-        const aAsap = isAsapMode(a.requestedMode);
-        const bAsap = isAsapMode(b.requestedMode);
-        if (aAsap !== bAsap) return aAsap ? -1 : 1;
-        return b.createdAt.getTime() - a.createdAt.getTime();
-      })
+      // Les demandes « dès que possible » passent en premier (signal de priorité) ;
+      // à besoin équivalent, la plus récente d'abord (voir `compareDemandePriority`).
+      .sort((a, b) => compareDemandePriority(a, b))
       .slice(0, 50)
       .map((d) => toApiDemandePublic(d));
   }
