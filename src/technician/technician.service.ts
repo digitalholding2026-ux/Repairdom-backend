@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { toApiDemande, toApiDemandePublic, isMatchingStatus, compareDemandePriority } from '../demandes/demandes.service.js';
+import { toApiDemande, toApiDemandePublic, isMatchingStatus, compareDemandePriority } from '../demandes/demande-helpers.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import {
   buildNotification,
@@ -19,7 +19,7 @@ import {
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { resolveCityId } from '../geo/city-reference.js';
-import { filterActiveCoverageZoneIdsForCity, isZoneMatch } from '../geo/geo-matching.js';
+import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -39,71 +39,20 @@ import {
 import type { KycDocumentType } from '../generated/prisma/enums.js';
 import { ReviewsService } from '../reviews/reviews.service.js';
 
-/* Normalisation du fallback 8.8.1 (comparaison tolérante) : minuscules,
- * diacritiques supprimés, ponctuation/tirets neutralisés en espaces,
- * espaces unifiés. La sémantique est inchangée (égalité après
- * normalisation) ; seules des variantes purement typographiques
- * (« Douala, » ≡ « Douala ») cessent d'être discriminées. */
-export function normalizeValue(value: string): string {
-  return value
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .replace(/[’‘′`´]/g, "'")
-    .replace(/[^a-z0-9' ]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
-
-function normalizeCity(value: string): string {
-  return normalizeValue(value);
-}
+// Correctif boucle circulaire DISPATCH-V1 : les prédicats géographiques
+// partagés vivent dans le module feuille `../geo/geo-eligibility.js` (aucune
+// dépendance de service). Ré-exportés ici pour compatibilité des imports
+// existants (`geo-eligibility.spec.ts`, `dispatch.service.ts` historique).
+export {
+  isCityMatch,
+  isGeoEligible,
+  normalizeValue,
+} from '../geo/geo-eligibility.js';
+export type { GeoEligibilityInput } from '../geo/geo-eligibility.js';
+import { isGeoEligible, normalizeValue } from '../geo/geo-eligibility.js';
 
 function normalizeCategory(value: string): string {
   return normalizeValue(value);
-}
-
-/* Sprint DISPATCH-V1 — exporté pour la vague 2 (ville entière, zone non
- * exigée) : même verrou ville que `isGeoEligible`, sans duplication. */
-export function isCityMatch(
-  demandeCityId: string | null,
-  demandeCity: string,
-  technicianCityId: string | null,
-  technicianCity: string,
-): boolean {
-  if (demandeCityId && technicianCityId) {
-    return demandeCityId === technicianCityId;
-  }
-  return normalizeCity(demandeCity) === normalizeCity(technicianCity);
-}
-
-/* Sprint 8.8.2 (règles A + B) — éligibilité géographique complète, centrale
- * et UNIQUE : les trois parcours (recherche, détail, acceptation) l'utilisent
- * telle quelle, sans variante locale.
- * 1. Verrou ville INCHANGÉ (`isCityMatch`, 8.8.1) : une zone commune ne peut
- *    jamais compenser deux `cityId` renseignés et différents.
- * 2. Zone (`isZoneMatch`, règle B) évaluée UNIQUEMENT si la ville matche. */
-export interface GeoEligibilityInput {
-  demandeCityId: string | null;
-  demandeCity: string;
-  technicianCityId: string | null;
-  technicianCity: string;
-  demandeZoneId: string | null;
-  technicianActiveZoneIds: readonly string[];
-}
-
-export function isGeoEligible(input: GeoEligibilityInput): boolean {
-  if (
-    !isCityMatch(
-      input.demandeCityId,
-      input.demandeCity,
-      input.technicianCityId,
-      input.technicianCity,
-    )
-  ) {
-    return false;
-  }
-  return isZoneMatch(input.demandeZoneId, input.technicianActiveZoneIds);
 }
 
 export interface PublicTechnicianProfile {

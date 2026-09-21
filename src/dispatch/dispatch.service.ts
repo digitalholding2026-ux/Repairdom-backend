@@ -9,8 +9,8 @@ import {
   isCityMatch,
   isGeoEligible,
   normalizeValue,
-} from '../technician/technician.service.js';
-import { isMatchingStatus, labelForCategory } from '../demandes/demandes.service.js';
+} from '../geo/geo-eligibility.js';
+import { isMatchingStatus, labelForCategory } from '../demandes/demande-helpers.js';
 import {
   buildNotification,
   recordEvent,

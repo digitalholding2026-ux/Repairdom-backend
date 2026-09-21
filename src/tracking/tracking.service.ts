@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { labelForCategory } from '../demandes/demandes.service.js';
+import { labelForCategory } from '../demandes/demande-helpers.js';
 import { eventLabel } from '../mission-events/mission-events.js';
 
 @Injectable()
