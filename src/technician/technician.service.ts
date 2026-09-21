@@ -63,7 +63,9 @@ function normalizeCategory(value: string): string {
   return normalizeValue(value);
 }
 
-function isCityMatch(
+/* Sprint DISPATCH-V1 — exporté pour la vague 2 (ville entière, zone non
+ * exigée) : même verrou ville que `isGeoEligible`, sans duplication. */
+export function isCityMatch(
   demandeCityId: string | null,
   demandeCity: string,
   technicianCityId: string | null,

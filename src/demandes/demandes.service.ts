@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
@@ -7,6 +7,7 @@ import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js'
 import { assertTransition } from './demandes-lifecycle.js';
 import { ALLOWED_CATEGORIES } from './categories.js';
 import { FinancialService } from '../financial/financial.service.js';
+import { DispatchService } from '../dispatch/dispatch.service.js';
 import {
   findCityMatches,
   resolveCityIdFromCandidates,
@@ -222,9 +223,12 @@ export function labelForCategory(category: string): string {
 
 @Injectable()
 export class DemandesService {
+  private readonly logger = new Logger(DemandesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
+    private readonly dispatch: DispatchService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -284,6 +288,19 @@ export class DemandesService {
 
           return created;
         });
+
+        // Sprint DISPATCH-V1 — vague 1 APRÈS commit créateur : un échec du
+        // dispatch (vague, notification, e-mail) ne doit JAMAIS annuler ni
+        // casser la création de la demande (tracé, poursuite en vague 2).
+        try {
+          await this.dispatch.dispatchWave1(demande.id);
+        } catch (error) {
+          this.logger.error(
+            `Dispatch vague 1 impossible pour ${demande.id} : ${
+              error instanceof Error ? error.message : 'erreur inconnue'
+            }.`,
+          );
+        }
 
         return toApiDemande(this.withTechnician(demande));
       } catch (error) {

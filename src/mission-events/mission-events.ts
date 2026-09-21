@@ -33,7 +33,9 @@ export type DemandeEventType =
   | 'IN_PROGRESS'
   | 'COMPLETED'
   | 'CONFIRMED'
-  | 'CANCELED';
+  | 'CANCELED'
+  // Sprint DISPATCH-V1 : vague de dispatch notifiée.
+  | 'DISPATCH_WAVE';
 
 export type NotificationType =
   | 'TECHNICIAN_ACCEPTED'
@@ -43,7 +45,8 @@ export type NotificationType =
   | 'QUOTE_REJECTED'
   | 'SCHEDULED'
   | 'COMPLETED'
-  | 'CONFIRMED';
+  | 'CONFIRMED'
+  | 'MISSION_AVAILABLE';
 
 export interface EventInput {
   demandeId: string;
@@ -119,6 +122,7 @@ export function eventLabel(type: string): string {
     COMPLETED: 'Intervention terminée',
     CONFIRMED: 'Mission confirmée',
     CANCELED: 'Mission annulée',
+    DISPATCH_WAVE: 'Vague de dispatch envoyée',
   };
   return labels[type] ?? type;
 }
@@ -190,6 +194,13 @@ export function buildNotification(
     CONFIRMED: {
       title: 'Mission confirmée',
       message: 'Le client a confirmé la réalisation de la mission.',
+    },
+    MISSION_AVAILABLE: {
+      title: 'Nouvelle mission disponible',
+      message:
+        audience === 'TECHNICIAN'
+          ? 'Une intervention correspondant à votre zone est disponible. Consultez les détails pour accepter la mission.'
+          : 'Une nouvelle mission est disponible.',
     },
   };
   const { title, message } = content[type];

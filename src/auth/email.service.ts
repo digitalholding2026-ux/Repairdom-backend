@@ -23,6 +23,14 @@ interface ResendErrorBody {
   message?: unknown;
 }
 
+/** Contenu strictement non privé d'un e-mail « mission disponible ». */
+export interface MissionEmailInput {
+  demandeLink: string;
+  city: string;
+  categoryLabel: string;
+  reference: string;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -53,23 +61,34 @@ export class EmailService {
     return this.apiKey !== null;
   }
 
+  /* Envoi brut via Resend. Lève une Error assainie (statut + résumé
+   * Resend, jamais la clé) en cas d'échec : l'appelant décide de la
+   * politique d'erreur (journalisation, poursuite, reprise). */
+  private async postEmail(input: { to: string; subject: string; text: string; html: string }): Promise<void> {
+    const response = await fetch(RESEND_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ from: this.from, to: [input.to], subject: input.subject, text: input.text, html: input.html }),
+      signal: AbortSignal.timeout(RESEND_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} — ${await this.resendErrorSummary(response)}`);
+    }
+  }
+
   async sendVerificationEmail(to: string, verificationLink: string): Promise<void> {
     if (!this.apiKey) {
       this.logger.warn(`[email non envoyé] lien de vérification pour ${to} : ${verificationLink}`);
       return;
     }
     try {
-      const response = await fetch(RESEND_API_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: this.from,
-          to: [to],
-          subject: 'Vérifiez votre adresse email — Relio',
-          text: [
+      await this.postEmail({
+        to,
+        subject: 'Vérifiez votre adresse email — Relio',
+        text: [
             'Bonjour,',
             '',
             'Bienvenue sur Relio. Pour activer votre compte et passer vos premières demandes de dépannage,',
@@ -95,22 +114,49 @@ export class EmailService {
             '<p style="color:#6b7280;font-size:12px">— L\'équipe Relio</p>',
             '</div>',
           ].join(''),
-        }),
-        signal: AbortSignal.timeout(RESEND_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        this.logger.error(
-          `Échec d'envoi Resend pour ${to} : HTTP ${response.status} — ${await this.resendErrorSummary(response)}.`,
-        );
-        return;
-      }
+        },
+      );
       this.logger.log(`E-mail de vérification envoyé à ${to}.`);
     } catch (error) {
-      // Réseau/timeout : journalisé sans secret, sans propagation (le compte
+      // Réseau/timeout/HTTP : journalisé sans secret, sans propagation (le compte
       // reste non vérifié, un nouveau lien peut être demandé).
       const reason = error instanceof Error ? error.message : 'erreur inconnue';
       this.logger.error(`Échec d'envoi Resend pour ${to} : ${reason}.`);
     }
+  }
+
+  /* E-mail « mission disponible » (dispatch V1). Données strictement limitées
+   * à ce que le technicien peut déjà consulter (ville, catégorie, référence,
+   * lien applicatif) : aucune donnée privée du client. Lève une Error
+   * assainie en cas d'échec : c'est le DispatchService qui isole l'erreur
+   * par destinataire (In-App conservée) et journalise. */
+  async sendMissionAvailable(to: string, input: MissionEmailInput): Promise<void> {
+    await this.postEmail({
+      to,
+      subject: `Nouvelle mission disponible — Relio (${input.reference})`,
+      text: [
+        'Bonjour,',
+        '',
+        'Une nouvelle mission est disponible dans votre secteur ' +
+          `(${input.categoryLabel}, ${input.city}, réf. ${input.reference}).`,
+        'Consultez les détails dans l’application pour accepter la mission :',
+        '',
+        input.demandeLink,
+        '',
+        'À bientôt,',
+        "L'équipe Relio",
+      ].join('\n'),
+      html: [
+        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#111827">',
+        '<h2 style="color:#007bff">Nouvelle mission disponible</h2>',
+        `<p>Une intervention correspondant à votre zone est disponible (${input.categoryLabel}, ${input.city}, réf. ${input.reference}).</p>`,
+        '<p style="margin:24px 0"><a href="' +
+          input.demandeLink +
+          '" style="background:#007bff;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600">Voir la mission</a></p>',
+        '<p style="color:#6b7280;font-size:12px">— L\'équipe Relio</p>',
+        '</div>',
+      ].join(''),
+    });
   }
 
   /** Résumé d'erreur Resend (nom + message uniquement : jamais la clé ni le corps brut). */

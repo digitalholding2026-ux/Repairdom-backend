@@ -42,9 +42,13 @@ enum DemandeEventType {
   COMPLETED
   CONFIRMED
   CANCELED
+  // Sprint DISPATCH-V1 : vague de dispatch notifiée (metadata : wave, candidateCount).
+  DISPATCH_WAVE
 }
 
 // Sprint 8.3 : notifications applicatives (créées uniquement par le backend).
+// Sprint DISPATCH-V1 : MISSION_AVAILABLE = nouvelle mission proposée aux
+// techniciens (antérieure à toute acceptation, distincte des types post-assignation).
 enum NotificationType {
   TECHNICIAN_ACCEPTED
   QUOTE_CREATED
@@ -54,6 +58,7 @@ enum NotificationType {
   SCHEDULED
   COMPLETED
   CONFIRMED
+  MISSION_AVAILABLE
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -168,6 +173,7 @@ model User {
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
   demandeEvents       DemandeEvent[]
   notifications       Notification[]
+  dispatchWaves       DispatchWave[]
   financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
 }
@@ -290,6 +296,7 @@ model Demande {
   reviews     Review[]
   events      DemandeEvent[]
   notifications Notification[]
+  dispatchWaves DispatchWave[]
   financialTransactions FinancialTransaction[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -336,6 +343,34 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, readAt])
+}
+
+// Sprint DISPATCH-V1 — suivi des vagues de dispatch (dispatch intelligent).
+//
+// Une ligne = un technicien contacté pour une demande, une vague, un canal.
+// Source de vérité anti-doublon : @@unique([demandeId, wave, userId, channel])
+// (idempotence face aux redémarrages, doubles exécutions scheduler et
+// relances accidentelles).
+// ON DELETE CASCADE des deux côtés : la suppression d'une demande ou d'un
+// compte efface ses traces de dispatch, sans jamais bloquer (aucun Restrict).
+// `channel` reste un texte ('IN_APP' / 'EMAIL') : WhatsApp/SMS hors périmètre
+// V1, aucun nouveau type tant qu'ils ne sont pas décidés.
+// `sentAt` = heure d'envoi effective (référence des +10 minutes vers vague 2).
+model DispatchWave {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId String
+  userId    String
+  wave      Int
+  channel   String
+  sentAt    DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([demandeId, wave, userId, channel])
+  @@index([demandeId, wave])
+  @@index([wave, sentAt])
 }
 
 model TechnicianProfile {

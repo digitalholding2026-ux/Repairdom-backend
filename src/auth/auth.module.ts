@@ -9,6 +9,8 @@ import { SupabaseStorageService } from '../technician/supabase-storage.service.j
 @Module({
   controllers: [AuthController],
   providers: [AuthService, EmailService, SupabaseStorageService, JwtAuthGuard, RolesGuard],
-  exports: [AuthService, JwtAuthGuard, RolesGuard],
+  // Sprint DISPATCH-V1 — EmailService exporté pour le DispatchService
+  // (e-mails « mission disponible », même transport Resend).
+  exports: [AuthService, EmailService, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}
