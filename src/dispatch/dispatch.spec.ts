@@ -44,9 +44,53 @@ describe('selectCandidatesForWave — vague 1', () => {
     ).toHaveLength(0);
   });
 
-  it('KYC non VERIFIED → exclu', () => {
+  it('KYC non VERIFIED → sélectionné quand même (notification ≠ acceptation)', () => {
     expect(
       selectCandidatesForWave([candidate({ kycStatus: 'PENDING' })], DEMANDE, DISPATCH_WAVE_1, []),
+    ).toHaveLength(1);
+    expect(
+      selectCandidatesForWave(
+        [candidate({ kycStatus: 'NOT_SUBMITTED' })],
+        DEMANDE,
+        DISPATCH_WAVE_2,
+        [],
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('KYC non VERIFIED + hors zone → exclu en vague 1 (cas 3)', () => {
+    expect(
+      selectCandidatesForWave(
+        [candidate({ kycStatus: 'PENDING', coverageZoneIds: ['z-akwa'] })],
+        DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('KYC non VERIFIED + autre ville → exclu vagues 1 et 2 (cas 4)', () => {
+    const other = candidate({ kycStatus: 'PENDING', cityId: CITY_B, city: 'Yaoundé', coverageZoneIds: [] });
+    expect(selectCandidatesForWave([other], DEMANDE, DISPATCH_WAVE_1, [])).toHaveLength(0);
+    expect(selectCandidatesForWave([other], DEMANDE, DISPATCH_WAVE_2, [])).toHaveLength(0);
+  });
+
+  it('KYC VERIFIED mais indisponible → exclu (cas 5, règle inchangée)', () => {
+    expect(
+      selectCandidatesForWave(
+        [candidate({ kycStatus: 'VERIFIED', isAvailable: false })],
+        DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+    expect(
+      selectCandidatesForWave(
+        [candidate({ kycStatus: 'PENDING', isAvailable: false })],
+        DEMANDE,
+        DISPATCH_WAVE_2,
+        [],
+      ),
     ).toHaveLength(0);
   });
 
@@ -284,6 +328,26 @@ describe('runWave — arrêt et idempotence', () => {
     expect(calls.notifications).toHaveLength(1);
     expect(calls.notifications).toContainEqual(expect.objectContaining({ type: 'MISSION_AVAILABLE' }));
     expect(calls.events).toHaveLength(1);
+    expect(calls.emails).toEqual(['tech-1@example.com']);
+  });
+
+  it('cas 2 — technicien PENDING notifié (In-App + e-mail), comme un VERIFIED', async () => {
+    const pendingTech = {
+      ...TECH_ROW,
+      technicianProfile: { ...TECH_ROW.technicianProfile, kycStatus: 'PENDING' },
+    };
+    const { service, calls } = mockService(DEMANDE_ROW, [pendingTech]);
+    const result = await service.dispatchWave1('d-1');
+    expect(result).toEqual({ wave: 1, notified: 1, skipped: false });
+    expect(calls.waveRows).toHaveLength(2);
+    expect(calls.waveRows).toContainEqual(
+      expect.objectContaining({ demandeId: 'd-1', wave: 1, userId: 'tech-1', channel: DISPATCH_CHANNEL_IN_APP }),
+    );
+    expect(calls.waveRows).toContainEqual(
+      expect.objectContaining({ demandeId: 'd-1', wave: 1, userId: 'tech-1', channel: DISPATCH_CHANNEL_EMAIL }),
+    );
+    expect(calls.notifications).toHaveLength(1);
+    expect(calls.notifications).toContainEqual(expect.objectContaining({ type: 'MISSION_AVAILABLE' }));
     expect(calls.emails).toEqual(['tech-1@example.com']);
   });
 

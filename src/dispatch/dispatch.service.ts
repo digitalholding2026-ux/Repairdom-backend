@@ -18,10 +18,15 @@ import {
 
 /* Sprint DISPATCH-V1 — Dispatch intelligent (2 vagues max, STOP ensuite).
  *
- * Vague 1 : techniciens disponibles + KYC VERIFIED + `isGeoEligible`
- * (ville + zone, règles de transition préservées).
+ * Principe : NOTIFICATION ≠ ÉLIGIBILITÉ À L'ACCEPTATION. Le KYC n'est PAS
+ * exigé pour informer un technicien ; il reste OBLIGATOIRE pour accepter
+ * (contrôle `TechnicianService.acceptDemande`, 403 pré-transaction).
+ *
+ * Vague 1 : techniciens disponibles + `isGeoEligible` (ville + zone, règles
+ * de transition préservées), KYC NON REQUIS.
  * Vague 2 (+10 min sans acceptation) : même ville (`isCityMatch`, zone non
- * exigée), hors techniciens déjà sollicités (vague 1), jamais inter-ville.
+ * exigée), hors techniciens déjà sollicités (vague 1), jamais inter-ville,
+ * KYC NON REQUIS.
  *
  * Invariants :
  * - `isGeoEligible` / `isCityMatch` sont la source de vérité géographique
@@ -29,7 +34,8 @@ import {
  * - `DispatchWave @@unique([demandeId, wave, userId, channel])` garantit
  *   l'idempotence (redémarrage, double exécution, relance).
  * - L'acceptation atomique (`updateMany` gardé, inchangée) reste seule juge :
- *   chaque vague revérifie `technicianId IS NULL` + statut avant d'agir.
+ *   chaque vague revérifie `technicianId IS NULL` + statut avant d'agir, et
+ *   seul un technicien KYC VERIFIED peut accepter (garde backend dédiée).
  * - E-mail non bloquant : échec isolé par destinataire, In-App conservée.
  */
 
@@ -75,7 +81,10 @@ export function isWave2Due(wave1SentAt: Date, now: Date): boolean {
 /* Sélection pure (testable sans base) :
  * - vague 1 : `isGeoEligible` (ville + zone, transitions incluses) ;
  * - vague 2 : `isCityMatch` seul (ville entière, zone non exigée) ;
- * - toujours : disponible + KYC VERIFIED + catégorie + hors déjà sollicités. */
+ * - toujours : disponible + catégorie + hors déjà sollicités.
+ * Le KYC n'est JAMAIS un critère de notification (ni vague 1, ni vague 2) :
+ * un technicien non vérifié est informé comme les autres, mais seul un
+ * technicien KYC VERIFIED peut accepter (garde `acceptDemande`, backend). */
 export function selectCandidatesForWave(
   candidates: DispatchCandidate[],
   demande: DispatchDemandeGeo,
@@ -85,7 +94,6 @@ export function selectCandidatesForWave(
   const excluded = new Set(alreadyNotifiedUserIds);
   return candidates.filter((candidate) => {
     if (!candidate.isAvailable) return false;
-    if (candidate.kycStatus !== 'VERIFIED') return false;
     if (excluded.has(candidate.userId)) return false;
     const categoryOk = candidate.categories.some(
       (category) => normalizeValue(category) === normalizeValue(demande.category),
@@ -286,12 +294,14 @@ export class DispatchService {
   }
 
   /* Chargement ciblé en 2 requêtes (pas de N+1) : techniciens disponibles
-   * vérifiés, puis couvertures actives filtrées ville (GEO-04). */
+   * (quel que soit leur KYC — la notification n'exige pas la vérification),
+   * puis couvertures actives filtrées ville (GEO-04). Le `kycStatus` reste
+   * sélectionné à titre informatif ; seul `acceptDemande` l'exige. */
   private async loadCandidates(): Promise<DispatchCandidate[]> {
     const technicians = await this.prisma.user.findMany({
       where: {
         role: 'TECHNICIAN',
-        technicianProfile: { isAvailable: true, kycStatus: 'VERIFIED' },
+        technicianProfile: { isAvailable: true },
       },
       select: {
         id: true,
