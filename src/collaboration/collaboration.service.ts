@@ -15,6 +15,11 @@ import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
+/* Phase A (frontend) — le technicien assigné voit le barème (fourchette
+ * min/ref/max + frais, SANS historique ni données internes) dès le choix du
+ * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
+ * technicien assigné (TECHNICIAN + contrôle d'assignation). */
+import { toTechnicianPricing } from '../admin/pricing-visibility.js';
 import {
   buildNotification,
   createNotification,
@@ -571,6 +576,18 @@ export class CollaborationService {
             estimatedTime: true,
             needsParts: true,
             partsNote: true,
+            pricing: {
+              select: {
+                interventionId: true,
+                minPrice: true,
+                referencePrice: true,
+                maxPrice: true,
+                travelFee: true,
+                serviceFee: true,
+                currency: true,
+                priceMode: true,
+              },
+            },
           },
         },
       },
@@ -611,6 +628,7 @@ export class CollaborationService {
           estimatedTime: i.estimatedTime,
           needsParts: i.needsParts,
           partsNote: i.partsNote,
+          pricing: i.pricing ? toTechnicianPricing(i.pricing) : null,
         })),
         score,
       })),
