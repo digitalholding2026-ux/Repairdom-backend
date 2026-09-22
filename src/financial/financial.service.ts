@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -18,6 +19,10 @@ import {
   FINANCIAL_CURRENCY,
   RELIO_COMMISSION_RATE_DENOMINATOR,
   RELIO_COMMISSION_RATE_NUMERATOR,
+  RELIO_WITHDRAWAL_NOTE_MAX_LENGTH,
+  RELIO_WITHDRAWAL_REFERENCE_ALPHABET,
+  RELIO_WITHDRAWAL_REFERENCE_LENGTH,
+  RELIO_WITHDRAWAL_REFERENCE_PREFIX,
   STANDARD_TRANSPORT_FEE,
   TECHNICIAN_PLATFORM_FEE,
   TOTAL_PLATFORM_FEES,
@@ -1219,4 +1224,180 @@ export class FinancialService {
       balance,
     };
   }
+
+  /* ── Fonds Relio + retraits ADMIN (Sprint ADMIN SUPER POWERS) ─── */
+  /* Le portefeuille Relio n'est PAS un deuxième système financier : il est
+   * calculé depuis le ledger existant.
+   *   - commissions acquises = Σ TECHNICIAN_FEE (2 % du brut, au CONFIRMED)
+   *     + Σ CLIENT_FEE legacy, écritures VALIDATED du mode serveur ;
+   *   - une commission n'est acquise qu'après validation finale (CONFIRMED) :
+   *     les missions non confirmées ne contribuent jamais au disponible ;
+   *   - retraits = lignes RelioWithdrawal VALIDATED (chacune doublée d'une
+   *     écriture ledger RELIO_WITHDRAWAL immuable) ;
+   *   - disponible = acquises − retraits (jamais stocké, toujours calculé). */
+
+  /** Synthèse des fonds Relio du mode serveur (SIMULATION par défaut). */
+  async getRelioFunds() {
+    const mode = this.getMode();
+    return this.prisma.$transaction(async (tx) => this.computeRelioFunds(tx, mode));
+  }
+
+  /** Retrait des fonds Relio par un admin. Traçable : ligne RelioWithdrawal
+   *  (référence UNIQUE RELIO-WD-…) + écriture ledger RELIO_WITHDRAWAL, dans
+   *  la même transaction. Protections : montant > 0, montant ≤ disponible,
+   *  verrou consultatif PostgreSQL contre les retraits concurrents (jamais
+   *  de solde négatif), références uniques contre le double retrait. */
+  async withdrawRelioFunds(adminId: string, amount: number, note?: string | null) {
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new BadRequestException(
+        'Le montant du retrait doit être un entier XAF strictement positif.',
+      );
+    }
+    const cleanNote = note?.trim() || null;
+    if (cleanNote && cleanNote.length > RELIO_WITHDRAWAL_NOTE_MAX_LENGTH) {
+      throw new BadRequestException(
+        `La note ne peut pas dépasser ${RELIO_WITHDRAWAL_NOTE_MAX_LENGTH} caractères.`,
+      );
+    }
+    const admin = await this.prisma.user.findUnique({
+      where: { id: adminId },
+      select: { id: true, role: true },
+    });
+    if (!admin || admin.role !== 'ADMIN') {
+      throw new ForbiddenException('Seul un administrateur peut effectuer un retrait.');
+    }
+
+    const mode = this.getMode();
+    return this.prisma.$transaction(async (tx) => {
+      // Verrou consultatif de la transaction : sérialise les retraits
+      // concurrents (deux retraits simultanés ne peuvent pas dépasser le
+      // disponible ensemble).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('relio_withdrawal'))`;
+
+      const funds = await this.computeRelioFunds(tx, mode);
+      if (amount > funds.available) {
+        throw new BadRequestException(
+          `Retrait impossible : ${amount} XAF demandés pour ${funds.available} XAF disponibles.`,
+        );
+      }
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const reference = generateRelioWithdrawalReference();
+        try {
+          const withdrawal = await tx.relioWithdrawal.create({
+            data: {
+              reference,
+              amount,
+              note: cleanNote,
+              mode,
+              requestedById: adminId,
+            },
+            include: {
+              requestedBy: { select: { id: true, firstName: true, lastName: true } },
+            },
+          });
+          await this.record(
+            tx,
+            {
+              userId: adminId,
+              demandeId: null,
+              type: 'RELIO_WITHDRAWAL',
+              direction: 'DEBIT',
+              amount,
+              reference: `relio-withdrawal-ledger:${withdrawal.id}:${mode}`,
+              createdById: adminId,
+              metadata: {
+                withdrawalId: withdrawal.id,
+                withdrawalReference: reference,
+                note: cleanNote,
+                currency: FINANCIAL_CURRENCY,
+              },
+            },
+            { mode },
+          );
+          return {
+            ...toApiRelioWithdrawal(withdrawal),
+            availableAfter: funds.available - amount,
+          };
+        } catch (error) {
+          // Collision sur la référence générée : on regénère (P2002).
+          if ((error as { code?: string }).code === 'P2002') continue;
+          throw error;
+        }
+      }
+      throw new Error('Impossible de générer une référence de retrait unique. Réessayez.');
+    });
+  }
+
+  /** Historique des retraits Relio (traçabilité : date, montant, admin,
+   *  référence, statut). */
+  async listRelioWithdrawals() {
+    const rows = await this.prisma.relioWithdrawal.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      include: {
+        requestedBy: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+    return { items: rows.map(toApiRelioWithdrawal) };
+  }
+
+  private async computeRelioFunds(tx: Tx, mode: FinancialTransactionMode) {
+    const [technicianFees, clientFees, withdrawals, withdrawalsCount] = await Promise.all([
+      tx.financialTransaction.aggregate({
+        where: { mode, status: 'VALIDATED', type: 'TECHNICIAN_FEE', direction: 'DEBIT' },
+        _sum: { amount: true },
+      }),
+      tx.financialTransaction.aggregate({
+        where: { mode, status: 'VALIDATED', type: 'CLIENT_FEE', direction: 'DEBIT' },
+        _sum: { amount: true },
+      }),
+      tx.relioWithdrawal.aggregate({
+        where: { mode, status: 'VALIDATED' },
+        _sum: { amount: true },
+      }),
+      tx.relioWithdrawal.count({ where: { mode, status: 'VALIDATED' } }),
+    ]);
+    const acquired = (technicianFees._sum.amount ?? 0) + (clientFees._sum.amount ?? 0);
+    const withdrawn = withdrawals._sum.amount ?? 0;
+    return {
+      mode,
+      currency: FINANCIAL_CURRENCY,
+      acquired,
+      withdrawn,
+      available: acquired - withdrawn,
+      withdrawalsCount,
+    };
+  }
+}
+
+export function generateRelioWithdrawalReference(): string {
+  let reference = RELIO_WITHDRAWAL_REFERENCE_PREFIX;
+  for (let i = 0; i < RELIO_WITHDRAWAL_REFERENCE_LENGTH; i += 1) {
+    reference +=
+      RELIO_WITHDRAWAL_REFERENCE_ALPHABET[randomInt(RELIO_WITHDRAWAL_REFERENCE_ALPHABET.length)];
+  }
+  return reference;
+}
+
+function toApiRelioWithdrawal(withdrawal: {
+  id: string;
+  reference: string;
+  amount: number;
+  note: string | null;
+  mode: FinancialTransactionMode;
+  status: string;
+  requestedBy: { id: string; firstName: string; lastName: string | null };
+  createdAt: Date;
+}) {
+  return {
+    id: withdrawal.id,
+    reference: withdrawal.reference,
+    amount: withdrawal.amount,
+    note: withdrawal.note,
+    mode: withdrawal.mode,
+    status: withdrawal.status,
+    requestedBy: withdrawal.requestedBy,
+    createdAt: withdrawal.createdAt.toISOString(),
+  };
 }

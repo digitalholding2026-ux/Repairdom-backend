@@ -63,3 +63,10 @@ export function computeTechnicianNet(grossAmount: number): number {
 /* Provisionnement de compte client pour le simulateur. */
 export const DEFAULT_TEST_CREDIT_AMOUNT = 50_000;
 export const MAX_TEST_CREDIT_AMOUNT = 1_000_000;
+
+/* ── Retraits des fonds Relio (Sprint ADMIN SUPER POWERS) ──────────── */
+export const RELIO_WITHDRAWAL_REFERENCE_PREFIX = 'RELIO-WD-';
+export const RELIO_WITHDRAWAL_REFERENCE_LENGTH = 8;
+export const RELIO_WITHDRAWAL_REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+export const RELIO_WITHDRAWAL_NOTE_MAX_LENGTH = 500;
+export const RELIO_WITHDRAWAL_MAX_AMOUNT = 1_000_000_000;

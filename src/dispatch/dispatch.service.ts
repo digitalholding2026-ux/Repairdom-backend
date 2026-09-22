@@ -301,6 +301,9 @@ export class DispatchService {
     const technicians = await this.prisma.user.findMany({
       where: {
         role: 'TECHNICIAN',
+        // Sprint ADMIN SUPER POWERS : un compte désactivé par l'admin ne
+        // reçoit plus aucune mission (connexion déjà bloquée côté auth).
+        isActive: true,
         technicianProfile: { isAvailable: true },
       },
       select: {

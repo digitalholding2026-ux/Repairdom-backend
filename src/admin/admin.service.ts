@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -471,6 +472,224 @@ export class AdminService {
         lastName: user.lastName,
         email: user.email,
       })),
+    };
+  }
+
+  /* ── Gestion des comptes (Sprint ADMIN SUPER POWERS) ──────── */
+  /* Recherche de comptes TECHNICIAN (miroir de la recherche clients) :
+   * identité minimale (id / prénom / nom / email / actif), réservé ADMIN. */
+  async searchTechnicianUsers(query: string) {
+    const q = query.trim();
+    if (!q) return { items: [] };
+
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: Role.TECHNICIAN,
+        OR: [
+          { firstName: { contains: q, mode: 'insensitive' } },
+          { lastName: { contains: q, mode: 'insensitive' } },
+          { email: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        isActive: true,
+      },
+      orderBy: { firstName: 'asc' },
+      take: ADMIN_CLIENT_SEARCH_LIMIT,
+    });
+
+    return {
+      items: users.map((user) => ({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        isActive: user.isActive,
+      })),
+    };
+  }
+
+  /* Détail d'un compte pour l'admin : identité, rôle, état, dates, et
+   * compteurs de dépendances qui conditionnent la stratégie de suppression
+   * (physique si tout est à zéro, désactivation logique sinon). */
+  async getUserAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        role: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+      },
+    });
+    if (!user) throw new NotFoundException('Compte introuvable.');
+    const dependencies = await this.countUserDependencies(userId);
+    return {
+      ...user,
+      createdAt: user.createdAt.toISOString(),
+      dependencies,
+      deletable: Object.values(dependencies).every((count) => count === 0),
+    };
+  }
+
+  /* Suppression administrative d'un compte CLIENT ou TECHNICIAN.
+   * Règle fondamentale : l'historique (missions, devis, diagnostics, ledger,
+   * KYC) n'est jamais détruit.
+   *   - zéro dépendance → suppression PHYSIQUE ;
+   *   - au moins une dépendance → DÉSACTIVATION (isActive = false) : le
+   *     compte ne peut plus se connecter, mais toutes ses données restent
+   *     lisibles (missions, finances, réconciliation).
+   * Garde-fous backend : jamais sur un compte ADMIN, jamais sur soi-même. */
+  async deleteUserAccount(adminId: string, userId: string) {
+    if (adminId === userId) {
+      throw new BadRequestException('Vous ne pouvez pas supprimer votre propre compte.');
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, firstName: true, lastName: true, email: true, isActive: true },
+    });
+    if (!user) throw new NotFoundException('Compte introuvable.');
+    if (user.role === 'ADMIN') {
+      throw new ForbiddenException('Un compte administrateur ne peut pas être supprimé.');
+    }
+
+    const dependencies = await this.countUserDependencies(userId);
+    const total = Object.values(dependencies).reduce((sum, count) => sum + count, 0);
+    if (total === 0) {
+      await this.prisma.user.delete({ where: { id: userId } });
+      return {
+        id: userId,
+        role: user.role,
+        action: 'DELETED' as const,
+        message: 'Compte supprimé (aucune donnée liée).',
+        dependencies,
+      };
+    }
+    await this.prisma.user.update({ where: { id: userId }, data: { isActive: false } });
+    const details = Object.entries(dependencies)
+      .filter(([, count]) => count > 0)
+      .map(([name, count]) => `${count} ${name}`)
+      .join(', ');
+    return {
+      id: userId,
+      role: user.role,
+      action: 'DEACTIVATED' as const,
+      message: `Compte désactivé (données conservées : ${details}). Connexion bloquée.`,
+      dependencies,
+    };
+  }
+
+  /* Compte toutes les relations d'un User qui portent de l'historique.
+   * Une suppression physique avec un total > 0 est interdite (cascade
+   * Demande.clientId destructrice, RESTRICT ledger, profils/KYC liés). */
+  private async countUserDependencies(userId: string) {
+    const [
+      demandesClient,
+      demandesTechnicien,
+      messages,
+      diagnostics,
+      devis,
+      notifications,
+      transactions,
+      vaguesDispatch,
+      evenements,
+      avisRediges,
+      avisRecus,
+      documentsKyc,
+      revuesKyc,
+      profil,
+    ] = await Promise.all([
+      this.prisma.demande.count({ where: { clientId: userId } }),
+      this.prisma.demande.count({ where: { technicianId: userId } }),
+      this.prisma.message.count({ where: { senderId: userId } }),
+      this.prisma.diagnostic.count({ where: { technicianId: userId } }),
+      this.prisma.quote.count({ where: { technicianId: userId } }),
+      this.prisma.notification.count({ where: { userId } }),
+      this.prisma.financialTransaction.count({ where: { userId } }),
+      this.prisma.dispatchWave.count({ where: { userId } }),
+      this.prisma.demandeEvent.count({ where: { actorUserId: userId } }),
+      this.prisma.review.count({ where: { authorId: userId } }),
+      this.prisma.review.count({ where: { targetId: userId } }),
+      this.prisma.kycDocument.count({ where: { technicianId: userId } }),
+      this.prisma.kycReview.count({ where: { technicianId: userId } }),
+      this.prisma.technicianProfile.count({ where: { userId } }),
+    ]);
+    return {
+      demandesClient,
+      demandesTechnicien,
+      messages,
+      diagnostics,
+      devis,
+      notifications,
+      transactions,
+      vaguesDispatch,
+      evenements,
+      avisRediges,
+      avisRecus,
+      documentsKyc,
+      revuesKyc,
+      profil,
+    };
+  }
+
+  /* ── Message direct ADMIN → TECHNICIEN (Sprint ADMIN SUPER POWERS) ─ */
+  /* Le destinataire est résolu côté backend depuis son email normalisé
+   * (minuscules, espaces rognés) ; aucun userId frontend ne fait foi.
+   * Vérifications : existence, rôle TECHNICIAN, compte actif. Le message est
+   * stocké comme Notification (type ADMIN_MESSAGE, sans mission) et apparaît
+   * dans l'espace technicien via la liste existante (pas de système
+   * parallèle). Réservé ADMIN par le guard du controller. */
+  async sendTechnicianMessage(adminId: string, email: string, message: string) {
+    void adminId;
+    const normalized = email.toLowerCase().trim();
+    if (!normalized) throw new BadRequestException('Adresse email invalide.');
+    const content = message.trim();
+    if (!content) throw new BadRequestException('Le message ne peut pas être vide.');
+    if (content.length > 1000) {
+      throw new BadRequestException('Le message ne peut pas dépasser 1000 caractères.');
+    }
+
+    const technician = await this.prisma.user.findUnique({
+      where: { email: normalized },
+      select: { id: true, role: true, firstName: true, lastName: true, email: true, isActive: true },
+    });
+    if (!technician) {
+      throw new NotFoundException('Aucun compte technicien trouvé pour cette adresse email.');
+    }
+    if (technician.role !== 'TECHNICIAN') {
+      throw new BadRequestException('Cette adresse email ne correspond pas à un compte technicien.');
+    }
+    if (!technician.isActive) {
+      throw new BadRequestException('Ce compte technicien est désactivé.');
+    }
+
+    const notification = await this.prisma.notification.create({
+      data: {
+        userId: technician.id,
+        demandeId: null,
+        type: 'ADMIN_MESSAGE',
+        title: 'Message de Relio',
+        message: content,
+      },
+    });
+
+    return {
+      id: notification.id,
+      technician: {
+        id: technician.id,
+        firstName: technician.firstName,
+        lastName: technician.lastName,
+        email: technician.email,
+      },
+      createdAt: notification.createdAt.toISOString(),
     };
   }
 }

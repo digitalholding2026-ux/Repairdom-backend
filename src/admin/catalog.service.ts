@@ -1433,4 +1433,225 @@ export class CatalogService {
       },
     });
   }
+
+  /* ── Suppressions administratives (Sprint ADMIN SUPER POWERS) ──── */
+  /* Stratégie unique, documentée, sans données orphelines :
+   *   - aucun dépendant (enfants catalogue, demandes, diagnostics, devis,
+   *     historique tarifaire) → suppression PHYSIQUE ;
+   *   - au moins un dépendant → DÉSACTIVATION (isActive = false), jamais de
+   *     destruction : les demandes, devis, diagnostics et snapshots
+   *     historiques restent intelligibles, et PricingHistory (journal
+   *     immuable) n'est jamais amputé.
+   * Les relations Prisma SetNull/Cascade rendent la suppression physique sûre
+   * quand il n'y a aucun dépendant ; le comptage ci-dessous est la garde
+   * métier qui décide entre les deux stratégies. */
+
+  async deleteDomain(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'domain',
+      id,
+      notFoundMessage: 'Domaine introuvable.',
+      find: () => this.prisma.serviceDomain.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        marques: await this.prisma.deviceBrand.count({ where: { domainId: id } }),
+        problemes: await this.prisma.problem.count({ where: { domainId: id } }),
+        demandes: await this.prisma.demande.count({ where: { domainId: id } }),
+      }),
+      hardDelete: () => this.prisma.serviceDomain.delete({ where: { id } }),
+      deactivate: () => this.prisma.serviceDomain.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteBrand(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'brand',
+      id,
+      notFoundMessage: 'Marque introuvable.',
+      find: () => this.prisma.deviceBrand.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        modeles: await this.prisma.deviceModel.count({ where: { brandId: id } }),
+        problemes: await this.prisma.problem.count({ where: { brandId: id } }),
+        demandes: await this.prisma.demande.count({ where: { brandId: id } }),
+      }),
+      hardDelete: () => this.prisma.deviceBrand.delete({ where: { id } }),
+      deactivate: () => this.prisma.deviceBrand.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteModel(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'model',
+      id,
+      notFoundMessage: 'Modèle introuvable.',
+      find: () => this.prisma.deviceModel.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        problemes: await this.prisma.problem.count({ where: { modelId: id } }),
+        demandes: await this.prisma.demande.count({ where: { modelId: id } }),
+      }),
+      hardDelete: () => this.prisma.deviceModel.delete({ where: { id } }),
+      deactivate: () => this.prisma.deviceModel.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteProblem(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'problem',
+      id,
+      notFoundMessage: 'Problème introuvable.',
+      find: () => this.prisma.problem.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        diagnostics: await this.prisma.catalogDiagnostic.count({ where: { problemId: id } }),
+        demandes: await this.prisma.demande.count({ where: { problemId: id } }),
+      }),
+      hardDelete: () => this.prisma.problem.delete({ where: { id } }),
+      deactivate: () => this.prisma.problem.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteDiagnostic(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'diagnostic',
+      id,
+      notFoundMessage: 'Diagnostic introuvable.',
+      find: () => this.prisma.catalogDiagnostic.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        interventions: await this.prisma.catalogIntervention.count({ where: { diagnosticId: id } }),
+        diagnosticsMission: await this.prisma.diagnostic.count({ where: { catalogDiagnosticId: id } }),
+        devis: await this.prisma.quote.count({ where: { catalogDiagnosticId: id } }),
+      }),
+      hardDelete: () => this.prisma.catalogDiagnostic.delete({ where: { id } }),
+      deactivate: () =>
+        this.prisma.catalogDiagnostic.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteIntervention(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'intervention',
+      id,
+      notFoundMessage: 'Intervention introuvable.',
+      find: () => this.prisma.catalogIntervention.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        tarification: (await this.prisma.pricing.findUnique({ where: { interventionId: id } }))
+          ? 1
+          : 0,
+        diagnosticsMission: await this.prisma.diagnostic.count({
+          where: { catalogInterventionId: id },
+        }),
+        devis: await this.prisma.quote.count({ where: { catalogInterventionId: id } }),
+      }),
+      hardDelete: () => this.prisma.catalogIntervention.delete({ where: { id } }),
+      deactivate: () =>
+        this.prisma.catalogIntervention.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  /* Suppression d'un tarif : l'historique PricingHistory (journal immuable)
+   * interdit toute destruction dès qu'une entrée existe → désactivation
+   * journalisée. Sans historique : suppression physique. */
+  async deletePricing(interventionId: string, adminId: string) {
+    const pricing = await this.prisma.pricing.findUnique({ where: { interventionId } });
+    if (!pricing) throw new NotFoundException('Tarification introuvable.');
+    const historyCount = await this.prisma.pricingHistory.count({
+      where: { pricingId: pricing.id },
+    });
+    if (historyCount === 0) {
+      await this.prisma.pricing.delete({ where: { id: pricing.id } });
+      return {
+        id: pricing.id,
+        kind: 'pricing',
+        action: 'DELETED' as const,
+        message: 'Tarification supprimée (aucun historique).',
+        blockers: {},
+      };
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.pricing.update({ where: { id: pricing.id }, data: { isActive: false } });
+      await tx.pricingHistory.create({
+        data: {
+          pricingId: pricing.id,
+          adminId,
+          previousValues: { isActive: pricing.isActive },
+          newValues: { isActive: false },
+          reason: 'Désactivation administrative (historique conservé)',
+        },
+      });
+    });
+    return {
+      id: pricing.id,
+      kind: 'pricing',
+      action: 'DEACTIVATED' as const,
+      message: `Tarification désactivée : ${historyCount} entrée(s) d'historique conservée(s).`,
+      blockers: { historique: historyCount },
+    };
+  }
+
+  async deleteCity(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'city',
+      id,
+      notFoundMessage: 'Ville introuvable.',
+      find: () => this.prisma.serviceCity.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        zones: await this.prisma.zone.count({ where: { cityId: id } }),
+        demandes: await this.prisma.demande.count({ where: { cityId: id } }),
+        comptes: await this.prisma.user.count({ where: { cityId: id } }),
+        techniciens: await this.prisma.technicianProfile.count({ where: { cityId: id } }),
+      }),
+      hardDelete: () => this.prisma.serviceCity.delete({ where: { id } }),
+      deactivate: () => this.prisma.serviceCity.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  async deleteZone(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'zone',
+      id,
+      notFoundMessage: 'Zone introuvable.',
+      find: () => this.prisma.zone.findUnique({ where: { id } }),
+      countBlockers: async () => ({
+        couvertures: await this.prisma.technicianZoneCoverage.count({ where: { zoneId: id } }),
+        demandes: await this.prisma.demande.count({ where: { zoneId: id } }),
+      }),
+      hardDelete: () => this.prisma.zone.delete({ where: { id } }),
+      deactivate: () => this.prisma.zone.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
+  private async deleteOrDeactivate(args: {
+    kind: string;
+    id: string;
+    notFoundMessage: string;
+    find: () => Promise<{ id: string } | null>;
+    countBlockers: () => Promise<Record<string, number>>;
+    hardDelete: () => Promise<unknown>;
+    deactivate: () => Promise<unknown>;
+  }) {
+    const existing = await args.find();
+    if (!existing) throw new NotFoundException(args.notFoundMessage);
+    const blockers = await args.countBlockers();
+    const total = Object.values(blockers).reduce((sum, count) => sum + count, 0);
+    if (total === 0) {
+      await args.hardDelete();
+      return {
+        id: args.id,
+        kind: args.kind,
+        action: 'DELETED' as const,
+        message: 'Élément supprimé (aucune dépendance).',
+        blockers,
+      };
+    }
+    await args.deactivate();
+    const details = Object.entries(blockers)
+      .filter(([, count]) => count > 0)
+      .map(([name, count]) => `${count} ${name}`)
+      .join(', ');
+    return {
+      id: args.id,
+      kind: args.kind,
+      action: 'DEACTIVATED' as const,
+      message: `Élément désactivé (référencé par : ${details}). Historique conservé.`,
+      blockers,
+    };
+  }
 }

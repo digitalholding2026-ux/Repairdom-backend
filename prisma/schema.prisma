@@ -49,6 +49,8 @@ enum DemandeEventType {
 // Sprint 8.3 : notifications applicatives (créées uniquement par le backend).
 // Sprint DISPATCH-V1 : MISSION_AVAILABLE = nouvelle mission proposée aux
 // techniciens (antérieure à toute acceptation, distincte des types post-assignation).
+// Sprint ADMIN SUPER POWERS : ADMIN_MESSAGE = message direct de l'admin à un
+// technicien (identifié par son email), sans mission liée.
 enum NotificationType {
   TECHNICIAN_ACCEPTED
   QUOTE_CREATED
@@ -59,6 +61,7 @@ enum NotificationType {
   COMPLETED
   CONFIRMED
   MISSION_AVAILABLE
+  ADMIN_MESSAGE
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -109,6 +112,9 @@ enum FinancialTransactionType {
   TECHNICIAN_TRAVEL_REVENUE
   TECHNICIAN_FEE
   REVERSAL
+  // Sprint ADMIN SUPER POWERS : retrait des fonds Relio par l'admin (débit,
+  // lié à la ligne RelioWithdrawal correspondante via metadata.withdrawalId).
+  RELIO_WITHDRAWAL
 }
 
 enum FinancialTransactionDirection {
@@ -157,6 +163,11 @@ model User {
   emailVerificationToken String?
   emailVerificationExpiresAt DateTime?
   passwordHash        String
+  // Sprint ADMIN SUPER POWERS — désactivation logique d'un compte par
+  // l'admin (alternative à la suppression physique quand l'historique
+  // métier/financier doit être conservé). Un compte désactivé ne peut plus
+  // se connecter ; ses missions, devis et écritures restent lisibles.
+  isActive            Boolean             @default(true)
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
   demandes            Demande[]           @relation("ClientDemandes")
@@ -176,6 +187,7 @@ model User {
   dispatchWaves       DispatchWave[]
   financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
+  relioWithdrawals RelioWithdrawal[] @relation("RelioWithdrawalRequester")
 }
 
 // Sprint UX CLIENT — zones de service (villes) couvertes par RepairDom.
@@ -775,4 +787,29 @@ model FinancialTransaction {
   @@index([userId, createdAt])
   @@index([demandeId, createdAt])
   @@index([mode, userId])
+}
+
+// Sprint ADMIN SUPER POWERS — Retraits des fonds Relio.
+//
+// Une ligne = un retrait effectué par un admin sur les commissions Relio
+// acquises (2 % du brut, créditées via TECHNICIAN_FEE — + CLIENT_FEE legacy).
+// Traçabilité : `reference` UNIQUE (RELIO-WD-…) = clé d'idempotence serveur ;
+// chaque retrait est doublé d'une écriture ledger RELIO_WITHDRAWAL immuable
+// (lien via metadata.withdrawalId), jamais modifiée ni supprimée.
+// Solde disponible Relio = Σ commissions VALIDATED − Σ retraits VALIDATED
+// (calculé par le moteur financier, jamais stocké).
+// ON DELETE RESTRICT sur requestedById : un admin ayant effectué un retrait
+// ne peut pas être supprimé physiquement (audit préservé).
+model RelioWithdrawal {
+  id          String                        @id @default(dbgenerated("gen_random_uuid()"))
+  reference   String                        @unique
+  amount      Int
+  note        String?
+  mode        FinancialTransactionMode      @default(SIMULATION)
+  status      FinancialTransactionStatus    @default(VALIDATED)
+  requestedById String
+  requestedBy User                          @relation("RelioWithdrawalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  createdAt   DateTime                      @default(now())
+
+  @@index([mode, createdAt])
 }

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Param,
@@ -64,6 +65,13 @@ export class CatalogController {
     return this.catalog.updateDomain(id, dto);
   }
 
+  /* Suppression administrative : physique si aucun dépendant, désactivation
+   * (isActive = false) sinon — l'historique n'est jamais détruit. */
+  @Delete('domains/:id')
+  deleteDomain(@Param('id') id: string) {
+    return this.catalog.deleteDomain(id);
+  }
+
   /* ── DeviceBrand / DeviceModel ─────────────────────────────── */
 
   @Get('domains/:domainId/brands')
@@ -86,6 +94,11 @@ export class CatalogController {
     return this.catalog.updateBrand(id, dto);
   }
 
+  @Delete('brands/:id')
+  deleteBrand(@Param('id') id: string) {
+    return this.catalog.deleteBrand(id);
+  }
+
   @Get('brands/:brandId/models')
   listModels(@Param('brandId') brandId: string) {
     return this.catalog.listModels(brandId);
@@ -104,6 +117,11 @@ export class CatalogController {
   @Patch('models/:id')
   updateModel(@Param('id') id: string, @Body() dto: UpdateModelDto) {
     return this.catalog.updateModel(id, dto);
+  }
+
+  @Delete('models/:id')
+  deleteModel(@Param('id') id: string) {
+    return this.catalog.deleteModel(id);
   }
 
   /* ── Problem ────────────────────────────────────────────────── */
@@ -132,6 +150,11 @@ export class CatalogController {
     return this.catalog.updateProblem(id, dto);
   }
 
+  @Delete('problems/:id')
+  deleteProblem(@Param('id') id: string) {
+    return this.catalog.deleteProblem(id);
+  }
+
   /* ── CatalogDiagnostic ──────────────────────────────────────── */
 
   @Get('problems/:problemId/diagnostics')
@@ -152,6 +175,11 @@ export class CatalogController {
   @Patch('diagnostics/:id')
   updateDiagnostic(@Param('id') id: string, @Body() dto: UpdateDiagnosticDto) {
     return this.catalog.updateDiagnostic(id, dto);
+  }
+
+  @Delete('diagnostics/:id')
+  deleteDiagnostic(@Param('id') id: string) {
+    return this.catalog.deleteDiagnostic(id);
   }
 
   /* ── CatalogIntervention ────────────────────────────────────── */
@@ -176,6 +204,11 @@ export class CatalogController {
     return this.catalog.updateIntervention(id, dto);
   }
 
+  @Delete('interventions/:id')
+  deleteIntervention(@Param('id') id: string) {
+    return this.catalog.deleteIntervention(id);
+  }
+
   /* ── Pricing ────────────────────────────────────────────────── */
 
   @Get('interventions/:interventionId/pricing')
@@ -197,6 +230,14 @@ export class CatalogController {
     return this.catalog.updatePricing(interventionId, dto, user.id);
   }
 
+  @Delete('interventions/:interventionId/pricing')
+  deletePricing(
+    @Param('interventionId') interventionId: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.catalog.deletePricing(interventionId, user.id);
+  }
+
   /* ── ServiceCity (zones de service) ─────────────────────────── */
 
   @Get('cities')
@@ -214,6 +255,11 @@ export class CatalogController {
     return this.catalog.updateCity(id, dto);
   }
 
+  @Delete('cities/:id')
+  deleteCity(@Param('id') id: string) {
+    return this.catalog.deleteCity(id);
+  }
+
   /* ── Zone (quartiers/secteurs d'une ville) ───────────────────── */
 
   @Get('cities/:cityId/zones')
@@ -229,6 +275,11 @@ export class CatalogController {
   @Patch('zones/:id')
   updateZone(@Param('id') id: string, @Body() dto: UpdateZoneDto) {
     return this.catalog.updateZone(id, dto);
+  }
+
+  @Delete('zones/:id')
+  deleteZone(@Param('id') id: string) {
+    return this.catalog.deleteZone(id);
   }
 
   /* ── Seed ───────────────────────────────────────────────────── */

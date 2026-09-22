@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -202,6 +203,12 @@ export class AuthService {
     });
     if (!found) throw new UnauthorizedException('Identifiants invalides.');
 
+    // Sprint ADMIN SUPER POWERS : un compte désactivé par l'admin ne peut
+    // plus se connecter (ses données historiques restent conservées).
+    if (found.isActive === false) {
+      throw new ForbiddenException('Ce compte a été désactivé. Contactez Relio.');
+    }
+
     const valid = await verifyPassword(dto.password, found.passwordHash);
     if (!valid) throw new UnauthorizedException('Identifiants invalides.');
 
@@ -215,6 +222,9 @@ export class AuthService {
   async me(id: string): Promise<AuthUser> {
     const found = await this.prisma.user.findUnique({ where: { id } });
     if (!found) throw new UnauthorizedException('Authentification requise.');
+    if (found.isActive === false) {
+      throw new ForbiddenException('Ce compte a été désactivé. Contactez Relio.');
+    }
     return this.toAuthUser(found);
   }
 
@@ -345,6 +355,11 @@ export class AuthService {
       if (!payload.sub) throw new UnauthorizedException('Session invalide ou expirée.');
       const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
       if (!user) throw new UnauthorizedException('Session invalide ou expirée.');
+      // Sprint ADMIN SUPER POWERS : les sessions existantes d'un compte
+      // désactivé sont révoquées (pas seulement le login).
+      if (user.isActive === false) {
+        throw new UnauthorizedException('Session invalide ou expirée.');
+      }
       return { id: user.id, email: user.email, role: user.role as UserRole };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
