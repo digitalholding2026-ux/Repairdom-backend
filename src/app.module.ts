@@ -12,6 +12,7 @@ import { ReviewsModule } from './reviews/reviews.module.js';
 import { TrackingModule } from './tracking/tracking.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { FinancialModule } from './financial/financial.module.js';
+import { SasPayModule } from './saspay/saspay.module.js';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { FinancialModule } from './financial/financial.module.js';
     TrackingModule,
     NotificationsModule,
     FinancialModule,
+    SasPayModule,
   ],
 })
 export class AppModule {}

@@ -1,11 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
@@ -13,10 +14,19 @@ import type {
   FinancialTransactionDirection,
   FinancialTransactionMode,
   FinancialTransactionType,
+  SasPayOperationStatus,
 } from '../generated/prisma/enums.js';
 import {
   CLIENT_PLATFORM_FEE,
   FINANCIAL_CURRENCY,
+  FINANCIAL_REFERENCE_ALPHABET,
+  FUNDS_HOLD_REFERENCE_LENGTH,
+  FUNDS_HOLD_REFERENCE_PREFIX,
+  IDEMPOTENCY_KEY_MAX_LENGTH,
+  MAX_TOPUP_AMOUNT,
+  MAX_WITHDRAWAL_AMOUNT,
+  MIN_TOPUP_AMOUNT,
+  MIN_WITHDRAWAL_AMOUNT,
   RELIO_COMMISSION_RATE_DENOMINATOR,
   RELIO_COMMISSION_RATE_NUMERATOR,
   RELIO_WITHDRAWAL_NOTE_MAX_LENGTH,
@@ -25,7 +35,11 @@ import {
   RELIO_WITHDRAWAL_REFERENCE_PREFIX,
   STANDARD_TRANSPORT_FEE,
   TECHNICIAN_PLATFORM_FEE,
+  TOPUP_INTENT_REFERENCE_LENGTH,
+  TOPUP_INTENT_REFERENCE_PREFIX,
   TOTAL_PLATFORM_FEES,
+  WITHDRAWAL_REQUEST_REFERENCE_LENGTH,
+  WITHDRAWAL_REQUEST_REFERENCE_PREFIX,
   computeRelioCommission,
 } from './financial-fees.js';
 
@@ -1155,8 +1169,15 @@ export class FinancialService {
 
   /** Crédit initial SIMULATION pour un compte client de test (50 000 XAF par
    *  défaut). Idempotent par utilisateur + mode : jamais créé deux fois, et
-   *  jamais créé automatiquement à la connexion. Réservé ADMIN. */
+   *  jamais créé automatiquement à la connexion. Réservé ADMIN et
+   *  EXCLUSIVEMENT au mode SIMULATION : en REAL, toute création artificielle
+   *  est refusée (seule une recharge SasPay confirmée crédite le ledger). */
   async createTestCredit(actorUserId: string, targetUserId: string, amount: number) {
+    if (this.getMode() !== 'SIMULATION') {
+      throw new ForbiddenException(
+        'Le crédit de test est désactivé en mode REAL : seul un paiement confirmé peut créditer le ledger.',
+      );
+    }
     if (amount <= 0) {
       throw new BadRequestException('Montant invalide pour un crédit de simulation.');
     }
@@ -1290,6 +1311,7 @@ export class FinancialService {
               amount,
               note: cleanNote,
               mode,
+              payoutStatus: 'SUCCESS',
               requestedById: adminId,
             },
             include: {
@@ -1343,6 +1365,9 @@ export class FinancialService {
   }
 
   private async computeRelioFunds(tx: Tx, mode: FinancialTransactionMode) {
+    // Seuls les retraits payoutStatus = SUCCESS réduisent le disponible :
+    // un payout PENDING n'est jamais un SUCCESS (fondations SASPAY-01).
+    // Les lignes historiques portent SUCCESS par défaut (migration).
     const [technicianFees, clientFees, withdrawals, withdrawalsCount] = await Promise.all([
       tx.financialTransaction.aggregate({
         where: { mode, status: 'VALIDATED', type: 'TECHNICIAN_FEE', direction: 'DEBIT' },
@@ -1353,10 +1378,10 @@ export class FinancialService {
         _sum: { amount: true },
       }),
       tx.relioWithdrawal.aggregate({
-        where: { mode, status: 'VALIDATED' },
+        where: { mode, status: 'VALIDATED', payoutStatus: 'SUCCESS' },
         _sum: { amount: true },
       }),
-      tx.relioWithdrawal.count({ where: { mode, status: 'VALIDATED' } }),
+      tx.relioWithdrawal.count({ where: { mode, status: 'VALIDATED', payoutStatus: 'SUCCESS' } }),
     ]);
     const acquired = (technicianFees._sum.amount ?? 0) + (clientFees._sum.amount ?? 0);
     const withdrawn = withdrawals._sum.amount ?? 0;
@@ -1369,6 +1394,576 @@ export class FinancialService {
       withdrawalsCount,
     };
   }
+
+  /* ── Fondations SasPay (Sprint SASPAY-01) ─────────────────────── */
+  /* Le ledger FinancialTransaction reste l'UNIQUE source de vérité :
+   *  - TopupIntent / WithdrawalRequest / FundsHold ne portent aucun solde ;
+   *  - disponible = Σ ledger VALIDATED − Σ holds ACTIVE (calculé) ;
+   *  - toute lecture + réservation/débit concurrente passe sous verrou
+   *    consultatif PostgreSQL par utilisateur (même pattern que
+   *    withdrawRelioFunds, transposé à la granularité utilisateur) ;
+   *  - le ledger n'est crédité/débité qu'après confirmation serveur fiable
+   *    (webhook), jamais sur indication du frontend. */
+
+  /** Verrou consultatif de transaction, par utilisateur : sérialise
+   *  lecture du disponible + réservation/débit concurrents (anti-TOCTOU).
+   *  Même pattern que `withdrawRelioFunds()`, granularité utilisateur. */
+  private async lockUserFunds(tx: Tx, userId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`user_funds:${userId}`}))`;
+  }
+
+  /** Solde ledger brut d'un utilisateur (sans déduire les holds). */
+  private async ledgerBalance(tx: Tx, userId: string, mode: FinancialTransactionMode) {
+    const [credits, debits] = await Promise.all([
+      tx.financialTransaction.aggregate({
+        where: { userId, mode, status: 'VALIDATED', direction: 'CREDIT' },
+        _sum: { amount: true },
+      }),
+      tx.financialTransaction.aggregate({
+        where: { userId, mode, status: 'VALIDATED', direction: 'DEBIT' },
+        _sum: { amount: true },
+      }),
+    ]);
+    return (credits._sum.amount ?? 0) - (debits._sum.amount ?? 0);
+  }
+
+  /** Montant total gelé par les holds ACTIVE d'un utilisateur (mode donné). */
+  async getReservedAmount(
+    userId: string,
+    mode: FinancialTransactionMode,
+    tx?: Tx,
+  ): Promise<number> {
+    const client: Tx = tx ?? (this.prisma as unknown as Tx);
+    const holds = await client.fundsHold.aggregate({
+      where: { userId, mode, status: 'ACTIVE' },
+      _sum: { amount: true },
+    });
+    return holds._sum.amount ?? 0;
+  }
+
+  /** Disponible réel = ledger − holds ACTIVE. Jamais stocké, toujours
+   *  calculé. À appeler SOUS `lockUserFunds` quand une réservation suit. */
+  async getAvailableBalance(
+    userId: string,
+    mode: FinancialTransactionMode,
+    tx?: Tx,
+  ): Promise<number> {
+    const client: Tx = tx ?? (this.prisma as unknown as Tx);
+    const [ledger, reserved] = await Promise.all([
+      this.ledgerBalance(client, userId, mode),
+      this.getReservedAmount(userId, mode, client),
+    ]);
+    return ledger - reserved;
+  }
+
+  /** Réserve un montant du disponible (hold ACTIVE idempotent par
+   *  `reference`). Lève 400 si le disponible (sous verrou) est insuffisant.
+   *  Ne crée AUCUNE écriture ledger : le hold est un verrou logique. */
+  async reserveFunds(
+    userId: string,
+    amount: number,
+    options: {
+      reference?: string;
+      demandeId?: string | null;
+      createdById?: string | null;
+      metadata?: Prisma.InputJsonObject | null;
+      mode?: FinancialTransactionMode;
+    } = {},
+  ) {
+    assertPositiveInteger(amount, 'Le montant réservé');
+    const mode = options.mode ?? this.getMode();
+    const reference =
+      options.reference ??
+      (options.demandeId
+        ? `hold:${options.demandeId}:${userId}:${mode}`
+        : generateFundsHoldReference());
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockUserFunds(tx, userId);
+      const existing = await tx.fundsHold.findUnique({ where: { reference } });
+      if (existing) return existing;
+      const available = await this.getAvailableBalance(userId, mode, tx);
+      if (amount > available) {
+        throw new BadRequestException(
+          `Fonds insuffisants : ${amount} XAF demandés pour ${available} XAF disponibles.`,
+        );
+      }
+      try {
+        return await tx.fundsHold.create({
+          data: {
+            reference,
+            userId,
+            demandeId: options.demandeId ?? null,
+            amount,
+            currency: FINANCIAL_CURRENCY,
+            mode,
+            status: 'ACTIVE',
+            metadata: options.metadata ?? Prisma.JsonNull,
+            createdById: options.createdById ?? null,
+          },
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'P2002') {
+          const concurrent = await tx.fundsHold.findUnique({ where: { reference } });
+          if (concurrent) return concurrent;
+        }
+        throw error;
+      }
+    });
+  }
+
+  /** Libère un hold ACTIVE (échec/annulation) : fonds rendus au disponible.
+   *  Idempotent : un hold déjà RELEASED/CONSUMED est retourné tel quel. */
+  async releaseHold(reference: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const hold = await tx.fundsHold.findUnique({ where: { reference } });
+      if (!hold) throw new NotFoundException('Réservation introuvable.');
+      if (hold.status !== 'ACTIVE') return hold;
+      await this.lockUserFunds(tx, hold.userId);
+      const fresh = await tx.fundsHold.findUnique({ where: { reference } });
+      if (!fresh || fresh.status !== 'ACTIVE') return fresh ?? hold;
+      return tx.fundsHold.update({
+        where: { reference },
+        data: { status: 'RELEASED', releasedAt: new Date() },
+      });
+    });
+  }
+
+  /** Consomme un hold ACTIVE (opération définitive, débit ledger à part).
+   *  Idempotent : un hold déjà CONSUMED est retourné tel quel. */
+  async consumeHold(reference: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const hold = await tx.fundsHold.findUnique({ where: { reference } });
+      if (!hold) throw new NotFoundException('Réservation introuvable.');
+      if (hold.status !== 'ACTIVE') return hold;
+      await this.lockUserFunds(tx, hold.userId);
+      const fresh = await tx.fundsHold.findUnique({ where: { reference } });
+      if (!fresh || fresh.status !== 'ACTIVE') return fresh ?? hold;
+      return tx.fundsHold.update({
+        where: { reference },
+        data: { status: 'CONSUMED', releasedAt: new Date() },
+      });
+    });
+  }
+
+  /* ── Intentions de recharge (TopupIntent) ─────────────────────── */
+  /* Création = PENDING, sans écriture ledger. Confirmation = SUCCESS +
+   * CLIENT_TOPUP CREDIT, idempotente et transactionnelle (rejouabilité
+   * webhook : même appel répété = aucun nouveau crédit). */
+
+  /** Crée une intention de recharge PENDING (aucun crédit ledger).
+   *  Idempotente par `idempotencyKey` : rejouer la même clé retourne
+   *  l'intention existante. Réservée aux comptes CLIENT. */
+  async createTopupIntent(
+    actorUserId: string,
+    targetUserId: string,
+    amount: number,
+    options: { idempotencyKey?: string; metadata?: Prisma.InputJsonObject | null } = {},
+  ) {
+    assertTopupAmount(amount);
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true },
+    });
+    if (!target) throw new NotFoundException('Utilisateur introuvable.');
+    if (target.role !== 'CLIENT') {
+      throw new BadRequestException('La recharge est réservée aux comptes clients.');
+    }
+    const mode = this.getMode();
+    const idempotencyKey = sanitizeIdempotencyKey(options.idempotencyKey) ?? randomUUID();
+    const existingByKey = await this.prisma.topupIntent.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingByKey) return toApiTopupIntent(existingByKey);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const reference = generateTopupReference();
+      try {
+        const created = await this.prisma.topupIntent.create({
+          data: {
+            reference,
+            idempotencyKey,
+            userId: targetUserId,
+            amount,
+            currency: FINANCIAL_CURRENCY,
+            mode,
+            status: 'PENDING',
+            requestedAmount: amount,
+            metadata: options.metadata ?? Prisma.JsonNull,
+            createdById: actorUserId,
+          },
+        });
+        return toApiTopupIntent(created);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'P2002') {
+          const byKey = await this.prisma.topupIntent.findUnique({
+            where: { idempotencyKey },
+          });
+          if (byKey) return toApiTopupIntent(byKey);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('Impossible de créer une intention de recharge unique. Réessayez.');
+  }
+
+  /** Confirme une intention PENDING après paiement fiable (webhook serveur) :
+   *  CLIENT_TOPUP CREDIT + passage SUCCESS, dans la même transaction.
+   *  Idempotente : intention déjà SUCCESS = retour sans nouveau crédit ;
+   *  saspayTransactionId déjà consommé par une autre intention = 409.
+   *  Le montant crédité est le net constaté s'il est fourni et valide,
+   *  sinon le montant demandé (jamais de confiance au frontend : cet appel
+   *  est réservé au traitement webhook/serveur). */
+  async confirmTopupIntent(
+    reference: string,
+    saspay: {
+      saspayTransactionId?: string | null;
+      saspayReference?: string | null;
+      externalReference?: string | null;
+      network?: string | null;
+      country?: string | null;
+      fee?: number | null;
+      chargedAmount?: number | null;
+      netAmount?: number | null;
+    } = {},
+  ) {
+    const mode = this.getMode();
+    return this.prisma.$transaction(async (tx) => {
+      const intent = await tx.topupIntent.findUnique({ where: { reference } });
+      if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+      if (intent.mode !== mode) {
+        throw new ForbiddenException(
+          `Intention en mode « ${intent.mode} » (mode serveur actuel : ${mode}).`,
+        );
+      }
+      if (intent.status === 'SUCCESS') {
+        const credited = intent.creditedTransactionId
+          ? await tx.financialTransaction.findUnique({
+              where: { id: intent.creditedTransactionId },
+            })
+          : null;
+        return { intent: toApiTopupIntent(intent), credited: false, transaction: credited };
+      }
+      if (intent.status !== 'PENDING') {
+        throw new ConflictException(
+          `Intention déjà traitée (statut « ${intent.status} ») : aucune nouvelle écriture.`,
+        );
+      }
+      if (saspay.saspayTransactionId) {
+        const alreadyUsed = await tx.topupIntent.findFirst({
+          where: {
+            saspayTransactionId: saspay.saspayTransactionId,
+            status: 'SUCCESS',
+            id: { not: intent.id },
+          },
+          select: { id: true },
+        });
+        if (alreadyUsed) {
+          throw new ConflictException(
+            'Transaction SasPay déjà consommée par une autre recharge.',
+          );
+        }
+      }
+      await this.lockUserFunds(tx, intent.userId);
+
+      const creditAmount =
+        saspay.netAmount !== null &&
+        saspay.netAmount !== undefined &&
+        Number.isInteger(saspay.netAmount) &&
+        saspay.netAmount > 0
+          ? saspay.netAmount
+          : intent.amount;
+      const ledgerReference = `client-topup:${intent.id}:${mode}`;
+      const entry = await this.record(
+        tx,
+        {
+          userId: intent.userId,
+          demandeId: null,
+          type: 'CLIENT_TOPUP',
+          direction: 'CREDIT',
+          amount: creditAmount,
+          reference: ledgerReference,
+          createdById: intent.createdById,
+          metadata: {
+            topupIntentId: intent.id,
+            topupReference: intent.reference,
+            requestedAmount: intent.amount,
+            netAmount: creditAmount,
+            saspayTransactionId: saspay.saspayTransactionId ?? null,
+            saspayReference: saspay.saspayReference ?? null,
+            currency: FINANCIAL_CURRENCY,
+          },
+        },
+        { mode },
+      );
+      const updated = await tx.topupIntent.update({
+        where: { id: intent.id },
+        data: {
+          status: 'SUCCESS',
+          saspayTransactionId: saspay.saspayTransactionId ?? intent.saspayTransactionId,
+          saspayReference: saspay.saspayReference ?? intent.saspayReference,
+          externalReference: saspay.externalReference ?? intent.externalReference,
+          network: saspay.network ?? intent.network,
+          country: saspay.country ?? intent.country,
+          fee: saspay.fee ?? intent.fee,
+          chargedAmount: saspay.chargedAmount ?? intent.chargedAmount,
+          netAmount: creditAmount,
+          creditedTransactionId: entry.id,
+        },
+      });
+      return { intent: toApiTopupIntent(updated), credited: true, transaction: entry };
+    });
+  }
+
+  /** Marque une intention PENDING en FAILED (aucune écriture ledger).
+   *  Idempotente : une intention non-PENDING est retournée telle quelle. */
+  async failTopupIntent(reference: string, errorMessage?: string | null) {
+    const intent = await this.prisma.topupIntent.findUnique({ where: { reference } });
+    if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+    if (intent.status !== 'PENDING') return toApiTopupIntent(intent);
+    const updated = await this.prisma.topupIntent.update({
+      where: { reference },
+      data: { status: 'FAILED', errorMessage: errorMessage?.slice(0, 500) ?? null },
+    });
+    return toApiTopupIntent(updated);
+  }
+
+  /** Annule une intention PENDING (aucune écriture ledger). Idempotente. */
+  async cancelTopupIntent(reference: string) {
+    const intent = await this.prisma.topupIntent.findUnique({ where: { reference } });
+    if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+    if (intent.status !== 'PENDING') return toApiTopupIntent(intent);
+    const updated = await this.prisma.topupIntent.update({
+      where: { reference },
+      data: { status: 'CANCELLED' },
+    });
+    return toApiTopupIntent(updated);
+  }
+
+  /** Intentions de recharge d'un utilisateur (traçabilité, lecture seule). */
+  async listTopupIntents(userId: string) {
+    const rows = await this.prisma.topupIntent.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    return { items: rows.map(toApiTopupIntent) };
+  }
+
+  /* ── Demandes de retrait client/technicien ────────────────────── */
+  /* Création = hold ACTIVE + demande PENDING (aucun débit). SUCCESS =
+   * débit ledger définitif + hold CONSUMED. FAILED/CANCELLED = hold
+   * RELEASED, fonds libérés, aucune écriture. PENDING ≠ SUCCESS. */
+
+  /** Crée une demande de retrait PENDING + hold ACTIVE, sous verrou
+   *  utilisateur (disponible ≥ montant vérifié atomiquement).
+   *  Idempotente par `idempotencyKey`. */
+  async createWithdrawalRequest(
+    actorUserId: string,
+    targetUserId: string,
+    amount: number,
+    options: { idempotencyKey?: string; metadata?: Prisma.InputJsonObject | null } = {},
+  ) {
+    assertWithdrawalAmount(amount);
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true },
+    });
+    if (!target) throw new NotFoundException('Utilisateur introuvable.');
+    if (target.role !== 'CLIENT' && target.role !== 'TECHNICIAN') {
+      throw new BadRequestException(
+        'Les retraits sont réservés aux comptes clients et techniciens.',
+      );
+    }
+    const mode = this.getMode();
+    const idempotencyKey = sanitizeIdempotencyKey(options.idempotencyKey) ?? randomUUID();
+    const existingByKey = await this.prisma.withdrawalRequest.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingByKey) return toApiWithdrawalRequest(existingByKey);
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockUserFunds(tx, targetUserId);
+      const duplicate = await tx.withdrawalRequest.findUnique({
+        where: { idempotencyKey },
+      });
+      if (duplicate) return toApiWithdrawalRequest(duplicate);
+      const available = await this.getAvailableBalance(targetUserId, mode, tx);
+      if (amount > available) {
+        throw new BadRequestException(
+          `Fonds insuffisants : ${amount} XAF demandés pour ${available} XAF disponibles.`,
+        );
+      }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const reference = generateWithdrawalRequestReference();
+        const holdReference = generateFundsHoldReference();
+        try {
+          const hold = await tx.fundsHold.create({
+            data: {
+              reference: holdReference,
+              userId: targetUserId,
+              amount,
+              currency: FINANCIAL_CURRENCY,
+              mode,
+              status: 'ACTIVE',
+              metadata: { withdrawalReference: reference },
+              createdById: actorUserId,
+            },
+          });
+          const created = await tx.withdrawalRequest.create({
+            data: {
+              reference,
+              idempotencyKey,
+              userId: targetUserId,
+              amount,
+              currency: FINANCIAL_CURRENCY,
+              mode,
+              status: 'PENDING',
+              holdId: hold.id,
+              requestedAmount: amount,
+              metadata: options.metadata ?? Prisma.JsonNull,
+              createdById: actorUserId,
+            },
+          });
+          return toApiWithdrawalRequest(created);
+        } catch (error) {
+          if ((error as { code?: string }).code === 'P2002') {
+            const byKey = await tx.withdrawalRequest.findUnique({
+              where: { idempotencyKey },
+            });
+            if (byKey) return toApiWithdrawalRequest(byKey);
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw new Error('Impossible de créer une demande de retrait unique. Réessayez.');
+    });
+  }
+
+  /** Règle un payout réussi : débit ledger définitif + hold CONSUMED +
+   *  demande SUCCESS, dans la même transaction. Idempotent : une demande
+   *  déjà SUCCESS est retournée sans nouveau débit. */
+  async settleWithdrawalSuccess(
+    reference: string,
+    saspay: {
+      saspayTransactionId?: string | null;
+      saspayReference?: string | null;
+      externalReference?: string | null;
+      network?: string | null;
+      country?: string | null;
+      fee?: number | null;
+      chargedAmount?: number | null;
+      netAmount?: number | null;
+    } = {},
+  ) {
+    const mode = this.getMode();
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.withdrawalRequest.findUnique({ where: { reference } });
+      if (!request) throw new NotFoundException('Demande de retrait introuvable.');
+      if (request.mode !== mode) {
+        throw new ForbiddenException(
+          `Demande en mode « ${request.mode} » (mode serveur actuel : ${mode}).`,
+        );
+      }
+      if (request.status === 'SUCCESS') {
+        return { request: toApiWithdrawalRequest(request), debited: false };
+      }
+      if (request.status !== 'PENDING') {
+        throw new ConflictException(
+          `Demande déjà traitée (statut « ${request.status} ») : aucune nouvelle écriture.`,
+        );
+      }
+      const owner = await tx.user.findUnique({
+        where: { id: request.userId },
+        select: { id: true, role: true },
+      });
+      if (!owner) throw new NotFoundException('Utilisateur introuvable.');
+      const type = owner.role === 'TECHNICIAN' ? 'TECHNICIAN_WITHDRAWAL' : 'CLIENT_WITHDRAWAL';
+      await this.lockUserFunds(tx, request.userId);
+      const ledgerReference = `withdrawal:${request.id}:${mode}`;
+      await this.record(
+        tx,
+        {
+          userId: request.userId,
+          demandeId: null,
+          type,
+          direction: 'DEBIT',
+          amount: request.amount,
+          reference: ledgerReference,
+          createdById: request.createdById,
+          metadata: {
+            withdrawalRequestId: request.id,
+            withdrawalReference: request.reference,
+            saspayTransactionId: saspay.saspayTransactionId ?? null,
+            saspayReference: saspay.saspayReference ?? null,
+            currency: FINANCIAL_CURRENCY,
+          },
+        },
+        { mode },
+      );
+      if (request.holdId) {
+        await tx.fundsHold.updateMany({
+          where: { id: request.holdId, status: 'ACTIVE' },
+          data: { status: 'CONSUMED', releasedAt: new Date() },
+        });
+      }
+      const updated = await tx.withdrawalRequest.update({
+        where: { id: request.id },
+        data: {
+          status: 'SUCCESS',
+          ledgerReference,
+          saspayTransactionId: saspay.saspayTransactionId ?? request.saspayTransactionId,
+          saspayReference: saspay.saspayReference ?? request.saspayReference,
+          externalReference: saspay.externalReference ?? request.externalReference,
+          network: saspay.network ?? request.network,
+          country: saspay.country ?? request.country,
+          fee: saspay.fee ?? request.fee,
+          chargedAmount: saspay.chargedAmount ?? request.chargedAmount,
+          netAmount: saspay.netAmount ?? request.netAmount,
+        },
+      });
+      return { request: toApiWithdrawalRequest(updated), debited: true };
+    });
+  }
+
+  /** Règle un payout échoué/annulé : hold RELEASED (fonds libérés), demande
+   *  FAILED/CANCELLED, AUCUNE écriture ledger. Idempotent. */
+  async settleWithdrawalFailure(
+    reference: string,
+    outcome: 'FAILED' | 'CANCELLED',
+    errorMessage?: string | null,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.withdrawalRequest.findUnique({ where: { reference } });
+      if (!request) throw new NotFoundException('Demande de retrait introuvable.');
+      if (request.status !== 'PENDING') {
+        return toApiWithdrawalRequest(request);
+      }
+      await this.lockUserFunds(tx, request.userId);
+      if (request.holdId) {
+        await tx.fundsHold.updateMany({
+          where: { id: request.holdId, status: 'ACTIVE' },
+          data: { status: 'RELEASED', releasedAt: new Date() },
+        });
+      }
+      const updated = await tx.withdrawalRequest.update({
+        where: { id: request.id },
+        data: { status: outcome, errorMessage: errorMessage?.slice(0, 500) ?? null },
+      });
+      return toApiWithdrawalRequest(updated);
+    });
+  }
+
+  /** Demandes de retrait d'un utilisateur (traçabilité, lecture seule). */
+  async listWithdrawalRequests(userId: string) {
+    const rows = await this.prisma.withdrawalRequest.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    return { items: rows.map(toApiWithdrawalRequest) };
+  }
 }
 
 export function generateRelioWithdrawalReference(): string {
@@ -1378,6 +1973,161 @@ export function generateRelioWithdrawalReference(): string {
       RELIO_WITHDRAWAL_REFERENCE_ALPHABET[randomInt(RELIO_WITHDRAWAL_REFERENCE_ALPHABET.length)];
   }
   return reference;
+}
+
+/* ── Fondations SasPay : références, sérialiseurs, garde-fous ─────── */
+
+function randomSuffix(length: number): string {
+  let suffix = '';
+  for (let i = 0; i < length; i += 1) {
+    suffix += FINANCIAL_REFERENCE_ALPHABET[randomInt(FINANCIAL_REFERENCE_ALPHABET.length)];
+  }
+  return suffix;
+}
+
+/** Référence interne d'intention de recharge (TOPUP-…, UNIQUE). */
+export function generateTopupReference(): string {
+  return `${TOPUP_INTENT_REFERENCE_PREFIX}${randomSuffix(TOPUP_INTENT_REFERENCE_LENGTH)}`;
+}
+
+/** Référence interne de demande de retrait (WD-…, UNIQUE). */
+export function generateWithdrawalRequestReference(): string {
+  return `${WITHDRAWAL_REQUEST_REFERENCE_PREFIX}${randomSuffix(WITHDRAWAL_REQUEST_REFERENCE_LENGTH)}`;
+}
+
+/** Référence interne de réservation (HOLD-…, UNIQUE). */
+export function generateFundsHoldReference(): string {
+  return `${FUNDS_HOLD_REFERENCE_PREFIX}${randomSuffix(FUNDS_HOLD_REFERENCE_LENGTH)}`;
+}
+
+function sanitizeIdempotencyKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const clean = value.trim();
+  if (!clean) return null;
+  if (clean.length > IDEMPOTENCY_KEY_MAX_LENGTH) {
+    throw new BadRequestException(
+      `La clé d'idempotence ne peut pas dépasser ${IDEMPOTENCY_KEY_MAX_LENGTH} caractères.`,
+    );
+  }
+  return clean;
+}
+
+function assertPositiveInteger(amount: number, label: string) {
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new BadRequestException(`Le montant ${label.toLowerCase()} doit être un entier XAF strictement positif.`);
+  }
+}
+
+function assertTopupAmount(amount: number) {
+  assertPositiveInteger(amount, 'de la recharge');
+  if (amount < MIN_TOPUP_AMOUNT || amount > MAX_TOPUP_AMOUNT) {
+    throw new BadRequestException(
+      `Le montant de recharge doit être compris entre ${MIN_TOPUP_AMOUNT} et ${MAX_TOPUP_AMOUNT} XAF.`,
+    );
+  }
+}
+
+function assertWithdrawalAmount(amount: number) {
+  assertPositiveInteger(amount, 'du retrait');
+  if (amount < MIN_WITHDRAWAL_AMOUNT || amount > MAX_WITHDRAWAL_AMOUNT) {
+    throw new BadRequestException(
+      `Le montant de retrait doit être compris entre ${MIN_WITHDRAWAL_AMOUNT} et ${MAX_WITHDRAWAL_AMOUNT} XAF.`,
+    );
+  }
+}
+
+function toApiTopupIntent(intent: {
+  id: string;
+  reference: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  mode: string;
+  status: SasPayOperationStatus | string;
+  saspayTransactionId: string | null;
+  saspayReference: string | null;
+  externalReference: string | null;
+  network: string | null;
+  country: string | null;
+  requestedAmount: number | null;
+  fee: number | null;
+  chargedAmount: number | null;
+  netAmount: number | null;
+  creditedTransactionId: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: intent.id,
+    reference: intent.reference,
+    userId: intent.userId,
+    amount: intent.amount,
+    currency: intent.currency,
+    mode: intent.mode,
+    status: intent.status,
+    saspayTransactionId: intent.saspayTransactionId,
+    saspayReference: intent.saspayReference,
+    externalReference: intent.externalReference,
+    network: intent.network,
+    country: intent.country,
+    requestedAmount: intent.requestedAmount,
+    fee: intent.fee,
+    chargedAmount: intent.chargedAmount,
+    netAmount: intent.netAmount,
+    creditedTransactionId: intent.creditedTransactionId,
+    errorMessage: intent.errorMessage,
+    createdAt: intent.createdAt.toISOString(),
+    updatedAt: intent.updatedAt.toISOString(),
+  };
+}
+
+function toApiWithdrawalRequest(request: {
+  id: string;
+  reference: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  mode: string;
+  status: SasPayOperationStatus | string;
+  holdId: string | null;
+  ledgerReference: string | null;
+  saspayTransactionId: string | null;
+  saspayReference: string | null;
+  externalReference: string | null;
+  network: string | null;
+  country: string | null;
+  requestedAmount: number | null;
+  fee: number | null;
+  chargedAmount: number | null;
+  netAmount: number | null;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: request.id,
+    reference: request.reference,
+    userId: request.userId,
+    amount: request.amount,
+    currency: request.currency,
+    mode: request.mode,
+    status: request.status,
+    holdId: request.holdId,
+    ledgerReference: request.ledgerReference,
+    saspayTransactionId: request.saspayTransactionId,
+    saspayReference: request.saspayReference,
+    externalReference: request.externalReference,
+    network: request.network,
+    country: request.country,
+    requestedAmount: request.requestedAmount,
+    fee: request.fee,
+    chargedAmount: request.chargedAmount,
+    netAmount: request.netAmount,
+    errorMessage: request.errorMessage,
+    createdAt: request.createdAt.toISOString(),
+    updatedAt: request.updatedAt.toISOString(),
+  };
 }
 
 function toApiRelioWithdrawal(withdrawal: {

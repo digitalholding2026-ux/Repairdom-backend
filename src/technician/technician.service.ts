@@ -772,9 +772,22 @@ export class TechnicianService {
         }
       }
 
-      const updated = await tx.demande.update({
-        where: { id: current.id },
+      // Sprint SASPAY-01 (durcissement) : mutation conditionnelle atomique
+      // sur le statut lu (updateMany gardé). Une transition concurrente
+      // (ex. COMPLETED technicien + CANCELED client) ne s'écrase plus
+      // silencieusement : la perdante reçoit un 409. assertTransition,
+      // journal, notifications et transaction sont préservés.
+      const claimed = await tx.demande.updateMany({
+        where: { id: current.id, technicianId: userId, status: current.status },
         data: scheduledAt ? { status: dto.status, scheduledAt } : { status: dto.status },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
+        );
+      }
+      const updated = await tx.demande.findFirstOrThrow({
+        where: { id: current.id, technicianId: userId },
         include: this.deviceInclude,
       });
 

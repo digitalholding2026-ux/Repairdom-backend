@@ -115,6 +115,16 @@ enum FinancialTransactionType {
   // Sprint ADMIN SUPER POWERS : retrait des fonds Relio par l'admin (débit,
   // lié à la ligne RelioWithdrawal correspondante via metadata.withdrawalId).
   RELIO_WITHDRAWAL
+  // Sprint SASPAY-01 (fondations) : nouveaux types du ledger UNIQUE.
+  // CLIENT_TOPUP (CREDIT) = vraie recharge client confirmée côté serveur
+  // (webhook SasPay), distincte du crédit de test INITIAL_TEST_CREDIT
+  // (simulation, ADMIN uniquement). Le ledger n'est crédité qu'après
+  // confirmation fiable du prestataire, jamais sur indication du frontend.
+  CLIENT_TOPUP
+  // Débits définitifs de retraits async (créés uniquement au SUCCESS du
+  // payout, après consommation du hold — voir FundsHold/WithdrawalRequest).
+  CLIENT_WITHDRAWAL
+  TECHNICIAN_WITHDRAWAL
 }
 
 enum FinancialTransactionDirection {
@@ -130,6 +140,26 @@ enum FinancialTransactionStatus {
 enum FinancialTransactionMode {
   SIMULATION
   REAL
+}
+
+// Sprint SASPAY-01 (fondations) — Statut d'une opération SasPay asynchrone
+// (intention de recharge, demande de retrait). PENDING n'est JAMAIS une
+// preuve de paiement : seul SUCCESS déclenche une écriture ledger.
+enum SasPayOperationStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+// Sprint SASPAY-01 (fondations) — Cycle de vie d'une réservation de fonds
+// (FundsHold, verrou logique, jamais un solde stocké).
+// ACTIVE = montant gelé ; RELEASED = libéré (échec/annulation) ;
+// CONSUMED = consommé par l'opération définitive (débit ledger).
+enum FundsHoldStatus {
+  ACTIVE
+  RELEASED
+  CONSUMED
 }
 
 enum KycStatus {
@@ -188,6 +218,14 @@ model User {
   financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
   relioWithdrawals RelioWithdrawal[] @relation("RelioWithdrawalRequester")
+  // Sprint SASPAY-01 (fondations) : intentions de recharge, demandes de
+  // retrait et réservations de fonds (verrous logiques, jamais un solde).
+  topupIntents TopupIntent[] @relation("TopupIntentOwner")
+  topupIntentsCreated TopupIntent[] @relation("TopupIntentCreator")
+  withdrawalRequests WithdrawalRequest[] @relation("WithdrawalRequestOwner")
+  withdrawalRequestsCreated WithdrawalRequest[] @relation("WithdrawalRequestCreator")
+  fundsHolds FundsHold[] @relation("FundsHoldOwner")
+  fundsHoldsCreated FundsHold[] @relation("FundsHoldCreator")
 }
 
 // Sprint UX CLIENT — zones de service (villes) couvertes par RepairDom.
@@ -310,6 +348,7 @@ model Demande {
   notifications Notification[]
   dispatchWaves DispatchWave[]
   financialTransactions FinancialTransaction[]
+  fundsHolds FundsHold[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -783,6 +822,9 @@ model FinancialTransaction {
   reversalOf  FinancialTransaction?  @relation("FinancialTransactionReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
   reversals   FinancialTransaction[] @relation("FinancialTransactionReversal")
   createdBy   User?                  @relation("FinancialTransactionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  // Sprint SASPAY-01 : intentions de recharge créditées par cette écriture
+  // CLIENT_TOPUP (lien traçabilité, SetNull : l'historique ledger survit).
+  topupIntentsCredited TopupIntent[] @relation("TopupIntentCredit")
 
   @@index([userId, createdAt])
   @@index([demandeId, createdAt])
@@ -800,6 +842,15 @@ model FinancialTransaction {
 // (calculé par le moteur financier, jamais stocké).
 // ON DELETE RESTRICT sur requestedById : un admin ayant effectué un retrait
 // ne peut pas être supprimé physiquement (audit préservé).
+//
+// Sprint SASPAY-01 (fondations) — préparation payout asynchrone :
+// `payoutStatus` distingue DEMANDÉ (PENDING) / RÉUSSI (SUCCESS) / ÉCHOUÉ
+// (FAILED) / ANNULÉ (CANCELLED). Seuls les retraits SUCCESS réduisent le
+// disponible Relio. Les lignes historiques (créées synchrones avant ce
+// sprint) portent payoutStatus = SUCCESS. Les références SasPay et
+// `idempotencyKey` (UNIQUE) permettent la réconciliation et l'idempotence
+// webhook. `status` (FinancialTransactionStatus) est conservé inchangé pour
+// ne casser aucune lecture existante.
 model RelioWithdrawal {
   id          String                        @id @default(dbgenerated("gen_random_uuid()"))
   reference   String                        @unique
@@ -807,9 +858,149 @@ model RelioWithdrawal {
   note        String?
   mode        FinancialTransactionMode      @default(SIMULATION)
   status      FinancialTransactionStatus    @default(VALIDATED)
+  payoutStatus SasPayOperationStatus        @default(SUCCESS)
+  saspayTransactionId String?
+  saspayReference     String?
+  externalReference   String?
+  idempotencyKey      String?               @unique
+  errorMessage        String?
   requestedById String
   requestedBy User                          @relation("RelioWithdrawalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
   createdAt   DateTime                      @default(now())
+  updatedAt   DateTime                      @updatedAt
 
   @@index([mode, createdAt])
+  @@index([payoutStatus])
+  @@index([saspayTransactionId])
+}
+
+// Sprint SASPAY-01 (fondations) — Intention de recharge client.
+//
+// Cette table n'est PAS un deuxième ledger : elle ne porte aucun solde et
+// ne crédite rien par elle-même. Elle suit une intention de paiement AVANT
+// crédit du ledger (montant demandé, statuts, références SasPay,
+// idempotency key, montants de réconciliation).
+// Le ledger (FinancialTransaction CLIENT_TOPUP CREDIT) n'est alimenté que
+// par `confirmTopupIntent()` après confirmation serveur fiable (webhook
+// SasPay transaction.success), de façon idempotente et transactionnelle.
+// Règle SasPay : ne jamais utiliser le seul `requested amount` comme vérité
+// comptable — `fee`, `chargedAmount` et `netAmount` sont conservés dès que
+// le prestataire les communique.
+// ON DELETE RESTRICT sur userId : l'historique des intentions est préservé.
+model TopupIntent {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
+  // Référence interne Relio UNIQUE (TOPUP-…) : idempotence niveau Relio.
+  reference     String                  @unique
+  // Clé d'idempotence UNIQUE (fournie par l'appelant ou générée) : une même
+  // demande rejouée retourne l'intention existante, sans doublon.
+  idempotencyKey String                 @unique
+  userId        String
+  user          User                    @relation("TopupIntentOwner", fields: [userId], references: [id], onDelete: Restrict)
+  amount        Int
+  currency      String                  @default("XAF")
+  mode          FinancialTransactionMode @default(SIMULATION)
+  status        SasPayOperationStatus   @default(PENDING)
+  // Références prestataire (idempotence niveau SasPay + réconciliation).
+  saspayTransactionId String?
+  saspayReference     String?
+  externalReference   String?
+  network             String?
+  country             String?
+  // Montants de réconciliation (le `netAmount` constaté fait foi, jamais le
+  // seul montant demandé).
+  requestedAmount Int?
+  fee             Int?
+  chargedAmount   Int?
+  netAmount       Int?
+  // Écriture ledger créée au SUCCESS (NULL tant que PENDING/FAILED).
+  creditedTransactionId String?
+  creditedTransaction FinancialTransaction? @relation("TopupIntentCredit", fields: [creditedTransactionId], references: [id], onDelete: SetNull)
+  errorMessage  String?
+  metadata      Json?
+  createdById   String?
+  createdBy     User?                   @relation("TopupIntentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([saspayTransactionId])
+}
+
+// Sprint SASPAY-01 (fondations) — Demande de retrait client/technicien.
+//
+// Cycle : AVAILABLE → hold ACTIVE + demande PENDING → payout SasPay →
+// SUCCESS (débit ledger définitif CLIENT_WITHDRAWAL/TECHNICIAN_WITHDRAWAL +
+// hold CONSUMED) ou FAILED/CANCELLED (hold RELEASED, fonds libérés, aucune
+// écriture ledger). Un payout PENDING n'est jamais un SUCCESS.
+// Le débit ledger n'existe qu'au SUCCESS ; l'idempotence repose sur
+// `reference` + `idempotencyKey` UNIQUE + référence ledger déterministe.
+// ON DELETE RESTRICT sur userId : audit préservé.
+model WithdrawalRequest {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
+  reference     String                  @unique
+  idempotencyKey String                 @unique
+  userId        String
+  user          User                    @relation("WithdrawalRequestOwner", fields: [userId], references: [id], onDelete: Restrict)
+  amount        Int
+  currency      String                  @default("XAF")
+  mode          FinancialTransactionMode @default(SIMULATION)
+  status        SasPayOperationStatus   @default(PENDING)
+  // Verrou logique adossé (fonds gelés tant que PENDING).
+  holdId        String?
+  hold          FundsHold?              @relation("WithdrawalRequestHold", fields: [holdId], references: [id], onDelete: SetNull)
+  // Référence de l'écriture ledger créée au SUCCESS (NULL avant).
+  ledgerReference String?
+  saspayTransactionId String?
+  saspayReference     String?
+  externalReference   String?
+  network             String?
+  country             String?
+  requestedAmount Int?
+  fee             Int?
+  chargedAmount   Int?
+  netAmount       Int?
+  errorMessage  String?
+  metadata      Json?
+  createdById   String?
+  createdBy     User?                   @relation("WithdrawalRequestCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([saspayTransactionId])
+}
+
+// Sprint SASPAY-01 (fondations) — Réservation de fonds (verrou logique).
+//
+// Un hold gele un montant du disponible SANS créer de solde stocké :
+// disponible = Σ ledger VALIDATED − Σ holds ACTIVE (calculé, jamais stocké).
+// Usage : mission (demandeId) ou retrait (via WithdrawalRequest.holdId).
+// Référence UNIQUE idempotente (`hold:…` ou HOLD-… générée). Les holds ne
+// sont jamais modifiés en montant : ACTIVE → RELEASED (libéré) ou CONSUMED
+// (opération définitive). Toute lecture + réservation concurrente passe
+// sous verrou consultatif PostgreSQL (voir FinancialService).
+// ON DELETE RESTRICT sur userId ; SET NULL vers Demande (historique survit).
+model FundsHold {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
+  reference     String                  @unique
+  userId        String
+  user          User                    @relation("FundsHoldOwner", fields: [userId], references: [id], onDelete: Restrict)
+  demandeId     String?
+  demande       Demande?                @relation(fields: [demandeId], references: [id], onDelete: SetNull)
+  amount        Int
+  currency      String                  @default("XAF")
+  mode          FinancialTransactionMode @default(SIMULATION)
+  status        FundsHoldStatus         @default(ACTIVE)
+  metadata      Json?
+  createdById   String?
+  createdBy     User?                   @relation("FundsHoldCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime                @default(now())
+  releasedAt    DateTime?
+  withdrawals WithdrawalRequest[]       @relation("WithdrawalRequestHold")
+
+  @@index([userId, status])
+  @@index([demandeId])
+  @@index([mode, status])
 }

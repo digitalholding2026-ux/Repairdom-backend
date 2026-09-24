@@ -70,3 +70,29 @@ export const RELIO_WITHDRAWAL_REFERENCE_LENGTH = 8;
 export const RELIO_WITHDRAWAL_REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
 export const RELIO_WITHDRAWAL_NOTE_MAX_LENGTH = 500;
 export const RELIO_WITHDRAWAL_MAX_AMOUNT = 1_000_000_000;
+
+/* ── Fondations SasPay (Sprint SASPAY-01) ────────────────────────────
+ * Préfixes de références internes (tous UNIQUE en base = idempotence
+ * niveau Relio) et bornes de montants. Les références SasPay
+ * (transaction ID / reference / external) sont stockées en plus, jamais
+ * substituées aux références internes pour la réconciliation. */
+export const TOPUP_INTENT_REFERENCE_PREFIX = 'TOPUP-';
+export const TOPUP_INTENT_REFERENCE_LENGTH = 12;
+export const WITHDRAWAL_REQUEST_REFERENCE_PREFIX = 'WD-';
+export const WITHDRAWAL_REQUEST_REFERENCE_LENGTH = 12;
+export const FUNDS_HOLD_REFERENCE_PREFIX = 'HOLD-';
+export const FUNDS_HOLD_REFERENCE_LENGTH = 12;
+export const FINANCIAL_REFERENCE_ALPHABET = RELIO_WITHDRAWAL_REFERENCE_ALPHABET;
+export const IDEMPOTENCY_KEY_MAX_LENGTH = 100;
+
+/* Recharge client réelle : montant entier XAF strictement positif.
+ * Le crédit ledger correspondant (CLIENT_TOPUP) n'est créé qu'au SUCCESS
+ * confirmé serveur ; le net constaté (netAmount) fait foi, jamais le seul
+ * montant demandé. */
+export const MIN_TOPUP_AMOUNT = 100;
+export const MAX_TOPUP_AMOUNT = 10_000_000;
+
+/* Retraits client/technicien : le hold garantit disponible ≥ montant sous
+ * verrou ; le débit ledger n'est créé qu'au SUCCESS du payout. */
+export const MIN_WITHDRAWAL_AMOUNT = 100;
+export const MAX_WITHDRAWAL_AMOUNT = 10_000_000;

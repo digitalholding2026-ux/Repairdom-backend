@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
@@ -327,9 +327,23 @@ export class DemandesService {
 
       assertTransition('CLIENT', current.status, dto.status);
 
-      const updated = await tx.demande.update({
-        where: { id: current.id },
+      // Sprint SASPAY-01 (durcissement) : mutation conditionnelle atomique
+      // sur le statut lu (updateMany gardé). Deux transitions concurrentes
+      // (ex. CONFIRMED + CANCELED, ou double CONFIRMED par retry) ne peuvent
+      // plus s'écraser silencieusement : la perdante obtient count = 0 et
+      // reçoit un 409. assertTransition, journal, notifications, transaction
+      // Prisma et idempotence ledger sont préservés.
+      const claimed = await tx.demande.updateMany({
+        where: { id: current.id, clientId, status: current.status },
         data: { status: dto.status },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
+        );
+      }
+      const updated = await tx.demande.findFirstOrThrow({
+        where: { id: current.id, clientId },
         include: this.clientInclude(),
       });
 
