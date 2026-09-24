@@ -16,6 +16,7 @@ function mockDeps(overrides: {
   initResult?: unknown;
   initError?: unknown;
   verifyResult?: unknown;
+  verifyError?: unknown;
 } = {}) {
   const intent: Row =
     overrides.intent ?? {
@@ -56,7 +57,9 @@ function mockDeps(overrides: {
     initializeSoftpay: overrides.initError
       ? vi.fn(async () => { throw overrides.initError; })
       : vi.fn(async () => overrides.initResult ?? { id: 'pay-1', status: 'PENDING', checkoutUrl: null, message: 'ok' }),
-    verifyPayment: vi.fn(async () => overrides.verifyResult ?? null),
+    verifyPayment: overrides.verifyError
+      ? vi.fn(async () => { throw overrides.verifyError; })
+      : vi.fn(async () => overrides.verifyResult ?? null),
   };
   const saspayConfig = {
     isConfigured: vi.fn(() => overrides.configured ?? true),
@@ -145,20 +148,60 @@ describe('initializeTopupPayment', () => {
     expect(result.saspayTransactionId).toBe('pay-1');
   });
 
-  it('erreur terminale 422 → FAILED + 502, aucun crédit', async () => {
+  it('erreur terminale 422 (refus) → FAILED + paymentError en 201, aucun crédit', async () => {
     const { service, api, financial } = mockDeps({
       initError: new SasPayTerminalException('Réseau inconnu.', 'invalid_method', 422),
     });
-    await expect(service.initializeTopupPayment('c1', 'TOPUP-1')).rejects.toMatchObject({ status: 502 });
+    const result = await service.initializeTopupPayment('c1', 'TOPUP-1');
     expect(financial.failTopupIntent).toHaveBeenCalledTimes(1);
+    expect(api.initializeSoftpay).toHaveBeenCalledTimes(1);
+    expect(result.paymentError).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(result.intent?.status).toBe('FAILED');
+  });
+
+  it('422 transitoire Orange « momentanément injoignable » → PENDING + 503, jamais FAILED', async () => {
+    const { service, api, financial, intent } = mockDeps({
+      initError: new SasPayTerminalException(
+        'Le service de paiement est momentanément injoignable.',
+        'no_route_available',
+        422,
+      ),
+    });
+    const error = await service.initializeTopupPayment('c1', 'TOPUP-1').catch((e) => e);
+    expect(error.status).toBe(503);
+    expect(error.response).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(financial.failTopupIntent).not.toHaveBeenCalled();
+    expect(intent.status).toBe('PENDING');
     expect(api.initializeSoftpay).toHaveBeenCalledTimes(1);
   });
 
-  it('coupure réseau → PENDING conservé + 502 (retry même clé)', async () => {
+  it('coupure réseau → PENDING conservé + 503 COMMUNICATION_ERROR (retry même clé)', async () => {
     const { service, financial, intent } = mockDeps({ initError: new SasPayUpstreamException('timeout') });
-    await expect(service.initializeTopupPayment('c1', 'TOPUP-1')).rejects.toMatchObject({ status: 502 });
+    const error = await service.initializeTopupPayment('c1', 'TOPUP-1').catch((e) => e);
+    expect(error.status).toBe(503);
+    expect(error.response).toMatchObject({ code: 'COMMUNICATION_ERROR' });
     expect(financial.failTopupIntent).not.toHaveBeenCalled();
     expect(intent.status).toBe('PENDING');
+  });
+
+  it('5xx SasPay → PENDING + 503 PROVIDER_UNAVAILABLE', async () => {
+    const { service, financial } = mockDeps({
+      initError: new SasPayUpstreamException('SasPay en erreur (HTTP 503). Réessayez.', 503),
+    });
+    const error = await service.initializeTopupPayment('c1', 'TOPUP-1').catch((e) => e);
+    expect(error.status).toBe(503);
+    expect(error.response?.code ?? error.response?.message).toBeDefined();
+    expect(financial.failTopupIntent).not.toHaveBeenCalled();
+  });
+
+  it('init 201 avec statut FAILED → FAILED + paymentError, aucun crédit', async () => {
+    const { service, financial } = mockDeps({
+      initResult: { id: 'pay-9', status: 'FAILED', checkoutUrl: null, message: 'Fonds insuffisants.' },
+    });
+    const result = await service.initializeTopupPayment('c1', 'TOPUP-1');
+    expect(financial.failTopupIntent).toHaveBeenCalledTimes(1);
+    expect(result.paymentError).toMatchObject({ code: 'PAYMENT_FAILED', message: 'Fonds insuffisants.' });
+    expect(result.intent?.status).toBe('FAILED');
   });
 });
 
@@ -202,8 +245,32 @@ describe('verifyTopupPayment (sans polling)', () => {
     const { service, financial } = mockDeps({ intent: initializedIntent, verifyResult: null });
     const result = await service.verifyTopupPayment('c1', 'TOPUP-1');
     expect(result.saspayStatus).toBe('UNKNOWN');
+    expect(result.verificationError).toMatchObject({ code: 'TRANSACTION_UNKNOWN' });
     expect(financial.failTopupIntent).not.toHaveBeenCalled();
     expect(financial.confirmTopupFromSasPay).not.toHaveBeenCalled();
+  });
+
+  it('timeout verify → UNKNOWN + COMMUNICATION_ERROR, aucun throw, PENDING conservé', async () => {
+    const { service, financial } = mockDeps({
+      intent: initializedIntent,
+      verifyError: new SasPayUpstreamException('timeout'),
+    });
+    const result = await service.verifyTopupPayment('c1', 'TOPUP-1');
+    expect(result.saspayStatus).toBe('UNKNOWN');
+    expect(result.verificationError).toMatchObject({ code: 'COMMUNICATION_ERROR' });
+    expect(financial.failTopupIntent).not.toHaveBeenCalled();
+    expect(financial.confirmTopupFromSasPay).not.toHaveBeenCalled();
+  });
+
+  it('verify 401 (clé) → UNKNOWN + PROVIDER_UNAVAILABLE, jamais de 500 générique', async () => {
+    const { service, financial } = mockDeps({
+      intent: initializedIntent,
+      verifyError: new SasPayTerminalException('Non autorisé.', 'unauthorized', 401),
+    });
+    const result = await service.verifyTopupPayment('c1', 'TOPUP-1');
+    expect(result.saspayStatus).toBe('UNKNOWN');
+    expect(result.verificationError).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(financial.failTopupIntent).not.toHaveBeenCalled();
   });
 
   it('sans transaction SasPay → aucun appel verify', async () => {

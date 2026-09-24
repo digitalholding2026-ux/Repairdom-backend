@@ -61,9 +61,11 @@ export interface SasPayVerifiedTransaction {
  *  PENDING et la même Idempotency-Key sera réutilisée au retry. */
 export class SasPayUpstreamException extends Error {
   readonly retryable = true;
-  constructor(message: string) {
+  readonly httpStatus: number | null;
+  constructor(message: string, httpStatus: number | null = null) {
     super(message);
     this.name = 'SasPayUpstreamException';
+    this.httpStatus = httpStatus;
   }
 }
 
@@ -200,6 +202,7 @@ export class SasPayApiClient {
     if (httpStatus >= 500) {
       throw new SasPayUpstreamException(
         asNonEmptyString(data.message) ?? `SasPay en erreur (HTTP ${httpStatus}). Réessayez.`,
+        httpStatus,
       );
     }
     if (httpStatus >= 400) {
@@ -236,7 +239,10 @@ export class SasPayApiClient {
     const data = asRecord(body?.data) ?? body ?? {};
     if (httpStatus === 404) return null;
     if (httpStatus >= 500) {
-      throw new SasPayUpstreamException(`Vérification SasPay en erreur (HTTP ${httpStatus}). Réessayez.`);
+      throw new SasPayUpstreamException(
+        asNonEmptyString(data.message) ?? `Vérification SasPay en erreur (HTTP ${httpStatus}). Réessayez.`,
+        httpStatus,
+      );
     }
     if (httpStatus >= 400) {
       throw new SasPayTerminalException(

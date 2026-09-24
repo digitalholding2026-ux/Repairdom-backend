@@ -46,7 +46,9 @@ export class TopupController {
       lastName: dto.lastName ?? null,
       email: dto.email ?? null,
     });
-    return { intent, ...init };
+    // L'init renvoie l'intention à jour (ex. FAILED + paymentError) ;
+    // repli sur l'intention créée si indisponible.
+    return { ...init, intent: init.intent ?? intent };
   }
 
   /** Liste mes intentions (traçabilité PENDING/SUCCESS/FAILED/CANCELLED). */

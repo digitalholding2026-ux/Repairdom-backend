@@ -48,6 +48,7 @@ import {
   isSupportedTopupNetwork,
   normalizeMsisdn,
 } from '../saspay/saspay-networks.js';
+import { topupUserMessage } from '../saspay/saspay-errors.js';
 
 export type Tx = Prisma.TransactionClient;
 
@@ -2515,6 +2516,9 @@ function toApiTopupIntent(intent: {
     netAmount: intent.netAmount,
     creditedTransactionId: intent.creditedTransactionId,
     errorMessage: intent.errorMessage,
+    // Message utilisateur sûr dérivé du statut (l'UI ne lit jamais
+    // errorMessage, réservé au backend/logs).
+    userMessage: topupUserMessage(intent.status, intent.errorMessage),
     createdAt: intent.createdAt.toISOString(),
     updatedAt: intent.updatedAt.toISOString(),
   };

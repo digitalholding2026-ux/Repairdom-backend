@@ -230,9 +230,25 @@ describe('recharge CLIENT_TOPUP : intention puis confirmation', () => {
     const { prisma, store } = mockPrisma();
     const svc = service(prisma);
     const a = await svc.createTopupIntent('c1', 'c1', 1000, { idempotencyKey: 'k-f' });
-    expect((await svc.failTopupIntent(a.reference, 'échec')).status).toBe('FAILED');
+    const failed = await svc.failTopupIntent(a.reference, 'fonds insuffisants côté opérateur');
+    expect(failed.status).toBe('FAILED');
+    expect(store.topups.get(a.reference)?.errorMessage).toBe('fonds insuffisants côté opérateur');
+    expect(failed.userMessage).toMatch(/pas abouti/);
     const b = await svc.createTopupIntent('c1', 'c1', 1000, { idempotencyKey: 'k-c' });
     expect((await svc.cancelTopupIntent(b.reference)).status).toBe('CANCELLED');
+    expect(store.ledger).toHaveLength(0);
+  });
+
+  it('fail/cancel par transaction SasPay → rattaché, aucun crédit', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const a = await svc.createTopupIntent('c1', 'c1', 1000, { idempotencyKey: 'k-fs' });
+    store.topups.get(a.reference)!.saspayTransactionId = 'sp-fail';
+    const failed = await svc.failTopupFromSasPay({ saspayTransactionId: 'sp-fail', reason: 'rejet opérateur' });
+    expect(failed.status).toBe('FAILED');
+    const b = await svc.createTopupIntent('c1', 'c1', 1000, { idempotencyKey: 'k-cs' });
+    store.topups.get(b.reference)!.saspayTransactionId = 'sp-cancel';
+    expect((await svc.cancelTopupFromSasPay({ saspayTransactionId: 'sp-cancel' })).status).toBe('CANCELLED');
     expect(store.ledger).toHaveLength(0);
   });
 });

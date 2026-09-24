@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -12,6 +11,11 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { SasPayApiClient, SasPayTerminalException, SasPayUpstreamException } from './saspay-api.client.js';
 import { SasPayConfig } from './saspay.config.js';
+import {
+  TOPUP_USER_MESSAGES,
+  classifyInitRejection,
+  type TopupPaymentError,
+} from './saspay-errors.js';
 import {
   SASPAY_TOPUP_COUNTRY,
   asShortCode,
@@ -75,7 +79,16 @@ export class SasPayTopupService {
 
   /** Initialise le paiement SasPay d'une intention PENDING (REAL uniquement).
    *  Idempotent : intention déjà initialisée → résultat stocké renvoyé sans
-   *  nouvel appel ; intention SUCCESS → retournée telle quelle. */
+   *  nouvel appel ; intention SUCCESS → retournée telle quelle.
+   *  Gestion d'erreur catégorisée (détail technique en logs + errorMessage,
+   *  message sûr pour l'UI) :
+   *  - indisponibilité transitoire (ex. Orange « momentanément injoignable »,
+   *    5xx, 429, timeout) → 503, intention PENDING conservée, même
+   *    Idempotency-Key au retry (jamais de FAILED automatique) ;
+   *  - refus/validation → intention FAILED + `paymentError` renvoyé en 201
+   *    (aucun crédit, aucun débit) ;
+   *  - statut final non-PENDING renvoyé par l'init (FAILED/CANCELLED) →
+   *    intention marquée aussitôt, jamais laissée PENDING à tort. */
   async initializeTopupPayment(actorUserId: string, intentReference: string, input: TopupInitInput = {}) {
     this.ensureRealMode();
     this.ensureSasPayReady();
@@ -91,7 +104,11 @@ export class SasPayTopupService {
       throw new ForbiddenException('Intention dans un autre mode financier.');
     }
     if (intent.status === 'SUCCESS') {
-      return this.toInitResult(intent, ' déjà confirmée (aucun nouvel appel).');
+      const current = await this.financial.getTopupIntentForOwner(actorUserId, intent.reference);
+      return {
+        ...this.toInitResult(intent, 'Intention déjà confirmée (aucun nouvel appel).'),
+        intent: current,
+      };
     }
     if (intent.status !== 'PENDING') {
       throw new ConflictException(
@@ -103,7 +120,8 @@ export class SasPayTopupService {
       // avec la même intention — la même Idempotency-Key couvrirait de toute
       // façon le rejouement côté prestataire.
       this.logger.warn(`Init déjà effectuée pour ${intent.reference} : résultat stocké renvoyé.`);
-      return this.toInitResult(intent, null);
+      const current = await this.financial.getTopupIntentForOwner(actorUserId, intent.reference);
+      return { ...this.toInitResult(intent, null), intent: current };
     }
 
     const network = input.network ?? intent.network;
@@ -152,26 +170,90 @@ export class SasPayTopupService {
           },
         },
       });
-      return this.toInitResult(updated, null);
+      // L'init peut répondre d'emblée un statut final (réseau en échec
+      // immédiat) : on le répercute aussitôt au lieu de laisser PENDING.
+      const initStatus = (init.status ?? '').toUpperCase();
+      if (initStatus === 'FAILED') {
+        const failed = await this.financial.failTopupIntent(
+          intent.reference,
+          `SASPAY_INIT — ${init.message ?? 'paiement refusé à l’initialisation'}`.slice(0, 500),
+        );
+        return {
+          saspayEnabled: true as const,
+          checkoutUrl: null,
+          pushSent: false,
+          saspayStatus: 'FAILED' as const,
+          saspayTransactionId: init.id,
+          note: null,
+          intent: failed,
+          paymentError: classifyInitRejection(200, null, init.message).error,
+        };
+      }
+      if (initStatus === 'CANCELLED' || initStatus === 'CANCELED') {
+        const cancelled = await this.financial.cancelTopupIntent(intent.reference);
+        return {
+          saspayEnabled: true as const,
+          checkoutUrl: null,
+          pushSent: false,
+          saspayStatus: 'CANCELLED' as const,
+          saspayTransactionId: init.id,
+          note: null,
+          intent: cancelled,
+          paymentError: { code: 'PAYMENT_FAILED', message: TOPUP_USER_MESSAGES.PAYMENT_FAILED } as TopupPaymentError,
+        };
+      }
+      return {
+        ...this.toInitResult(updated, null),
+        intent: await this.financial.getTopupIntentForOwner(actorUserId, intent.reference),
+        paymentError: null,
+      };
     } catch (error) {
       if (error instanceof SasPayTerminalException) {
-        // Échec métier définitif (scope, routage 422, validation…) :
-        // intention FAILED, aucun crédit, erreur explicite 502.
-        await this.financial.failTopupIntent(
+        const rejection = classifyInitRejection(error.httpStatus, error.code, error.message);
+        this.logger.warn(
+          `Init SasPay refusée pour ${intent.reference} ` +
+            `(HTTP ${error.httpStatus}, code ${error.code ?? '—'}) : ${error.message}`,
+        );
+        if (rejection.outcome === 'retryable') {
+          // Transitoire (ex. Orange momentanément injoignable) : PENDING
+          // conservé, 503 explicite, retry avec la même intention/clé.
+          throw new ServiceUnavailableException({
+            code: rejection.error.code,
+            message: rejection.error.message,
+          });
+        }
+        // Refus définitif ou validation : intention FAILED, aucun crédit,
+        // aucun débit — mais réponse 201 avec l'intention et la raison sûre
+        // (le frontend n'a pas à deviner, et connaît la référence pour le suivi).
+        const failed = await this.financial.failTopupIntent(
           intent.reference,
           `SASPAY_INIT ${error.code ?? error.httpStatus} — ${error.message}`.slice(0, 500),
         );
-        throw new BadGatewayException(
-          `Paiement refusé : ${error.message} Intention marquée en échec, aucun débit.`,
-        );
+        return {
+          saspayEnabled: true as const,
+          checkoutUrl: null,
+          pushSent: false,
+          saspayStatus: 'FAILED' as const,
+          saspayTransactionId: null,
+          note: null,
+          intent: failed,
+          paymentError: rejection.error,
+        };
       }
       if (error instanceof SasPayUpstreamException) {
-        // Réseau/timeout/5xx : l'intention RESTE PENDING, la même
-        // Idempotency-Key sera réutilisée au retry (aucun double paiement).
+        // Réseau/timeout/5xx sans refus métier : l'intention RESTE PENDING
+        // (SasPay a pu recevoir la transaction — jamais de FAILED
+        // automatique), la même Idempotency-Key sera réutilisée au retry.
         this.logger.warn(`Init SasPay rejouable pour ${intent.reference} : ${error.message}`);
-        throw new BadGatewayException(
-          'Prestataire momentanément injoignable : réessayez avec la même intention (aucun débit).',
-        );
+        const transient = error.httpStatus !== null || /injoignable|illisible|erreur \(HTTP/i.test(error.message);
+        const code = transient ? 'PROVIDER_UNAVAILABLE' : 'COMMUNICATION_ERROR';
+        throw new ServiceUnavailableException({
+          code,
+          message:
+            code === 'PROVIDER_UNAVAILABLE'
+              ? TOPUP_USER_MESSAGES.PROVIDER_UNAVAILABLE
+              : TOPUP_USER_MESSAGES.COMMUNICATION_ERROR,
+        });
       }
       throw error;
     }
@@ -180,7 +262,10 @@ export class SasPayTopupService {
   /** Vérification serveur d'un paiement (GET /payments/{id}/verify/), sans
    *  polling : applique les mêmes transitions idempotentes que le webhook
    *  (SUCCESS → crédit unique ; FAILED/CANCELLED → marquage ; PENDING →
-   *  attente ; 404 → inconnu, on n'invente rien). */
+   *  attente ; 404 → inconnu, on n'invente rien).
+   *  Les erreurs de communication SasPay ne remontent jamais en 500
+   *  générique : réponse 200 avec `verificationError` (code + message sûr),
+   *  l'intention restant PENDING pour re-vérification. */
   async verifyTopupPayment(actorUserId: string, intentReference: string) {
     const intent = await this.prisma.topupIntent.findUnique({
       where: { reference: intentReference },
@@ -189,17 +274,59 @@ export class SasPayTopupService {
       throw new NotFoundException('Intention de recharge introuvable.');
     }
     if (intent.status === 'SUCCESS') {
-      return { intent: await this.financial.getTopupIntentForOwner(actorUserId, intentReference), saspayStatus: 'SUCCESS' as const };
+      return { intent: await this.financial.getTopupIntentForOwner(actorUserId, intentReference), saspayStatus: 'SUCCESS' as const, verificationError: null };
     }
     if (!intent.saspayTransactionId) {
       const current = await this.financial.getTopupIntentForOwner(actorUserId, intentReference);
-      return { intent: current, saspayStatus: null };
+      return { intent: current, saspayStatus: null, verificationError: null };
     }
     this.ensureSasPayReady();
-    const verified = await this.api.verifyPayment(intent.saspayTransactionId);
+    let verified;
+    try {
+      verified = await this.api.verifyPayment(intent.saspayTransactionId);
+    } catch (error) {
+      // Jamais de 500 générique vers l'UI : état structuré + intention
+      // PENDING conservée pour re-vérification. Détail technique en logs.
+      this.logger.warn(
+        `Vérification SasPay impossible pour ${intent.reference} ` +
+          `(${error instanceof Error ? error.message : 'erreur'}).`,
+      );
+      const current = await this.financial.getTopupIntentForOwner(actorUserId, intentReference);
+      if (error instanceof SasPayUpstreamException) {
+        const transient =
+          error.httpStatus !== null || /injoignable|illisible|erreur \(HTTP/i.test(error.message);
+        const code = transient ? 'PROVIDER_UNAVAILABLE' : 'COMMUNICATION_ERROR';
+        return {
+          intent: current,
+          saspayStatus: 'UNKNOWN' as const,
+          verificationError: {
+            code,
+            message:
+              code === 'PROVIDER_UNAVAILABLE'
+                ? TOPUP_USER_MESSAGES.PROVIDER_UNAVAILABLE
+                : TOPUP_USER_MESSAGES.COMMUNICATION_ERROR,
+          } as TopupPaymentError,
+        };
+      }
+      return {
+        intent: current,
+        saspayStatus: 'UNKNOWN' as const,
+        verificationError: {
+          code: 'PROVIDER_UNAVAILABLE',
+          message: TOPUP_USER_MESSAGES.PROVIDER_UNAVAILABLE,
+        } as TopupPaymentError,
+      };
+    }
     if (!verified) {
       const current = await this.financial.getTopupIntentForOwner(actorUserId, intentReference);
-      return { intent: current, saspayStatus: 'UNKNOWN' as const };
+      return {
+        intent: current,
+        saspayStatus: 'UNKNOWN' as const,
+        verificationError: {
+          code: 'TRANSACTION_UNKNOWN',
+          message: TOPUP_USER_MESSAGES.TRANSACTION_UNKNOWN,
+        } as TopupPaymentError,
+      };
     }
     const status = verified.status.toUpperCase();
     if (status === 'SUCCESS') {
@@ -217,18 +344,18 @@ export class SasPayTopupService {
         network: asShortCode(verified.network),
         country: asShortCode(verified.country),
       });
-      return { intent: result.intent, saspayStatus: 'SUCCESS' as const };
+      return { intent: result.intent, saspayStatus: 'SUCCESS' as const, verificationError: null };
     }
     if (status === 'FAILED') {
       const failed = await this.financial.failTopupIntent(
         intent.reference,
         'Vérification serveur : paiement en échec.',
       );
-      return { intent: failed, saspayStatus: 'FAILED' as const };
+      return { intent: failed, saspayStatus: 'FAILED' as const, verificationError: null };
     }
     if (status === 'CANCELLED' || status === 'CANCELED') {
       const cancelled = await this.financial.cancelTopupIntent(intent.reference);
-      return { intent: cancelled, saspayStatus: 'CANCELLED' as const };
+      return { intent: cancelled, saspayStatus: 'CANCELLED' as const, verificationError: null };
     }
     // PENDING (ou autre) : on enregistre les références connues, sans effet.
     if (verified.reference || verified.externalReference) {
@@ -241,7 +368,7 @@ export class SasPayTopupService {
       });
     }
     const current = await this.financial.getTopupIntentForOwner(actorUserId, intentReference);
-    return { intent: current, saspayStatus: status };
+    return { intent: current, saspayStatus: status, verificationError: null };
   }
 
   private toInitResult(
@@ -266,6 +393,7 @@ export class SasPayTopupService {
         typeof metadata.saspayStatus === 'string' ? metadata.saspayStatus : 'PENDING',
       saspayTransactionId: intent.saspayTransactionId,
       note,
+      paymentError: null,
     };
   }
 }
