@@ -141,8 +141,7 @@ export function classifyInitRejection(
 
 /** Message utilisateur sûr dérivé d'une intention (statut + raison technique
  *  stockée). Utilisé pour `TopupIntent.userMessage` exposé à l'UI. */
-export function topupUserMessage(status: string, errorMessage: string | null): string | null {
-  if (status === 'SUCCESS') return 'Recharge confirmée — votre solde a été crédité.';
+export function topupUserMessage(status: string, errorMessage: string | null): string | null {  if (status === 'SUCCESS') return 'Recharge confirmée — votre solde a été crédité.';
   if (status === 'PENDING') return 'Paiement en attente de confirmation.';
   if (status === 'CANCELLED') return 'Paiement annulé — aucun débit.';
   if (status !== 'FAILED') return null;
@@ -156,4 +155,133 @@ export function topupUserMessage(status: string, errorMessage: string | null): s
     return VALIDATION_MESSAGES.invalid_customer;
   }
   return TOPUP_USER_MESSAGES.PAYMENT_FAILED;
+}
+
+/* ── Sprint PAYOUT — mêmes principes côté retrait (section additive, le
+ *  pay-in ci-dessus est inchangé) : détail technique en logs +
+ *  WithdrawalRequest.errorMessage, message sûr pour l'UI, payload brut
+ *  jamais exposé, timeout jamais converti en FAILED. */
+
+export type PayoutUserErrorCode =
+  | 'WITHDRAWAL_FAILED'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'VALIDATION_ERROR'
+  | 'COMMUNICATION_ERROR'
+  | 'TRANSACTION_UNKNOWN';
+
+export interface PayoutPaymentError {
+  code: PayoutUserErrorCode;
+  message: string;
+}
+
+export const PAYOUT_USER_MESSAGES: Record<PayoutUserErrorCode, string> = {
+  WITHDRAWAL_FAILED:
+    "Le retrait n'a pas abouti. Aucun montant n'a été débité de votre solde Relio.",
+  PROVIDER_UNAVAILABLE:
+    'Le service de paiement est momentanément indisponible. Votre retrait reste en attente, réessayez dans quelques instants.',
+  VALIDATION_ERROR:
+    'Les informations de retrait sont invalides. Vérifiez le réseau, le numéro bénéficiaire et le montant.',
+  COMMUNICATION_ERROR:
+    "Nous n'avons pas pu confirmer la communication avec le service de paiement. Vérifiez le statut de votre retrait avant de recommencer.",
+  TRANSACTION_UNKNOWN:
+    'Transaction introuvable côté service de paiement. Vérifiez le statut avant toute nouvelle tentative.',
+};
+
+/** Codes SasPay métier correspondant à une erreur de validation de la
+ *  demande de payout (réseau inactif, bénéficiaire, pays, devise/pays,
+ *  méthode manquante). */
+const PAYOUT_VALIDATION_CODES = new Set([
+  'invalid_method',
+  'invalid_customer',
+  'invalid_country',
+  'currency_country_mismatch',
+  'missing_method',
+]);
+
+const PAYOUT_VALIDATION_MESSAGES: Record<string, string> = {
+  invalid_method:
+    'Ce réseau mobile money est momentanément indisponible pour les retraits. Réessayez ou choisissez un autre réseau.',
+  invalid_customer:
+    'Le numéro mobile money bénéficiaire semble invalide. Vérifiez-le et réessayez.',
+  invalid_country: 'Pays non pris en charge pour ce retrait.',
+  currency_country_mismatch: 'Incohérence devise/pays pour ce retrait.',
+  missing_method: 'Moyen de paiement manquant. Reprenez le retrait.',
+};
+
+export type PayoutRejectionOutcome = 'retryable' | 'failed' | 'validation';
+
+export interface PayoutRejection {
+  outcome: PayoutRejectionOutcome;
+  error: PayoutPaymentError;
+}
+
+/** Classe un refus d'init payout (HTTP + code + message) :
+ *  - 5xx, 429 ou formulation transitoire → `retryable` (PENDING conservé,
+ *    même Idempotency-Key au retry) ;
+ *  - `ip_not_whitelisted` (403, aucune IP whitelistée), fonctionnalité
+ *    désactivée ou scope insuffisant → `failed` avec message explicite et
+ *    sûr (correction côté dashboard, pas de retry identique utile) ;
+ *  - code de validation connu → `validation` (FAILED + texte ciblé) ;
+ *  - 409 conflit de clé → `failed` ;
+ *  - autres 4xx → `failed` (message SasPay sûr si disponible, sinon texte
+ *    générique — jamais inventé). */
+export function classifyPayoutRejection(
+  httpStatus: number,
+  saspayCode: string | null,
+  saspayMessage: string | null,
+): PayoutRejection {
+  if (httpStatus >= 500 || httpStatus === 429 || isTransientProviderMessage(saspayMessage)) {
+    return {
+      outcome: 'retryable',
+      error: { code: 'PROVIDER_UNAVAILABLE', message: PAYOUT_USER_MESSAGES.PROVIDER_UNAVAILABLE },
+    };
+  }
+  if (saspayCode === 'ip_not_whitelisted') {
+    return {
+      outcome: 'failed',
+      error: {
+        code: 'PROVIDER_UNAVAILABLE',
+        message:
+          "Retraits temporairement indisponibles (configuration du service de paiement). Votre demande est conservée en échec sans débit, réessayez plus tard.",
+      },
+    };
+  }
+  if (saspayCode && PAYOUT_VALIDATION_CODES.has(saspayCode)) {
+    return {
+      outcome: 'validation',
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: PAYOUT_VALIDATION_MESSAGES[saspayCode] ?? PAYOUT_USER_MESSAGES.VALIDATION_ERROR,
+      },
+    };
+  }
+  if (isSafeUserMessage(saspayMessage)) {
+    return {
+      outcome: 'failed',
+      error: { code: 'WITHDRAWAL_FAILED', message: saspayMessage as string },
+    };
+  }
+  return {
+    outcome: 'failed',
+    error: { code: 'WITHDRAWAL_FAILED', message: PAYOUT_USER_MESSAGES.WITHDRAWAL_FAILED },
+  };
+}
+
+/** Message utilisateur sûr dérivé d'une demande de retrait (statut +
+ *  raison technique stockée). Exposé via `WithdrawalRequest.userMessage`. */
+export function payoutUserMessage(status: string, errorMessage: string | null): string | null {
+  if (status === 'SUCCESS') return 'Retrait confirmé.';
+  if (status === 'PENDING') return 'Retrait en attente de confirmation.';
+  if (status === 'CANCELLED') return 'Retrait annulé — aucun débit.';
+  if (status !== 'FAILED') return null;
+  if (isTransientProviderMessage(errorMessage)) {
+    return PAYOUT_USER_MESSAGES.PROVIDER_UNAVAILABLE;
+  }
+  if (errorMessage?.includes('invalid_method')) {
+    return PAYOUT_VALIDATION_MESSAGES.invalid_method;
+  }
+  if (errorMessage?.includes('invalid_customer')) {
+    return PAYOUT_VALIDATION_MESSAGES.invalid_customer;
+  }
+  return PAYOUT_USER_MESSAGES.WITHDRAWAL_FAILED;
 }

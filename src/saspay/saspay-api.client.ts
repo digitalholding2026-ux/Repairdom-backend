@@ -2,12 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SasPayConfig } from './saspay.config.js';
 
 /* Sprint SASPAY-03 — Client HTTP SasPay minimal (pay-in uniquement).
+ * Sprint PAYOUT — + payout (POST /payouts/initialize/, GET /payouts/{id}/verify/).
  *
  * Endpoints utilisés (doc https://docs.saspay.me, base
  * https://api.saspay.me/api/v1, Bearer sk_...) :
  *   POST /payments/softpay/         — init push/checkout (Idempotency-Key)
  *   GET  /payments/{id}/verify/     — revérification serveur (pas de polling)
- * Payment Links, payouts et checkout-sessions : HORS PÉRIMÈTRE.
+ *   POST /payouts/initialize/       — init retrait (Idempotency-Key, scope
+ *                                     PAYOUT/BOTH, IP whitelistée requise)
+ *   GET  /payouts/{id}/verify/      — revérification retrait
+ * Payment Links et checkout-sessions : HORS PÉRIMÈTRE.
  *
  * Montants : l'API attend des décimaux en string ("2500.00") et renvoie de
  * même ; ce client convertit vers/depuis des entiers XAF. `fetch` global
@@ -55,6 +59,29 @@ export interface SasPayVerifiedTransaction {
   currency: string | null;
   country: string | null;
   network: string | null;
+  transactionType: string | null;
+  flowDirection: string | null;
+}
+
+export interface PayoutRecipient {
+  msisdn: string;
+}
+
+export interface PayoutInitInput {
+  amountMinor: number;
+  currency: string;
+  country: string;
+  method: string;
+  description: string;
+  customer: SoftpayCustomer;
+  recipient: PayoutRecipient;
+  metadata?: Record<string, string>;
+  idempotencyKey: string;
+}
+
+export interface PayoutInitResult {
+  id: string;
+  message: string | null;
 }
 
 /** Erreur amont SasPay rejouable (réseau/timeout/5xx) : l'intention reste
@@ -267,6 +294,112 @@ export class SasPayApiClient {
       currency: asNonEmptyString(data.currency),
       country: asNonEmptyString(data.country),
       network: asNonEmptyString(data.network),
+      transactionType: asNonEmptyString(data.transaction_type),
+      flowDirection: asNonEmptyString(data.flow_direction),
+    };
+  }
+
+  /** Initie un payout (retrait). 201 → identifiant ; 403 (dont
+   *  `ip_not_whitelisted` si aucune IP whitelistée) et 422 métier →
+   *  terminal ; 409 clé rejouée → terminal ; 5xx → rejouable. La réponse
+   *  201 ne contient que `{message, id}` : montants/frais exacts connus
+   *  plus tard via verify/webhook (jamais calculés par Relio). */
+  async initializePayout(input: PayoutInitInput): Promise<PayoutInitResult> {
+    if (!input.idempotencyKey || input.idempotencyKey.length > SASPAY_IDEMPOTENCY_KEY_MAX_LENGTH) {
+      throw new Error('Idempotency-Key invalide pour SasPay.');
+    }
+    const { httpStatus, payload } = await this.request<Record<string, unknown>>(
+      'POST',
+      '/payouts/initialize/',
+      {
+        amount: toSasPayDecimal(input.amountMinor),
+        currency: input.currency,
+        country: input.country,
+        method: input.method,
+        description: input.description,
+        customer: {
+          email: input.customer.email,
+          first_name: input.customer.first_name,
+          last_name: input.customer.last_name,
+          phone: input.customer.phone,
+        },
+        recipient: { msisdn: input.recipient.msisdn },
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+      },
+      input.idempotencyKey,
+    );
+    const body = asRecord(payload);
+    const data = asRecord(body?.data) ?? body ?? {};
+    if (httpStatus === 409) {
+      throw new SasPayTerminalException(
+        asNonEmptyString(data.message) ?? 'Conflit idempotence SasPay : clé déjà utilisée avec un autre contenu.',
+        'idempotency_conflict',
+        409,
+      );
+    }
+    if (httpStatus >= 500) {
+      throw new SasPayUpstreamException(
+        asNonEmptyString(data.message) ?? `SasPay en erreur (HTTP ${httpStatus}). Réessayez.`,
+        httpStatus,
+      );
+    }
+    if (httpStatus >= 400) {
+      throw new SasPayTerminalException(
+        asNonEmptyString(data.message) ?? `Retrait refusé par SasPay (HTTP ${httpStatus}).`,
+        asNonEmptyString(data.code),
+        httpStatus,
+      );
+    }
+    const id = asNonEmptyString(data.id);
+    if (!id) {
+      throw new SasPayUpstreamException('Réponse SasPay incomplète (identifiant manquant). Réessayez.');
+    }
+    return { id, message: asNonEmptyString(data.message) };
+  }
+
+  /** Revérifie un payout côté gateway (PENDING reverifié, jamais mémorisé).
+   *  404 → null (inconnu, on n'invente aucun échec). */
+  async verifyPayout(payoutId: string): Promise<SasPayVerifiedTransaction | null> {
+    const { httpStatus, payload } = await this.request<Record<string, unknown>>(
+      'GET',
+      `/payouts/${encodeURIComponent(payoutId)}/verify/`,
+      null,
+      null,
+    );
+    const body = asRecord(payload);
+    const data = asRecord(body?.data) ?? body ?? {};
+    if (httpStatus === 404) return null;
+    if (httpStatus >= 500) {
+      throw new SasPayUpstreamException(
+        asNonEmptyString(data.message) ?? `Vérification SasPay en erreur (HTTP ${httpStatus}). Réessayez.`,
+        httpStatus,
+      );
+    }
+    if (httpStatus >= 400) {
+      throw new SasPayTerminalException(
+        asNonEmptyString(data.message) ?? `Vérification refusée (HTTP ${httpStatus}).`,
+        asNonEmptyString(data.code),
+        httpStatus,
+      );
+    }
+    return {
+      id: asNonEmptyString(data.id) ?? payoutId,
+      reference: asNonEmptyString(data.reference),
+      externalReference: asNonEmptyString(data.external_reference),
+      status: (asNonEmptyString(data.status) ?? 'PENDING').toUpperCase(),
+      requestedAmountMinor: fromSasPayDecimal(data.requested_amount ?? data.amount),
+      netAmountMinor: fromSasPayDecimal(data.net_amount),
+      chargedAmountMinor: fromSasPayDecimal(data.charged ?? data.debited_amount),
+      feeMinor:
+        fromSasPayDecimal(data.client_fee) ??
+        fromSasPayDecimal(data.gateway_fee) ??
+        fromSasPayDecimal(data.fee),
+      feeChargeMode: asNonEmptyString(data.fee_charge_mode),
+      currency: asNonEmptyString(data.currency),
+      country: asNonEmptyString(data.country),
+      network: asNonEmptyString(data.network),
+      transactionType: asNonEmptyString(data.transaction_type),
+      flowDirection: asNonEmptyString(data.flow_direction),
     };
   }
 }

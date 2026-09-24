@@ -20,6 +20,20 @@ export function isSupportedTopupNetwork(value: unknown): value is SasPayTopupNet
   );
 }
 
+/* Sprint PAYOUT — le payout utilise les mêmes codes réseau (`method`) que le
+ * pay-in (`network`) : mtn_cm / orange_cm, pays CM, devise XAF (doc SasPay :
+ * mismatch devise/pays rejeté en 422, sans conversion). Alias explicites
+ * pour la lisibilité du flux retrait. */
+export const SASPAY_PAYOUT_COUNTRY = SASPAY_TOPUP_COUNTRY;
+export const SASPAY_PAYOUT_CURRENCY = SASPAY_TOPUP_CURRENCY;
+export const SASPAY_PAYOUT_NETWORKS = SASPAY_TOPUP_NETWORKS;
+export type SasPayPayoutNetwork = SasPayTopupNetwork;
+
+/** Réseau actif éligible au payout. */
+export function isSupportedPayoutNetwork(value: unknown): value is SasPayPayoutNetwork {
+  return isSupportedTopupNetwork(value);
+}
+
 /** Normalise un numéro de téléphone (espaces/points/tirets retirés).
  *  Retourne null si le format de base est invalide (le gateway reste seul
  *  juge de l'existence réelle du numéro). */

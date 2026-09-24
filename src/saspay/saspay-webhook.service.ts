@@ -90,10 +90,15 @@ export class SasPayWebhookService {
     }
   }
 
-  /** Traite un événement déjà authentifié. Toujours idempotent : un même
-   *  `transaction.success` rejoué ne crédite jamais deux fois (garde-fou
-   *  `FinancialService.confirmTopupFromSasPay` + `reference` UNIQUE).
-   *  Les contrôles montant/devise y sont appliqués avant tout crédit. */
+  /** Traite un événement déjà authentifié. Toujours idempotent.
+   *
+   *  Routage : si la transaction SasPay est rattachée à une demande de
+   *  retrait (WithdrawalRequest.saspayTransactionId), flux PAYOUT
+   *  (settleWithdrawalSuccess/Failure, débit unique au charged constaté) ;
+   *  sinon flux PAY-IN existant (confirmTopupFromSasPay). `settlement.*`
+   *  reste ignoré (structure instable). En payout, un SUCCESS est toujours
+   *  réglé (l'argent a réellement bougé) : les écarts devise/montant sont
+   *  journalisés, jamais bloquants. */
   async handleEvent(event: string, data: Record<string, unknown>) {
     const normalizedEvent = event.trim().toLowerCase();
     if (normalizedEvent.startsWith('settlement.')) {
@@ -111,6 +116,13 @@ export class SasPayWebhookService {
     if (!refs.saspayTransactionId && !internalReference) {
       this.logger.warn(`Événement SasPay « ${event} » sans référence : ignoré sans effet.`);
       return { handled: false as const, reason: 'missing-reference' };
+    }
+
+    const withdrawalReference = refs.saspayTransactionId
+      ? await this.financial.findWithdrawalReferenceBySasPay(refs.saspayTransactionId)
+      : null;
+    if (withdrawalReference) {
+      return this.handlePayoutEvent(normalizedEvent, withdrawalReference, refs, data);
     }
 
     if (normalizedEvent === 'transaction.success') {
@@ -167,6 +179,81 @@ export class SasPayWebhookService {
     } catch (error) {
       this.logger.warn(
         `Événement « ${normalizedEvent} » non rattaché (${error instanceof Error ? error.message : 'erreur'}).`,
+      );
+      return {
+        handled: false as const,
+        reason: 'unknown-transaction',
+        message: error instanceof Error ? error.message : 'rejet',
+      };
+    }
+  }
+
+  /** Traite un événement payout (demande de retrait rattachée). SUCCESS :
+   *  débit unique au `charged` constaté + hold CONSUMED (les écarts éventuels
+   *  devise/montant sont journalisés, jamais bloquants : les fonds ont
+   *  réellement bougé). FAILED/CANCELLED : hold libéré, aucun débit.
+   *  Rejouable sans double écriture. */
+  private async handlePayoutEvent(
+    normalizedEvent: string,
+    withdrawalReference: string,
+    refs: WebhookSaspayRefs,
+    data: Record<string, unknown>,
+  ) {
+    if (normalizedEvent === 'transaction.success') {
+      if (refs.currency && refs.currency.toUpperCase() !== 'XAF') {
+        this.logger.warn(
+          `Payout ${withdrawalReference} : devise inattendue ${refs.currency} — règlement appliqué quand même (fonds mouvementés).`,
+        );
+      }
+      if (refs.requestedAmountMinor !== null && refs.requestedAmountMinor !== undefined) {
+        this.logger.warn(
+          `Payout ${withdrawalReference} : requested constaté ${refs.requestedAmountMinor} — débit au charged constaté.`,
+        );
+      }
+      try {
+        const result = await this.financial.settleWithdrawalSuccess(withdrawalReference, {
+          saspayTransactionId: refs.saspayTransactionId,
+          saspayReference: refs.saspayReference,
+          externalReference: refs.externalReference,
+          network: refs.network,
+          country: refs.country,
+          fee: refs.feeMinor,
+          chargedAmount: refs.chargedAmountMinor,
+          netAmount: refs.netAmountMinor,
+          feeChargeMode: refs.feeChargeMode,
+        });
+        return { handled: true as const, event: normalizedEvent, debited: result.debited };
+      } catch (error) {
+        this.logger.warn(
+          `Payout ${withdrawalReference} non réglé (${error instanceof Error ? error.message : 'erreur'}).`,
+        );
+        return {
+          handled: false as const,
+          reason: 'rejected',
+          message: error instanceof Error ? error.message : 'rejet',
+        };
+      }
+    }
+
+    const failureReason =
+      typeof data.reason === 'string' && data.reason.trim()
+        ? data.reason.trim()
+        : normalizedEvent === 'transaction.cancelled'
+          ? 'Payout SasPay annulé.'
+          : 'Payout SasPay en échec.';
+    try {
+      if (normalizedEvent === 'transaction.cancelled') {
+        await this.financial.cancelWithdrawalFromSasPay({ requestReference: withdrawalReference });
+      } else {
+        await this.financial.failWithdrawalFromSasPay({
+          requestReference: withdrawalReference,
+          reason: failureReason,
+        });
+      }
+      return { handled: true as const, event: normalizedEvent };
+    } catch (error) {
+      this.logger.warn(
+        `Événement payout « ${normalizedEvent} » non rattaché (${error instanceof Error ? error.message : 'erreur'}).`,
       );
       return {
         handled: false as const,

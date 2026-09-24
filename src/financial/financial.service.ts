@@ -43,12 +43,14 @@ import {
   computeRelioCommission,
 } from './financial-fees.js';
 import {
+  SASPAY_PAYOUT_COUNTRY,
   SASPAY_TOPUP_COUNTRY,
   SASPAY_TOPUP_NETWORKS,
+  isSupportedPayoutNetwork,
   isSupportedTopupNetwork,
   normalizeMsisdn,
 } from '../saspay/saspay-networks.js';
-import { topupUserMessage } from '../saspay/saspay-errors.js';
+import { payoutUserMessage, topupUserMessage } from '../saspay/saspay-errors.js';
 
 export type Tx = Prisma.TransactionClient;
 
@@ -2196,12 +2198,22 @@ export class FinancialService {
 
   /** Crée une demande de retrait PENDING + hold ACTIVE, sous verrou
    *  utilisateur (disponible ≥ montant vérifié atomiquement).
-   *  Idempotente par `idempotencyKey`. */
+   *  Idempotente par `idempotencyKey`. Le réseau bénéficiaire et le MSISDN
+   *  sont validés côté backend (référentiel CM/mtn_cm/orange_cm) et conservés
+   *  (colonnes + metadata) pour l'init payout ; le frontend ne choisit jamais
+   *  hors référentiel. Le hold couvre le montant demandé ; le débit définitif
+   *  au SUCCESS utilise le `charged` constaté SasPay (jamais de frais
+   *  calculés par Relio). */
   async createWithdrawalRequest(
     actorUserId: string,
     targetUserId: string,
     amount: number,
-    options: { idempotencyKey?: string; metadata?: Prisma.InputJsonObject | null } = {},
+    options: {
+      idempotencyKey?: string;
+      metadata?: Prisma.InputJsonObject | null;
+      network?: string | null;
+      msisdn?: string | null;
+    } = {},
   ) {
     assertWithdrawalAmount(amount);
     const target = await this.prisma.user.findUnique({
@@ -2214,12 +2226,28 @@ export class FinancialService {
         'Les retraits sont réservés aux comptes clients et techniciens.',
       );
     }
+    const network = options.network ?? null;
+    if (network !== null && !isSupportedPayoutNetwork(network)) {
+      throw new BadRequestException(
+        `Réseau non supporté pour le retrait (attendu : ${SASPAY_TOPUP_NETWORKS.join(', ')}).`,
+      );
+    }
+    const msisdn = options.msisdn !== undefined ? normalizeMsisdn(options.msisdn) : null;
+    if (options.msisdn !== undefined && options.msisdn !== null && msisdn === null) {
+      throw new BadRequestException('Numéro mobile money bénéficiaire invalide.');
+    }
     const mode = this.getMode();
     const idempotencyKey = sanitizeIdempotencyKey(options.idempotencyKey) ?? randomUUID();
     const existingByKey = await this.prisma.withdrawalRequest.findUnique({
       where: { idempotencyKey },
     });
     if (existingByKey) return toApiWithdrawalRequest(existingByKey);
+
+    const baseMetadata =
+      options.metadata && typeof options.metadata === 'object' && !Array.isArray(options.metadata)
+        ? { ...(options.metadata as Record<string, unknown>) }
+        : {};
+    if (msisdn) baseMetadata.msisdn = msisdn;
 
     return this.prisma.$transaction(async (tx) => {
       await this.lockUserFunds(tx, targetUserId);
@@ -2260,7 +2288,12 @@ export class FinancialService {
               status: 'PENDING',
               holdId: hold.id,
               requestedAmount: amount,
-              metadata: options.metadata ?? Prisma.JsonNull,
+              network,
+              country: network ? SASPAY_PAYOUT_COUNTRY : null,
+              metadata:
+                Object.keys(baseMetadata).length > 0
+                  ? (baseMetadata as Prisma.InputJsonObject)
+                  : (options.metadata ?? Prisma.JsonNull),
               createdById: actorUserId,
             },
           });
@@ -2282,7 +2315,11 @@ export class FinancialService {
 
   /** Règle un payout réussi : débit ledger définitif + hold CONSUMED +
    *  demande SUCCESS, dans la même transaction. Idempotent : une demande
-   *  déjà SUCCESS est retournée sans nouveau débit. */
+   *  déjà SUCCESS est retournée sans nouveau débit.
+   *  Montant débité (Sprint PAYOUT, jamais `requested` seul) : le `charged`
+   *  constaté SasPay quand il est fourni et valide, sinon le montant demandé.
+   *  Les frais ne sont jamais calculés par Relio (fournis par SasPay,
+   *  tracés en metadata). */
   async settleWithdrawalSuccess(
     reference: string,
     saspay: {
@@ -2294,6 +2331,7 @@ export class FinancialService {
       fee?: number | null;
       chargedAmount?: number | null;
       netAmount?: number | null;
+      feeChargeMode?: string | null;
     } = {},
   ) {
     const mode = this.getMode();
@@ -2320,6 +2358,13 @@ export class FinancialService {
       if (!owner) throw new NotFoundException('Utilisateur introuvable.');
       const type = owner.role === 'TECHNICIAN' ? 'TECHNICIAN_WITHDRAWAL' : 'CLIENT_WITHDRAWAL';
       await this.lockUserFunds(tx, request.userId);
+      const debitAmount =
+        saspay.chargedAmount !== null &&
+        saspay.chargedAmount !== undefined &&
+        Number.isInteger(saspay.chargedAmount) &&
+        saspay.chargedAmount > 0
+          ? saspay.chargedAmount
+          : request.amount;
       const ledgerReference = `withdrawal:${request.id}:${mode}`;
       await this.record(
         tx,
@@ -2328,12 +2373,16 @@ export class FinancialService {
           demandeId: null,
           type,
           direction: 'DEBIT',
-          amount: request.amount,
+          amount: debitAmount,
           reference: ledgerReference,
           createdById: request.createdById,
           metadata: {
             withdrawalRequestId: request.id,
             withdrawalReference: request.reference,
+            requestedAmount: request.amount,
+            chargedAmount: debitAmount,
+            fee: saspay.fee ?? null,
+            netAmount: saspay.netAmount ?? null,
             saspayTransactionId: saspay.saspayTransactionId ?? null,
             saspayReference: saspay.saspayReference ?? null,
             currency: FINANCIAL_CURRENCY,
@@ -2347,6 +2396,10 @@ export class FinancialService {
           data: { status: 'CONSUMED', releasedAt: new Date() },
         });
       }
+      const requestMetadata =
+        request.metadata && typeof request.metadata === 'object' && !Array.isArray(request.metadata)
+          ? { ...(request.metadata as Record<string, unknown>) }
+          : {};
       const updated = await tx.withdrawalRequest.update({
         where: { id: request.id },
         data: {
@@ -2360,6 +2413,10 @@ export class FinancialService {
           fee: saspay.fee ?? request.fee,
           chargedAmount: saspay.chargedAmount ?? request.chargedAmount,
           netAmount: saspay.netAmount ?? request.netAmount,
+          metadata:
+            saspay.feeChargeMode != null
+              ? { ...requestMetadata, feeChargeMode: saspay.feeChargeMode }
+              : undefined,
         },
       });
       return { request: toApiWithdrawalRequest(updated), debited: true };
@@ -2402,6 +2459,58 @@ export class FinancialService {
       take: 100,
     });
     return { items: rows.map(toApiWithdrawalRequest) };
+  }
+
+  /** Demande du seul propriétaire (userId JWT). Null si absente ou à un
+   *  autre utilisateur, sans distinguer les deux cas. */
+  async getWithdrawalRequestForOwner(userId: string, reference: string) {
+    const request = await this.prisma.withdrawalRequest.findUnique({ where: { reference } });
+    if (!request || request.userId !== userId) return null;
+    return toApiWithdrawalRequest(request);
+  }
+
+  /** Rattache un échec payout SasPay à la demande (référence Relio ou
+   *  transaction SasPay) puis applique `settleWithdrawalFailure` (aucun
+   *  débit, hold libéré). */
+  async failWithdrawalFromSasPay(input: {
+    requestReference?: string | null;
+    saspayTransactionId?: string | null;
+    reason?: string | null;
+  }) {
+    const reference = await this.resolveWithdrawalReference(input);
+    return this.settleWithdrawalFailure(reference, 'FAILED', input.reason ?? null);
+  }
+
+  /** Rattache une annulation payout SasPay à la demande puis applique
+   *  `settleWithdrawalFailure` en CANCELLED. */
+  async cancelWithdrawalFromSasPay(input: {
+    requestReference?: string | null;
+    saspayTransactionId?: string | null;
+  }) {
+    const reference = await this.resolveWithdrawalReference(input);
+    return this.settleWithdrawalFailure(reference, 'CANCELLED');
+  }
+
+  private async resolveWithdrawalReference(input: {
+    requestReference?: string | null;
+    saspayTransactionId?: string | null;
+  }): Promise<string> {
+    if (input.requestReference) return input.requestReference;
+    if (input.saspayTransactionId) {
+      const found = await this.findWithdrawalReferenceBySasPay(input.saspayTransactionId);
+      if (found) return found;
+    }
+    throw new NotFoundException('Transaction SasPay inconnue (aucun retrait rattaché).');
+  }
+
+  /** Référence de la demande de retrait rattachée à une transaction SasPay
+   *  (rapprochement webhook/verify). Null si inconnue. */
+  async findWithdrawalReferenceBySasPay(saspayTransactionId: string): Promise<string | null> {
+    const found = await this.prisma.withdrawalRequest.findFirst({
+      where: { saspayTransactionId },
+      select: { reference: true },
+    });
+    return found?.reference ?? null;
   }
 }
 
@@ -2567,6 +2676,9 @@ function toApiWithdrawalRequest(request: {
     chargedAmount: request.chargedAmount,
     netAmount: request.netAmount,
     errorMessage: request.errorMessage,
+    // Message utilisateur sûr dérivé du statut (l'UI ne lit jamais
+    // errorMessage, réservé au backend/logs).
+    userMessage: payoutUserMessage(request.status, request.errorMessage),
     createdAt: request.createdAt.toISOString(),
     updatedAt: request.updatedAt.toISOString(),
   };

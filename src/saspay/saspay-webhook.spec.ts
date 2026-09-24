@@ -76,6 +76,10 @@ describe('webhook SasPay : dispatch idempotent', () => {
     cancelTopupFromSasPay: vi.fn(async () => ({ status: 'CANCELLED' })),
     confirmTopupIntent: vi.fn(),
     failTopupIntent: vi.fn(),
+    findWithdrawalReferenceBySasPay: vi.fn(async (): Promise<string | null> => null),
+    settleWithdrawalSuccess: vi.fn(async () => ({ debited: true })),
+    failWithdrawalFromSasPay: vi.fn(async () => ({ status: 'FAILED' })),
+    cancelWithdrawalFromSasPay: vi.fn(async () => ({ status: 'CANCELLED' })),
   });
 
   it('transaction.success → confirmTopupFromSasPay (rejoué : aucun second crédit côté moteur)', async () => {
@@ -194,5 +198,82 @@ describe('webhook SasPay : dispatch idempotent', () => {
     const result = await service.handleEvent('transaction.success', { amount: 100 });
     expect(result).toMatchObject({ handled: false, reason: 'missing-reference' });
     expect(financial.confirmTopupIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe('webhook SasPay : routage payout', () => {
+  const mockFinancial = () => ({
+    confirmTopupFromSasPay: vi.fn(),
+    failTopupFromSasPay: vi.fn(),
+    cancelTopupFromSasPay: vi.fn(),
+    findWithdrawalReferenceBySasPay: vi.fn(async (): Promise<string | null> => null),
+    settleWithdrawalSuccess: vi.fn(async () => ({ debited: true })),
+    failWithdrawalFromSasPay: vi.fn(async () => ({ status: 'FAILED' })),
+    cancelWithdrawalFromSasPay: vi.fn(async () => ({ status: 'CANCELLED' })),
+  });
+
+  const payoutData = {
+    id: 'po-1',
+    reference: 'TXN-W1',
+    type: 'RETRAIT',
+    status: 'SUCCESS',
+    amount: '10000.00',
+    fee: '150.00',
+    charged: '10000.00',
+    net_amount: '9850.00',
+    fee_charge_mode: 'DEDUCTED',
+    currency: 'XAF',
+    country: 'CM',
+    network: 'mtn_cm',
+  };
+
+  it('transaction rattachée à un retrait → settleWithdrawalSuccess (débit unique), pas de topup', async () => {
+    const financial = mockFinancial();
+    financial.findWithdrawalReferenceBySasPay.mockResolvedValue('WD-1');
+    const service = webhookService(financial);
+    const first = await service.handleEvent('transaction.success', payoutData);
+    const second = await service.handleEvent('transaction.success', payoutData);
+    expect(first).toMatchObject({ handled: true, debited: true });
+    expect(second).toMatchObject({ handled: true });
+    expect(financial.settleWithdrawalSuccess).toHaveBeenCalledTimes(2);
+    expect(financial.settleWithdrawalSuccess).toHaveBeenCalledWith(
+      'WD-1',
+      expect.objectContaining({
+        saspayTransactionId: 'po-1',
+        chargedAmount: 10000,
+        netAmount: 9850,
+        fee: 150,
+      }),
+    );
+    expect(financial.confirmTopupFromSasPay).not.toHaveBeenCalled();
+  });
+
+  it('payout failed → failWithdrawalFromSasPay, aucun débit', async () => {
+    const financial = mockFinancial();
+    financial.findWithdrawalReferenceBySasPay.mockResolvedValue('WD-1');
+    const service = webhookService(financial);
+    const result = await service.handleEvent('transaction.failed', { ...payoutData, status: 'FAILED' });
+    expect(result).toMatchObject({ handled: true, event: 'transaction.failed' });
+    expect(financial.failWithdrawalFromSasPay).toHaveBeenCalledTimes(1);
+    expect(financial.settleWithdrawalSuccess).not.toHaveBeenCalled();
+    expect(financial.failTopupFromSasPay).not.toHaveBeenCalled();
+  });
+
+  it('payout cancelled → cancelWithdrawalFromSasPay', async () => {
+    const financial = mockFinancial();
+    financial.findWithdrawalReferenceBySasPay.mockResolvedValue('WD-1');
+    const service = webhookService(financial);
+    const result = await service.handleEvent('transaction.cancelled', { ...payoutData, status: 'CANCELLED' });
+    expect(result).toMatchObject({ handled: true, event: 'transaction.cancelled' });
+    expect(financial.cancelWithdrawalFromSasPay).toHaveBeenCalledTimes(1);
+    expect(financial.settleWithdrawalSuccess).not.toHaveBeenCalled();
+  });
+
+  it('transaction non rattachée → flux pay-in conservé', async () => {
+    const financial = mockFinancial();
+    const service = webhookService(financial);
+    await service.handleEvent('transaction.success', { ...payoutData, internalReference: 'TOPUP-X' });
+    expect(financial.confirmTopupFromSasPay).toHaveBeenCalledTimes(1);
+    expect(financial.settleWithdrawalSuccess).not.toHaveBeenCalled();
   });
 });

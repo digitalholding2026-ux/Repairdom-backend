@@ -4,11 +4,9 @@ import { FinancialService } from './financial.service.js';
 import { FinancialAdminController } from './financial-admin.controller.js';
 import { FinanceAdminController } from './finance-admin.controller.js';
 import { FinanceController } from './finance.controller.js';
-import { WithdrawalController } from './withdrawal.controller.js';
 
 /** Sprint 8.7-FIN — moteur financier RepairDom (SIMULATION) + lecture UI.
- *  Sprint SASPAY-01 — demandes de retrait + holds (fondations).
- *  Sprint SASPAY-03 — la surface HTTP recharge (TopupController) vit dans
+ *  Sprint PAYOUT — les surfaces HTTP recharge/retrait vivent dans
  *  SasPayModule (orchestration init/verify), le moteur reste ici. */
 @Module({
   imports: [AuthModule],
@@ -16,7 +14,6 @@ import { WithdrawalController } from './withdrawal.controller.js';
     FinancialAdminController,
     FinanceController,
     FinanceAdminController,
-    WithdrawalController,
   ],
   providers: [FinancialService],
   exports: [FinancialService],
