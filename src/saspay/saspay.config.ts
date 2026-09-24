@@ -37,4 +37,19 @@ export class SasPayConfig {
   isConfigured(): boolean {
     return this.apiKey !== null && this.webhookSecret !== null;
   }
+
+  /** Vérifie la cohérence clé ↔ mode prestataire (SASPAY-03) :
+   *  LIVE exige `sk_live_…`, TEST exige `sk_test_…`. Une clé live en TEST
+   *  (ou l'inverse) déplacerait de l'argent réel en test — refus explicite.
+   *  Retourne null si cohérent, sinon le motif de refus. */
+  keyModeMismatch(): string | null {
+    const key = this.apiKey;
+    if (!key) return 'clé API SasPay absente';
+    const live = key.startsWith('sk_live_');
+    const test = key.startsWith('sk_test_');
+    if (!live && !test) return 'clé API SasPay au format inattendu (sk_test_/sk_live_ attendu)';
+    if (this.mode === 'LIVE' && !live) return 'mode LIVE avec une clé non-live : utilisez sk_live_…';
+    if (this.mode === 'TEST' && !test) return 'mode TEST avec une clé non-test : utilisez sk_test_…';
+    return null;
+  }
 }

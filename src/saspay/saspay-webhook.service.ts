@@ -2,6 +2,8 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { FinancialService } from '../financial/financial.service.js';
 import { SasPayConfig } from './saspay.config.js';
+import { fromSasPayDecimal } from './saspay-api.client.js';
+import { asShortCode } from './saspay-networks.js';
 
 /** Fenêtre d'acceptation du timestamp webhook (5 minutes). */
 export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
@@ -9,26 +11,41 @@ export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
 /** Événements transactionnels traités en v1. Les payloads `settlement.*`
  *  sont explicitement ignorés : SasPay indique que leur structure `data`
  *  n'est pas encore stable — le cœur métier n'en dépend jamais. */
-const HANDLED_TRANSACTION_EVENTS = new Set(['transaction.success', 'transaction.failed']);
+const HANDLED_TRANSACTION_EVENTS = new Set([
+  'transaction.success',
+  'transaction.failed',
+  'transaction.cancelled',
+]);
 
 export interface WebhookSaspayRefs {
   saspayTransactionId?: string | null;
   saspayReference?: string | null;
   externalReference?: string | null;
+  internalReference?: string | null;
   network?: string | null;
   country?: string | null;
-  fee?: number | null;
-  chargedAmount?: number | null;
-  netAmount?: number | null;
+  msisdn?: string | null;
+  currency?: string | null;
+  status?: string | null;
+  requestedAmountMinor?: number | null;
+  feeMinor?: number | null;
+  chargedAmountMinor?: number | null;
+  netAmountMinor?: number | null;
+  feeChargeMode?: string | null;
 }
 
 /**
- * Fondation webhook SasPay (Sprint SASPAY-01) : vérification HMAC +
- * dispatch idempotent. Contraintes :
+ * Fondation webhook SasPay (Sprint SASPAY-01, durcie SASPAY-03) :
+ * vérification HMAC sur le corps brut EXACT + dispatch idempotent.
+ * Contraintes :
  *  - signature HMAC-SHA256(timestamp + "." + rawBody exact), comparaison
  *    constante, timestamp ≤ 5 minutes, secret backend uniquement ;
+ *  - le JSON n'est parsé qu'APRÈS validation (le contrôleur exige req.rawBody,
+ *    aucun fallback re-sérialisé) ;
  *  - aucune confiance dans le frontend : seul ce traitement serveur peut
  *    créditer le ledger (via FinancialService, idempotent) ;
+ *  - contrôles montant/devise avant crédit (le net constaté fait foi,
+ *    jamais `amount` seul) ; SUCCESS terminal jamais muté ;
  *  - réponse rapide, jamais de double écriture (rejouabilité sûre).
  */
 @Injectable()
@@ -40,7 +57,8 @@ export class SasPayWebhookService {
     private readonly financial: FinancialService,
   ) {}
 
-  /** Vérifie l'authenticité d'un appel webhook. Lève 401 si invalide. */
+  /** Vérifie l'authenticité d'un appel webhook sur le corps brut exact.
+   *  Lève 401/403 si invalide. `rawBody` DOIT être les octets reçus. */
   verifySignature(
     rawBody: string | Buffer,
     timestampHeader: string | null | undefined,
@@ -74,7 +92,8 @@ export class SasPayWebhookService {
 
   /** Traite un événement déjà authentifié. Toujours idempotent : un même
    *  `transaction.success` rejoué ne crédite jamais deux fois (garde-fou
-   *  `FinancialService.confirmTopupIntent` + `reference` UNIQUE). */
+   *  `FinancialService.confirmTopupFromSasPay` + `reference` UNIQUE).
+   *  Les contrôles montant/devise y sont appliqués avant tout crédit. */
   async handleEvent(event: string, data: Record<string, unknown>) {
     const normalizedEvent = event.trim().toLowerCase();
     if (normalizedEvent.startsWith('settlement.')) {
@@ -88,33 +107,80 @@ export class SasPayWebhookService {
       return { handled: false as const, reason: 'unknown-event' };
     }
     const refs = extractSaspayRefs(data);
-    const internalReference =
-      typeof data.internalReference === 'string' && data.internalReference.trim()
-        ? data.internalReference.trim()
-        : typeof data.externalReference === 'string' && data.externalReference.trim()
-          ? data.externalReference.trim()
-          : null;
-    if (!internalReference) {
-      this.logger.warn(
-        `Événement SasPay « ${event} » sans référence interne : ignoré sans effet.`,
-      );
+    const internalReference = refs.internalReference;
+    if (!refs.saspayTransactionId && !internalReference) {
+      this.logger.warn(`Événement SasPay « ${event} » sans référence : ignoré sans effet.`);
       return { handled: false as const, reason: 'missing-reference' };
     }
+
     if (normalizedEvent === 'transaction.success') {
-      const result = await this.financial.confirmTopupIntent(internalReference, refs);
-      return { handled: true as const, event: normalizedEvent, credited: result.credited };
+      try {
+        const result = await this.financial.confirmTopupFromSasPay({
+          intentReference: internalReference,
+          saspayTransactionId: refs.saspayTransactionId,
+          currency: refs.currency,
+          requestedAmountMinor: refs.requestedAmountMinor,
+          netAmountMinor: refs.netAmountMinor,
+          chargedAmountMinor: refs.chargedAmountMinor,
+          feeMinor: refs.feeMinor,
+          feeChargeMode: refs.feeChargeMode,
+          saspayReference: refs.saspayReference,
+          externalReference: refs.externalReference,
+          network: refs.network,
+          country: refs.country,
+        });
+        return { handled: true as const, event: normalizedEvent, credited: result.credited };
+      } catch (error) {
+        // Contrôle comptable refusé (devise/montant) ou transaction inconnue :
+        // accusé de réception sans crédit, cause journalisée.
+        this.logger.warn(
+          `transaction.success non crédité (${error instanceof Error ? error.message : 'erreur'}).`,
+        );
+        return {
+          handled: false as const,
+          reason: 'rejected',
+          message: error instanceof Error ? error.message : 'rejet',
+        };
+      }
     }
-    const failed = await this.financial.failTopupIntent(
-      internalReference,
-      typeof data.reason === 'string' ? data.reason : 'Paiement SasPay en échec.',
-    );
-    return { handled: true as const, event: normalizedEvent, status: failed.status };
+
+    const failureReason =
+      typeof data.reason === 'string' && data.reason.trim()
+        ? data.reason.trim()
+        : normalizedEvent === 'transaction.cancelled'
+          ? 'Paiement SasPay annulé.'
+          : 'Paiement SasPay en échec.';
+    try {
+      if (normalizedEvent === 'transaction.cancelled') {
+        await this.financial.cancelTopupFromSasPay({
+          intentReference: internalReference,
+          saspayTransactionId: refs.saspayTransactionId,
+        });
+      } else {
+        await this.financial.failTopupFromSasPay({
+          intentReference: internalReference,
+          saspayTransactionId: refs.saspayTransactionId,
+          reason: failureReason,
+        });
+      }
+      return { handled: true as const, event: normalizedEvent };
+    } catch (error) {
+      this.logger.warn(
+        `Événement « ${normalizedEvent} » non rattaché (${error instanceof Error ? error.message : 'erreur'}).`,
+      );
+      return {
+        handled: false as const,
+        reason: 'unknown-transaction',
+        message: error instanceof Error ? error.message : 'rejet',
+      };
+    }
   }
 }
 
-/** Extrait les références/montants SasPay d'un payload `data` (plates ou
- *  imbriqués), sans jamais faire confiance à un montant isolé : le net
- *  constaté fait foi côté confirmation. */
+/** Extrait les références/montants SasPay d'un payload `data` (format
+ *  doc : décimaux en string ; tolère les entiers historiques).
+ *  Les montants sont convertis en entiers minor ; le net constaté fait foi
+ *  côté confirmation, jamais `amount` seul. */
 export function extractSaspayRefs(data: Record<string, unknown>): WebhookSaspayRefs {
   const pickString = (...keys: string[]): string | null => {
     for (const key of keys) {
@@ -131,8 +197,10 @@ export function extractSaspayRefs(data: Record<string, unknown>): WebhookSaspayR
     }
     return null;
   };
-  const pickInt = (...keys: string[]): number | null => {
+  const pickMinor = (...keys: string[]): number | null => {
     for (const key of keys) {
+      const parsed = fromSasPayDecimal(data[key]);
+      if (parsed !== null) return parsed;
       const value = data[key];
       if (Number.isInteger(value) && (value as number) >= 0) return value as number;
     }
@@ -141,11 +209,17 @@ export function extractSaspayRefs(data: Record<string, unknown>): WebhookSaspayR
   return {
     saspayTransactionId: pickString('saspayTransactionId', 'transactionId', 'id'),
     saspayReference: pickString('saspayReference', 'reference'),
-    externalReference: pickString('externalReference', 'internalReference'),
-    network: pickString('network'),
-    country: pickString('country'),
-    fee: pickInt('fee'),
-    chargedAmount: pickInt('chargedAmount', 'charged'),
-    netAmount: pickInt('netAmount', 'net', 'amount'),
+    externalReference: pickString('externalReference', 'external_reference'),
+    internalReference: pickString('internalReference', 'internal_reference'),
+    network: asShortCode(pickString('network')),
+    country: asShortCode(pickString('country')),
+    msisdn: pickString('msisdn'),
+    currency: pickString('currency'),
+    status: pickString('status'),
+    requestedAmountMinor: pickMinor('requested_amount', 'requestedAmount', 'amount'),
+    feeMinor: pickMinor('fee', 'client_fee', 'gateway_fee', 'platform_fee'),
+    chargedAmountMinor: pickMinor('charged', 'chargedAmount', 'debited_amount'),
+    netAmountMinor: pickMinor('net_amount', 'netAmount', 'net'),
+    feeChargeMode: pickString('fee_charge_mode', 'feeChargeMode'),
   };
 }

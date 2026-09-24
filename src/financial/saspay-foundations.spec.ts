@@ -317,3 +317,130 @@ describe('références : format et unicité', () => {
     for (const r of holds) expect(r).toMatch(/^HOLD-[A-HJ-NP-Z0-9]{12}$/);
   });
 });
+
+describe('SASPAY-03 : création avec réseau/téléphone', () => {
+  it('réseau hors référentiel → 400 ; téléphone invalide → 400', async () => {
+    const { prisma } = mockPrisma();
+    const svc = service(prisma);
+    await expect(
+      svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 'n-1', network: 'eu_mobile_cm' }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 'n-2', network: 'mtn_cm', phone: 'abc' }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('réseau + téléphone valides → stockés (colonnes + metadata)', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const created = await svc.createTopupIntent('c1', 'c1', 5000, {
+      idempotencyKey: 'n-3',
+      network: 'orange_cm',
+      phone: '+237 690 00 00 00',
+    });
+    expect(created.status).toBe('PENDING');
+    const row = store.topups.get(created.reference);
+    expect(row?.network).toBe('orange_cm');
+    expect(row?.country).toBe('CM');
+    expect((row?.metadata as Record<string, unknown>)?.phone).toBe('+237690000000');
+  });
+});
+
+describe('SASPAY-03 : confirmTopupFromSasPay (contrôles comptables)', () => {
+  const sasPayOk = {
+    saspayTransactionId: 'sp-1',
+    currency: 'XAF',
+    requestedAmountMinor: 5000,
+    netAmountMinor: 5000,
+    chargedAmountMinor: 5000,
+    feeMinor: 0,
+    feeChargeMode: 'ADD_ON',
+    saspayReference: 'TXN-1',
+    externalReference: null,
+    network: 'mtn_cm',
+    country: 'CM',
+  };
+
+  it('SUCCESS conforme → 1 crédit du NET, refs enregistrées ; rejoué → aucun doublon', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-1' });
+    const first = await svc.confirmTopupFromSasPay({ intentReference: intent.reference, ...sasPayOk });
+    expect(first.credited).toBe(true);
+    const credits = store.ledger.filter((t) => t.type === 'CLIENT_TOPUP');
+    expect(credits).toHaveLength(1);
+    expect(credits[0].amount).toBe(5000);
+    expect(store.topups.get(intent.reference)?.status).toBe('SUCCESS');
+    const second = await svc.confirmTopupFromSasPay({ intentReference: intent.reference, ...sasPayOk });
+    expect(second.credited).toBe(false);
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')).toHaveLength(1);
+  });
+
+  it('DEDUCTED : crédit du net (4000), pas du demandé (5000)', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-2' });
+    await svc.confirmTopupFromSasPay({
+      intentReference: intent.reference,
+      ...sasPayOk,
+      saspayTransactionId: 'sp-2',
+      netAmountMinor: 4000,
+      chargedAmountMinor: 5000,
+      feeMinor: 1000,
+      feeChargeMode: 'DEDUCTED',
+    });
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')[0].amount).toBe(4000);
+  });
+
+  it('devise différente → FAILED, 0 crédit', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-3' });
+    await expect(
+      svc.confirmTopupFromSasPay({ intentReference: intent.reference, ...sasPayOk, saspayTransactionId: 'sp-3', currency: 'XOF' }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(store.topups.get(intent.reference)?.status).toBe('FAILED');
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')).toHaveLength(0);
+  });
+
+  it('montant demandé différent → FAILED, 0 crédit', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-4' });
+    await expect(
+      svc.confirmTopupFromSasPay({ intentReference: intent.reference, ...sasPayOk, saspayTransactionId: 'sp-4', requestedAmountMinor: 9999 }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')).toHaveLength(0);
+  });
+
+  it('transaction inconnue → 404, 0 crédit', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    await expect(svc.confirmTopupFromSasPay({ saspayTransactionId: 'sp-zzz' })).rejects.toMatchObject({ status: 404 });
+    expect(store.ledger).toHaveLength(0);
+  });
+
+  it('SUCCESS tardif après FAILED (argent arrivé) → crédit unique ; FAILED après SUCCESS → inchangé', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-5' });
+    await svc.failTopupIntent(intent.reference, 'timeout');
+    const late = await svc.confirmTopupFromSasPay({ intentReference: intent.reference, ...sasPayOk, saspayTransactionId: 'sp-5' });
+    expect(late.credited).toBe(true);
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')).toHaveLength(1);
+    // Événement d'échec tardif sur SUCCESS : statut protégé, aucun crédit.
+    const kept = await svc.failTopupIntent(intent.reference, 'tardif');
+    expect(kept.status).toBe('SUCCESS');
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_TOPUP')).toHaveLength(1);
+  });
+
+  it('retrouve l\'intention par transaction SasPay seule', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    const intent = await svc.createTopupIntent('c1', 'c1', 5000, { idempotencyKey: 's-6' });
+    // Init simulée : transaction connue sans référence Relio dans l'event.
+    store.topups.get(intent.reference)!.saspayTransactionId = 'sp-6';
+    const result = await svc.confirmTopupFromSasPay({ ...sasPayOk, intentReference: null, saspayTransactionId: 'sp-6' });
+    expect(result.credited).toBe(true);
+  });
+});

@@ -6,7 +6,11 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Sprint SASPAY-03 : `rawBody: true` conserve les octets exacts de chaque
+  // requête (req.rawBody) — indispensable au webhook SasPay dont la signature
+  // HMAC couvre `${timestamp}.${rawBody}` au bit près. Sans le corps brut
+  // exact, la vérification est refusée (aucun fallback re-sérialisé).
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const config = app.get(ConfigService);
 
   app.setGlobalPrefix('api');

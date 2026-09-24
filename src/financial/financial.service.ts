@@ -42,6 +42,12 @@ import {
   WITHDRAWAL_REQUEST_REFERENCE_PREFIX,
   computeRelioCommission,
 } from './financial-fees.js';
+import {
+  SASPAY_TOPUP_COUNTRY,
+  SASPAY_TOPUP_NETWORKS,
+  isSupportedTopupNetwork,
+  normalizeMsisdn,
+} from '../saspay/saspay-networks.js';
 
 export type Tx = Prisma.TransactionClient;
 
@@ -1730,12 +1736,20 @@ export class FinancialService {
 
   /** Crée une intention de recharge PENDING (aucun crédit ledger).
    *  Idempotente par `idempotencyKey` : rejouer la même clé retourne
-   *  l'intention existante. Réservée aux comptes CLIENT. */
+   *  l'intention existante. Réservée aux comptes CLIENT. Le réseau/téléphone
+   *  (pay-in SasPay) sont validés côté backend et conservés (colonnes +
+   *  metadata) pour l'initialisation ; le frontend ne choisit jamais hors
+   *  référentiel. */
   async createTopupIntent(
     actorUserId: string,
     targetUserId: string,
     amount: number,
-    options: { idempotencyKey?: string; metadata?: Prisma.InputJsonObject | null } = {},
+    options: {
+      idempotencyKey?: string;
+      metadata?: Prisma.InputJsonObject | null;
+      network?: string | null;
+      phone?: string | null;
+    } = {},
   ) {
     assertTopupAmount(amount);
     const target = await this.prisma.user.findUnique({
@@ -1746,12 +1760,28 @@ export class FinancialService {
     if (target.role !== 'CLIENT') {
       throw new BadRequestException('La recharge est réservée aux comptes clients.');
     }
+    const network = options.network ?? null;
+    if (network !== null && !isSupportedTopupNetwork(network)) {
+      throw new BadRequestException(
+        `Réseau non supporté pour la recharge (attendu : ${SASPAY_TOPUP_NETWORKS.join(', ')}).`,
+      );
+    }
+    const phone = options.phone !== undefined ? normalizeMsisdn(options.phone) : null;
+    if (options.phone !== undefined && options.phone !== null && phone === null) {
+      throw new BadRequestException('Numéro de téléphone invalide pour la recharge.');
+    }
     const mode = this.getMode();
     const idempotencyKey = sanitizeIdempotencyKey(options.idempotencyKey) ?? randomUUID();
     const existingByKey = await this.prisma.topupIntent.findUnique({
       where: { idempotencyKey },
     });
     if (existingByKey) return toApiTopupIntent(existingByKey);
+
+    const baseMetadata =
+      options.metadata && typeof options.metadata === 'object' && !Array.isArray(options.metadata)
+        ? { ...(options.metadata as Record<string, unknown>) }
+        : {};
+    if (phone) baseMetadata.phone = phone;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const reference = generateTopupReference();
@@ -1766,7 +1796,12 @@ export class FinancialService {
             mode,
             status: 'PENDING',
             requestedAmount: amount,
-            metadata: options.metadata ?? Prisma.JsonNull,
+            network,
+            country: network ? SASPAY_TOPUP_COUNTRY : null,
+            metadata:
+              Object.keys(baseMetadata).length > 0
+                ? (baseMetadata as Prisma.InputJsonObject)
+                : (options.metadata ?? Prisma.JsonNull),
             createdById: actorUserId,
           },
         });
@@ -1791,7 +1826,10 @@ export class FinancialService {
    *  saspayTransactionId déjà consommé par une autre intention = 409.
    *  Le montant crédité est le net constaté s'il est fourni et valide,
    *  sinon le montant demandé (jamais de confiance au frontend : cet appel
-   *  est réservé au traitement webhook/serveur). */
+   *  est réservé au traitement webhook/serveur).
+   *  Depuis SASPAY-03, un SUCCESS tardif sur intention FAILED/CANCELLED
+   *  (argent réellement arrivé) crédite une seule fois s'il n'existe aucun
+   *  crédit ; un SUCCESS existant ne bascule jamais vers un autre statut. */
   async confirmTopupIntent(
     reference: string,
     saspay: {
@@ -1822,28 +1860,18 @@ export class FinancialService {
           : null;
         return { intent: toApiTopupIntent(intent), credited: false, transaction: credited };
       }
-      if (intent.status !== 'PENDING') {
+      if (intent.status !== 'PENDING' && intent.creditedTransactionId) {
+        // Garde-fou : un crédit existe déjà — jamais de second crédit,
+        // même face à un SUCCESS tardif.
         throw new ConflictException(
-          `Intention déjà traitée (statut « ${intent.status} ») : aucune nouvelle écriture.`,
+          'Recharge déjà créditée : aucune nouvelle écriture.',
         );
       }
-      if (saspay.saspayTransactionId) {
-        const alreadyUsed = await tx.topupIntent.findFirst({
-          where: {
-            saspayTransactionId: saspay.saspayTransactionId,
-            status: 'SUCCESS',
-            id: { not: intent.id },
-          },
-          select: { id: true },
-        });
-        if (alreadyUsed) {
-          throw new ConflictException(
-            'Transaction SasPay déjà consommée par une autre recharge.',
-          );
-        }
+      if (intent.status !== 'PENDING') {
+        this.logger.warn(
+          `SUCCESS tardif sur intention ${intent.reference} (statut ${intent.status}) : crédit unique appliqué.`,
+        );
       }
-      await this.lockUserFunds(tx, intent.userId);
-
       const creditAmount =
         saspay.netAmount !== null &&
         saspay.netAmount !== undefined &&
@@ -1851,53 +1879,234 @@ export class FinancialService {
         saspay.netAmount > 0
           ? saspay.netAmount
           : intent.amount;
-      const ledgerReference = `client-topup:${intent.id}:${mode}`;
-      const entry = await this.record(
-        tx,
-        {
-          userId: intent.userId,
-          demandeId: null,
-          type: 'CLIENT_TOPUP',
-          direction: 'CREDIT',
-          amount: creditAmount,
-          reference: ledgerReference,
-          createdById: intent.createdById,
-          metadata: {
-            topupIntentId: intent.id,
-            topupReference: intent.reference,
-            requestedAmount: intent.amount,
-            netAmount: creditAmount,
-            saspayTransactionId: saspay.saspayTransactionId ?? null,
-            saspayReference: saspay.saspayReference ?? null,
-            currency: FINANCIAL_CURRENCY,
-          },
-        },
-        { mode },
-      );
-      const updated = await tx.topupIntent.update({
-        where: { id: intent.id },
-        data: {
-          status: 'SUCCESS',
-          saspayTransactionId: saspay.saspayTransactionId ?? intent.saspayTransactionId,
-          saspayReference: saspay.saspayReference ?? intent.saspayReference,
-          externalReference: saspay.externalReference ?? intent.externalReference,
-          network: saspay.network ?? intent.network,
-          country: saspay.country ?? intent.country,
-          fee: saspay.fee ?? intent.fee,
-          chargedAmount: saspay.chargedAmount ?? intent.chargedAmount,
-          netAmount: creditAmount,
-          creditedTransactionId: entry.id,
-        },
+      return this.finalizeTopupSuccessTx(tx, intent, mode, {
+        creditAmount,
+        saspayTransactionId: saspay.saspayTransactionId ?? null,
+        saspayReference: saspay.saspayReference ?? null,
+        externalReference: saspay.externalReference ?? null,
+        network: saspay.network ?? null,
+        country: saspay.country ?? null,
+        fee: saspay.fee ?? null,
+        chargedAmount: saspay.chargedAmount ?? null,
       });
-      return { intent: toApiTopupIntent(updated), credited: true, transaction: entry };
     });
   }
 
+  /** Confirmation serveur d'un paiement SasPay (webhook transaction.success
+   *  ou vérification GET /payments/{id}/verify/) avec contrôles comptables
+   *  stricts, avant tout crédit :
+   *    - intention retrouvée par référence Relio ou par transaction SasPay ;
+   *    - devise fournie = devise de l'intention (sinon FAILED, 0 crédit) ;
+   *    - montant demandé fourni = montant de l'intention (sinon FAILED) ;
+   *    - net constaté entier > 0 (sinon FAILED) — jamais `amount` seul :
+   *      le ledger crédite le NET (ADD_ON : net = amount ; DEDUCTED :
+   *      net = amount − fee), jamais de frais hardcodés ;
+   *    - SUCCESS existant : retour idempotent, jamais re-crédité ni muté ;
+   *    - FAILED/CANCELLED sans crédit + SUCCESS vérifié tardif : crédit
+   *      unique autorisé (l'argent est réellement arrivé).
+   *  Tout est atomique (verrou utilisateur + transaction). */
+  async confirmTopupFromSasPay(input: {
+    intentReference?: string | null;
+    saspayTransactionId?: string | null;
+    currency?: string | null;
+    requestedAmountMinor?: number | null;
+    netAmountMinor?: number | null;
+    chargedAmountMinor?: number | null;
+    feeMinor?: number | null;
+    feeChargeMode?: string | null;
+    saspayReference?: string | null;
+    externalReference?: string | null;
+    network?: string | null;
+    country?: string | null;
+  }) {
+    const mode = this.getMode();
+    return this.prisma.$transaction(async (tx) => {
+      const intent = input.intentReference
+        ? await tx.topupIntent.findUnique({ where: { reference: input.intentReference } })
+        : input.saspayTransactionId
+          ? await tx.topupIntent.findFirst({
+              where: { saspayTransactionId: input.saspayTransactionId },
+            })
+          : null;
+      if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+      if (intent.mode !== mode) {
+        throw new ForbiddenException(
+          `Intention en mode « ${intent.mode} » (mode serveur actuel : ${mode}).`,
+        );
+      }
+      if (intent.status === 'SUCCESS') {
+        const credited = intent.creditedTransactionId
+          ? await tx.financialTransaction.findUnique({
+              where: { id: intent.creditedTransactionId },
+            })
+          : null;
+        return { intent: toApiTopupIntent(intent), credited: false, transaction: credited };
+      }
+      if (intent.creditedTransactionId) {
+        throw new ConflictException('Recharge déjà créditée : aucune nouvelle écriture.');
+      }
+
+      const fail = async (code: string, message: string): Promise<never> => {
+        if (intent.status === 'PENDING') {
+          await tx.topupIntent.update({
+            where: { id: intent.id },
+            data: {
+              status: 'FAILED',
+              errorMessage: `${code} — ${message}`.slice(0, 500),
+              saspayTransactionId: input.saspayTransactionId ?? intent.saspayTransactionId,
+              saspayReference: input.saspayReference ?? intent.saspayReference,
+              externalReference: input.externalReference ?? intent.externalReference,
+            },
+          });
+        }
+        throw new ConflictException(`${code} — ${message}`);
+      };
+
+      if (input.currency && input.currency.toUpperCase() !== intent.currency.toUpperCase()) {
+        await fail('DEVISE_INATTENDUE', `devise ${input.currency} pour une intention ${intent.currency}`);
+      }
+      if (
+        input.requestedAmountMinor !== null &&
+        input.requestedAmountMinor !== undefined &&
+        input.requestedAmountMinor !== intent.amount
+      ) {
+        await fail(
+          'MONTANT_INATTENDU',
+          `montant demandé ${input.requestedAmountMinor} pour une intention de ${intent.amount}`,
+        );
+      }
+      if (
+        input.netAmountMinor === null ||
+        input.netAmountMinor === undefined ||
+        !Number.isInteger(input.netAmountMinor) ||
+        input.netAmountMinor <= 0
+      ) {
+        await fail('NET_MANQUANT', 'montant net SasPay absent ou invalide : aucun crédit');
+      }
+      if (intent.status !== 'PENDING') {
+        this.logger.warn(
+          `SUCCESS tardif sur intention ${intent.reference} (statut ${intent.status}) : crédit unique appliqué.`,
+        );
+      }
+      return this.finalizeTopupSuccessTx(tx, intent, mode, {
+        creditAmount: input.netAmountMinor as number,
+        saspayTransactionId: input.saspayTransactionId ?? null,
+        saspayReference: input.saspayReference ?? null,
+        externalReference: input.externalReference ?? null,
+        network: input.network ?? null,
+        country: input.country ?? null,
+        fee: input.feeMinor ?? null,
+        chargedAmount: input.chargedAmountMinor ?? null,
+        extraMetadata:
+          input.feeChargeMode != null ? { feeChargeMode: input.feeChargeMode } : undefined,
+      });
+    });
+  }
+
+  /** Finalise un SUCCESS : verrou, anti-double-consommation par transaction
+   *  SasPay, CLIENT_TOPUP CREDIT idempotent, intention SUCCESS — atomique.
+   *  Le crédit existe au plus une fois par intention (`reference` ledger
+   *  déterministe + `record()` idempotent). */
+  private async finalizeTopupSuccessTx(
+    tx: Tx,
+    intent: {
+      id: string;
+      reference: string;
+      userId: string;
+      amount: number;
+      createdById: string | null;
+      saspayTransactionId: string | null;
+      saspayReference: string | null;
+      externalReference: string | null;
+      network: string | null;
+      country: string | null;
+      fee: number | null;
+      chargedAmount: number | null;
+    },
+    mode: FinancialTransactionMode,
+    saspay: {
+      creditAmount: number;
+      saspayTransactionId?: string | null;
+      saspayReference?: string | null;
+      externalReference?: string | null;
+      network?: string | null;
+      country?: string | null;
+      fee?: number | null;
+      chargedAmount?: number | null;
+      extraMetadata?: Record<string, unknown>;
+    },
+  ) {
+    if (saspay.saspayTransactionId) {
+      const alreadyUsed = await tx.topupIntent.findFirst({
+        where: {
+          saspayTransactionId: saspay.saspayTransactionId,
+          status: 'SUCCESS',
+          id: { not: intent.id },
+        },
+        select: { id: true },
+      });
+      if (alreadyUsed) {
+        throw new ConflictException('Transaction SasPay déjà consommée par une autre recharge.');
+      }
+    }
+    await this.lockUserFunds(tx, intent.userId);
+
+    const ledgerReference = `client-topup:${intent.id}:${mode}`;
+    const entry = await this.record(
+      tx,
+      {
+        userId: intent.userId,
+        demandeId: null,
+        type: 'CLIENT_TOPUP',
+        direction: 'CREDIT',
+        amount: saspay.creditAmount,
+        reference: ledgerReference,
+        createdById: intent.createdById,
+        metadata: {
+          topupIntentId: intent.id,
+          topupReference: intent.reference,
+          requestedAmount: intent.amount,
+          netAmount: saspay.creditAmount,
+          chargedAmount: saspay.chargedAmount ?? null,
+          fee: saspay.fee ?? null,
+          saspayTransactionId: saspay.saspayTransactionId ?? null,
+          saspayReference: saspay.saspayReference ?? null,
+          currency: FINANCIAL_CURRENCY,
+          ...saspay.extraMetadata,
+        },
+      },
+      { mode },
+    );
+    const updated = await tx.topupIntent.update({
+      where: { id: intent.id },
+      data: {
+        status: 'SUCCESS',
+        saspayTransactionId: saspay.saspayTransactionId ?? intent.saspayTransactionId,
+        saspayReference: saspay.saspayReference ?? intent.saspayReference,
+        externalReference: saspay.externalReference ?? intent.externalReference,
+        network: saspay.network ?? intent.network,
+        country: saspay.country ?? intent.country,
+        fee: saspay.fee ?? intent.fee,
+        chargedAmount: saspay.chargedAmount ?? intent.chargedAmount,
+        netAmount: saspay.creditAmount,
+        creditedTransactionId: entry.id,
+      },
+    });
+    return { intent: toApiTopupIntent(updated), credited: true, transaction: entry };
+  }
+
   /** Marque une intention PENDING en FAILED (aucune écriture ledger).
-   *  Idempotente : une intention non-PENDING est retournée telle quelle. */
+   *  Idempotente et terminale : un SUCCESS existant n'est JAMAIS muté par
+   *  un événement tardif (retourné tel quel avec avertissement). */
   async failTopupIntent(reference: string, errorMessage?: string | null) {
     const intent = await this.prisma.topupIntent.findUnique({ where: { reference } });
     if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+    if (intent.status === 'SUCCESS') {
+      this.logger.warn(
+        `Événement d'échec ignoré sur intention SUCCESS ${intent.reference} : statut terminal protégé.`,
+      );
+      return toApiTopupIntent(intent);
+    }
     if (intent.status !== 'PENDING') return toApiTopupIntent(intent);
     const updated = await this.prisma.topupIntent.update({
       where: { reference },
@@ -1906,10 +2115,17 @@ export class FinancialService {
     return toApiTopupIntent(updated);
   }
 
-  /** Annule une intention PENDING (aucune écriture ledger). Idempotente. */
+  /** Annule une intention PENDING (aucune écriture ledger). Idempotente et
+   *  terminale : un SUCCESS existant n'est JAMAIS muté. */
   async cancelTopupIntent(reference: string) {
     const intent = await this.prisma.topupIntent.findUnique({ where: { reference } });
     if (!intent) throw new NotFoundException('Intention de recharge introuvable.');
+    if (intent.status === 'SUCCESS') {
+      this.logger.warn(
+        `Événement d'annulation ignoré sur intention SUCCESS ${intent.reference} : statut terminal protégé.`,
+      );
+      return toApiTopupIntent(intent);
+    }
     if (intent.status !== 'PENDING') return toApiTopupIntent(intent);
     const updated = await this.prisma.topupIntent.update({
       where: { reference },
@@ -1926,6 +2142,50 @@ export class FinancialService {
       take: 100,
     });
     return { items: rows.map(toApiTopupIntent) };
+  }
+
+  /** Rattache un échec SasPay à l'intention (référence Relio ou transaction
+   *  SasPay) puis applique `failTopupIntent` (SUCCESS terminal jamais muté).
+   *  Utilisé par le webhook `transaction.failed` et la vérification serveur. */
+  async failTopupFromSasPay(input: {
+    intentReference?: string | null;
+    saspayTransactionId?: string | null;
+    reason?: string | null;
+  }) {
+    const reference = await this.resolveTopupReference(input);
+    return this.failTopupIntent(reference, input.reason ?? null);
+  }
+
+  /** Rattache une annulation SasPay à l'intention puis applique
+   *  `cancelTopupIntent` (SUCCESS terminal jamais muté). */
+  async cancelTopupFromSasPay(input: {
+    intentReference?: string | null;
+    saspayTransactionId?: string | null;
+  }) {
+    const reference = await this.resolveTopupReference(input);
+    return this.cancelTopupIntent(reference);
+  }
+
+  private async resolveTopupReference(input: {
+    intentReference?: string | null;
+    saspayTransactionId?: string | null;
+  }): Promise<string> {
+    if (input.intentReference) return input.intentReference;
+    if (input.saspayTransactionId) {
+      const found = await this.prisma.topupIntent.findFirst({
+        where: { saspayTransactionId: input.saspayTransactionId },
+        select: { reference: true },
+      });
+      if (found) return found.reference;
+    }
+    throw new NotFoundException('Transaction SasPay inconnue (aucune intention rattachée).');
+  }
+  /** Intention du seul propriétaire (userId JWT). Null si absente ou à un
+   *  autre utilisateur, sans distinguer les deux cas. */
+  async getTopupIntentForOwner(userId: string, reference: string) {
+    const intent = await this.prisma.topupIntent.findUnique({ where: { reference } });
+    if (!intent || intent.userId !== userId) return null;
+    return toApiTopupIntent(intent);
   }
 
   /* ── Demandes de retrait client/technicien ────────────────────── */
