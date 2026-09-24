@@ -367,22 +367,30 @@ export class DemandesService {
         }
       }
 
-      // Règle Relio — règlement financier ATOMIQUE avec la transition :
-      //   CONFIRMED → rémunération du technicien (brut réparation + transport
-      //              2 000, moins commission Relio 2 %), aucune écriture à
-      //              COMPLETED (la commission n'est due qu'à la validation).
-      //   CANCELED  → contrepassation intégrale du client s'il avait été
-      //              débité (brut + éventuels frais legacy).
-      // Dans les deux cas rien n'est écrit si la mission est legacy (aucune
-      // transaction financière rétroactive). Tout est idempotent.
+      // Règle Relio (SASPAY-02) — règlement financier ATOMIQUE avec la
+      // transition (même transaction que le changement de statut gardé) :
+      //   CONFIRMED → hold mission CONSUMED + débit client définitif
+      //              (brut réparation + transport 2 000) + rémunération du
+      //              technicien (brut − commission Relio 2 %). Aucune écriture
+      //              à COMPLETED (la commission n'est due qu'à la validation).
+      //   CANCELED  → hold mission RELEASED (fonds à nouveau disponibles,
+      //              SANS écriture : ni topup, ni payout, ni faux dépôt) +
+      //              contrepassation legacy si un CLIENT_MISSION_DEBIT
+      //              historique existe (no-op pour les missions à hold).
+      // Missions legacy sans quote ACCEPTED : aucune écriture (pas de hold
+      // rétroactif, pas de conversion d'historique). Tout est idempotent.
       if (dto.status === 'CONFIRMED') {
-        await this.financial.settleTechnicianAtConfirmation(tx, {
+        await this.financial.settleMissionAtConfirmation(tx, {
           demandeId: current.id,
+          clientId,
           technicianId: current.technicianId,
           createdById: clientId,
         });
       }
       if (dto.status === 'CANCELED') {
+        await this.financial.releaseMissionHoldIfAny(tx, {
+          demandeId: current.id,
+        });
         await this.financial.reverseClientDebitIfAny(tx, {
           demandeId: current.id,
           clientId,

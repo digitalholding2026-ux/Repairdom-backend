@@ -209,15 +209,14 @@ export class FinancialService {
     return repairAmount + STANDARD_TRANSPORT_FEE;
   }
 
-  /** Acceptation d'un quote — débit client Relio (atomique avec
-   *  l'acceptation, dans la même transaction) :
-   *    CLIENT_MISSION_DEBIT : réparation (montant accepté) + transport 2 000
-   *  Le client ne paie AUCUNE commission Relio supplémentaire : aucune écriture
-   *  CLIENT_FEE n'est créée pour les nouvelles acceptations (les écritures
-   *  CLIENT_FEE antérieures restent immuables pour l'historique).
-   *  Règle : le client paie au moment où il valide le tarif. Le débit utilise
-   *  des références serveur idempotentes (quote + demande + mode). */
-  async debitClientAtAcceptance(
+  /** Enregistre le débit client définitif d'une mission (brut = réparation
+   *  acceptée + transport 2 000, SANS commission client). Écriture
+   *  idempotente par référence serveur (quote + demande + mode).
+   *  Depuis SASPAY-02, ce débit n'est plus créé à l'acceptation (qui crée
+   *  un FundsHold ACTIVE) mais à la confirmation, via
+   *  `settleMissionAtConfirmation()`. Les écritures historiques restent
+   *  inchangées et la référence déterministe rend l'appel rejouable. */
+  private async recordClientMissionDebit(
     tx: Tx,
     args: {
       demandeId: string;
@@ -247,6 +246,179 @@ export class FinancialService {
     });
   }
 
+  /** Compatibilité historique — point d'entrée du débit à l'acceptation
+   *  (règle pré-SASPAY-02). N'est PLUS appelé par l'acceptation des devis
+   *  (voir `holdClientAtAcceptance`) : conservé pour compatibilité et
+   *  rejouabilité des missions legacy. Toute nouvelle mission passe par
+   *  hold (ACCEPTED) puis `settleMissionAtConfirmation()` (CONFIRMED). */
+  async debitClientAtAcceptance(
+    tx: Tx,
+    args: {
+      demandeId: string;
+      clientId: string;
+      quote: QuoteSnapshot;
+      actorUserId: string;
+    },
+  ) {
+    await this.recordClientMissionDebit(tx, args);
+  }
+
+  /** Acceptation d'un quote — réservation client (SASPAY-02, ATOMIQUE avec
+   *  l'acceptation quand appelé dans la même transaction que le claim) :
+   *    FundsHold ACTIVE = brut (réparation acceptée + transport 2 000)
+   *  AUCUNE écriture ledger : le disponible diminue (ledger − holds ACTIVE)
+   *  sans débit définitif. Le débit CLIENT_MISSION_DEBIT n'est créé qu'à la
+   *  confirmation (`settleMissionAtConfirmation`) ; l'annulation libère le
+   *  hold (`releaseMissionHoldIfAny`) sans contrepassation.
+   *  Référence déterministe `mission-hold:{demandeId}:{mode}` : un retry ne
+   *  crée jamais un deuxième hold. 400 INSUFFICIENT_FUNDS (avec required /
+   *  available exploitables) si le disponible sous verrou est insuffisant —
+   *  dans ce cas l'appelant doit annuler sa transaction (mission non
+   *  acceptée, aucun hold, aucun mouvement ledger). */
+  async holdClientAtAcceptance(
+    tx: Tx,
+    args: {
+      demandeId: string;
+      clientId: string;
+      quote: QuoteSnapshot;
+      actorUserId: string;
+    },
+  ) {
+    const mode = this.getMode();
+    const { repairAmount, travelAmount } = this.splitQuote(args.quote);
+    const grossAmount = repairAmount + travelAmount;
+    const reference = `mission-hold:${args.demandeId}:${mode}`;
+
+    await this.lockUserFunds(tx, args.clientId);
+
+    const existing = await tx.fundsHold.findUnique({ where: { reference } });
+    if (existing) return existing;
+
+    const available = await this.getAvailableBalance(args.clientId, mode, tx);
+    if (grossAmount > available) {
+      throw new BadRequestException({
+        code: 'INSUFFICIENT_FUNDS',
+        message: `Fonds insuffisants : ${grossAmount} XAF requis pour ${available} XAF disponibles. Rechargez votre compte pour accepter ce tarif.`,
+        required: grossAmount,
+        available,
+        currency: FINANCIAL_CURRENCY,
+      });
+    }
+
+    try {
+      return await tx.fundsHold.create({
+        data: {
+          reference,
+          userId: args.clientId,
+          demandeId: args.demandeId,
+          amount: grossAmount,
+          currency: FINANCIAL_CURRENCY,
+          mode,
+          status: 'ACTIVE',
+          metadata: {
+            repair: repairAmount,
+            travel: travelAmount,
+            gross: grossAmount,
+            quoteId: args.quote.id,
+            currency: FINANCIAL_CURRENCY,
+          },
+          createdById: args.actorUserId,
+        },
+      });
+    } catch (error) {
+      // Course concurrente : l'unicité DB de `reference` fait foi.
+      if ((error as { code?: string }).code === 'P2002') {
+        const concurrent = await tx.fundsHold.findUnique({ where: { reference } });
+        if (concurrent) return concurrent;
+      }
+      throw error;
+    }
+  }
+
+  /** Règlement d'une mission à la confirmation (SASPAY-02, ATOMIQUE avec
+   *  la transition CONFIRMED quand appelé dans la même transaction) :
+   *    1. hold mission ACTIVE → CONSUMED (si présent ; absent = mission
+   *       legacy sans hold, on continue sans convertir d'historique) ;
+   *    2. débit client définitif CLIENT_MISSION_DEBIT (référence
+   *       déterministe → rejouable, no-op si déjà débité en legacy) ;
+   *    3. règlement technicien (`settleTechnicianAtConfirmation`, lui-même
+   *       idempotent).
+   *  Jamais de hold CONSUMED sans débit+crédits (même transaction), jamais
+   *  de double règlement (références idempotentes), jamais de hold rétroactif
+   *  pour les anciennes missions. Sans quote ACCEPTED : aucune écriture. */
+  async settleMissionAtConfirmation(
+    tx: Tx,
+    args: { demandeId: string; clientId: string; technicianId: string | null; createdById: string },
+  ) {
+    const mode = this.getMode();
+
+    const quote = await tx.quote.findFirst({
+      where: { demandeId: args.demandeId, status: 'ACCEPTED' },
+      select: { id: true, amount: true, travelAmount: true, initialTravelFee: true },
+    });
+    if (!quote) {
+      // Mission legacy sans tarif accepté : aucune écriture, comme avant.
+      await this.settleTechnicianAtConfirmation(tx, {
+        demandeId: args.demandeId,
+        technicianId: args.technicianId,
+        createdById: args.createdById,
+      });
+      return;
+    }
+
+    await this.lockUserFunds(tx, args.clientId);
+
+    // Consommation gardée : seul un hold encore ACTIVE bascule. Déjà
+    // CONSUMED (retry) = on continue idempotemment ; aucun autre statut
+    // n'est régressé.
+    const holdReference = `mission-hold:${args.demandeId}:${mode}`;
+    const hold = await tx.fundsHold.findUnique({ where: { reference: holdReference } });
+    if (hold && hold.status === 'ACTIVE') {
+      const consumed = await tx.fundsHold.updateMany({
+        where: { reference: holdReference, status: 'ACTIVE' },
+        data: { status: 'CONSUMED', releasedAt: new Date() },
+      });
+      if (consumed.count !== 1) {
+        throw new ConflictException(
+          'La réservation de cette mission a été modifiée entre-temps. Veuillez réessayer.',
+        );
+      }
+    }
+
+    await this.recordClientMissionDebit(tx, {
+      demandeId: args.demandeId,
+      clientId: args.clientId,
+      quote,
+      actorUserId: args.createdById,
+    });
+
+    await this.settleTechnicianAtConfirmation(tx, {
+      demandeId: args.demandeId,
+      technicianId: args.technicianId,
+      createdById: args.createdById,
+    });
+  }
+
+  /** Libération du hold mission à l'annulation (SASPAY-02) :
+   *    FundsHold ACTIVE → RELEASED (fonds à nouveau disponibles).
+   *  AUCUNE écriture ledger : ni CLIENT_TOPUP, ni payout, ni faux dépôt —
+   *  la restitution est purement interne (le hold n'est plus déduit du
+   *  disponible). Idempotent : sans hold ou hold déjà traité = no-op
+   *  (les missions legacy avec CLIENT_MISSION_DEBIT restent couvertes par
+   *  `reverseClientDebitIfAny`, appelé en plus par la transition CANCELED). */
+  async releaseMissionHoldIfAny(tx: Tx, args: { demandeId: string }) {
+    const mode = this.getMode();
+    const holdReference = `mission-hold:${args.demandeId}:${mode}`;
+    const hold = await tx.fundsHold.findUnique({ where: { reference: holdReference } });
+    if (!hold || hold.status !== 'ACTIVE') return hold ?? null;
+    await this.lockUserFunds(tx, hold.userId);
+    await tx.fundsHold.updateMany({
+      where: { reference: holdReference, status: 'ACTIVE' },
+      data: { status: 'RELEASED', releasedAt: new Date() },
+    });
+    return tx.fundsHold.findUnique({ where: { reference: holdReference } });
+  }
+
   /** Confirmation de la mission — rémunération du technicien (atomique avec
    *  la transition CONFIRMED, dans la même transaction) :
    *    TECHNICIAN_REPAIR_REVENUE CREDIT = réparation (montant accepté)
@@ -258,7 +430,9 @@ export class FinancialService {
    *  l'acceptation du devis ni pendant la négociation.
    *  Missions legacy sans quote ACCEPTED : aucune écriture (pas de transaction
    *  rétroactive). Écritures idempotentes par `reference` (double validation =
-   *  aucun doublon). */
+   *  aucun doublon).
+   *  Depuis SASPAY-02, appelé par `settleMissionAtConfirmation()` qui consomme
+   *  au préalable le hold mission et enregistre le débit client définitif. */
   async settleTechnicianAtConfirmation(
     tx: Tx,
     args: { demandeId: string; technicianId: string | null; createdById: string },
@@ -337,7 +511,11 @@ export class FinancialService {
    *    REVERSAL CREDIT = montant débité (réparation + transport 2 000)
    *    REVERSAL CREDIT = frais client legacy (100 XAF) s'ils existent
    *  Les écritures originales ne sont JAMAIS modifiées ni supprimées ;
-   *  chaque contrepassation est liée par reversalOfId et idempotente. */
+   *  chaque contrepassation est liée par reversalOfId et idempotente.
+   *  Depuis SASPAY-02, les nouvelles missions sont couvertes par hold
+   *  (libéré via `releaseMissionHoldIfAny`, sans écriture) : sans
+   *  CLIENT_MISSION_DEBIT existant, cette méthode est un no-op. Conservée
+   *  pour les missions historiques débitées à l'acceptation. */
   async reverseClientDebitIfAny(tx: Tx, args: { demandeId: string; clientId: string }) {
     const mode = this.getMode();
 

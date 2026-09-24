@@ -442,7 +442,7 @@ export class CollaborationService {
       // Sprint 8.7-FIN — claim atomique : seul ce qui est encore PENDING peut
       // passer ACCEPTED/REJECTED. Un double clic / appel concurrent n'obtient
       // jamais count !== 0 (le second appel renvoie ConflictException, le
-      // débit n'est jamais dupliqué).
+      // hold n'est jamais dupliqué — référence mission-hold déterministe).
       let claim: { count: number };
       try {
         claim = await tx.quote.updateMany({
@@ -467,12 +467,17 @@ export class CollaborationService {
       });
 
       if (action === 'accept') {
-        // Règle Relio : le client paie au moment de la validation du tarif —
-        // débit brut (réparation acceptée + transport 2 000), SANS commission
-        // client, ATOMIQUE avec l'acceptation (même transaction). Montants
-        // recalculés côté serveur depuis le snapshot du tarif, jamais depuis
-        // un montant fourni par le frontend. Références serveur idempotentes.
-        await this.financial.debitClientAtAcceptance(tx, {
+        // Règle Relio (SASPAY-02) : à la validation du tarif, le brut
+        // (réparation acceptée + transport 2 000, SANS commission client)
+        // est RÉSERVÉ via un FundsHold ACTIVE — AUCUN débit définitif.
+        // ATOMIQUE avec l'acceptation (même transaction que le claim :
+        // jamais de mission ACCEPTED sans hold, jamais de hold sans
+        // acceptation). 400 INSUFFICIENT_FUNDS si le disponible sous verrou
+        // est insuffisant : la transaction annule alors le claim (devis
+        // resté PENDING, aucun hold, aucun mouvement ledger) et le frontend
+        // peut proposer une recharge. Montants recalculés côté serveur
+        // depuis le snapshot du tarif, jamais depuis le frontend.
+        await this.financial.holdClientAtAcceptance(tx, {
           demandeId,
           clientId: demande.clientId,
           quote,
