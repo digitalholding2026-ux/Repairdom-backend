@@ -81,7 +81,22 @@ describe('gates : SIMULATION / config / clé', () => {
   });
 
   it('clé live en TEST → 503 explicite', async () => {
-    const { service, api } = mockDeps({ keyMismatch: 'mode TEST avec une clé non-test' });
+    const { service, api } = mockDeps({ keyMismatch: 'mode TEST avec une clé live (sk_live_…) : appels réels désactivés' });
+    await expect(service.initializeTopupPayment('c1', 'TOPUP-1')).rejects.toMatchObject({ status: 503 });
+    expect(api.initializeSoftpay).not.toHaveBeenCalled();
+  });
+
+  it('REAL + LIVE (sk_live_) = appel SasPay autorisé', async () => {
+    const { service, api } = mockDeps({ keyMismatch: null });
+    const result = await service.initializeTopupPayment('c1', 'TOPUP-1');
+    expect(api.initializeSoftpay).toHaveBeenCalledTimes(1);
+    expect(result.saspayEnabled).toBe(true);
+  });
+
+  it('REAL + TEST (clé live) = appel réel interdit (503, aucun appel)', async () => {
+    const { service, api } = mockDeps({
+      keyMismatch: 'mode TEST avec une clé live (sk_live_…) : appels réels désactivés',
+    });
     await expect(service.initializeTopupPayment('c1', 'TOPUP-1')).rejects.toMatchObject({ status: 503 });
     expect(api.initializeSoftpay).not.toHaveBeenCalled();
   });

@@ -38,9 +38,16 @@ export class SasPayConfig {
     return this.apiKey !== null && this.webhookSecret !== null;
   }
 
-  /** Vérifie la cohérence clé ↔ mode prestataire (SASPAY-03) :
-   *  LIVE exige `sk_live_…`, TEST exige `sk_test_…`. Une clé live en TEST
-   *  (ou l'inverse) déplacerait de l'argent réel en test — refus explicite.
+  /** Vérifie la cohérence clé ↔ mode prestataire.
+   *
+   *  SasPay détermine l'environnement par la clé elle-même (pas d'endpoint
+   *  TEST séparé) ; `SASPAY_MODE` reste un garde-fou interne Relio :
+   *  - LIVE exige `sk_live_…` (comportement inchangé) ;
+   *  - TEST n'exige plus `sk_test_…` mais n'autorise jamais d'appel réel
+   *    avec une clé live : une clé `sk_live_…` en TEST est refusée (aucune
+   *    tentative de paiement, aucune simulation de réel) — TEST reste le
+   *    mode interne non-réel de Relio. Une clé `sk_test_…` en TEST reste
+   *    acceptée.
    *  Retourne null si cohérent, sinon le motif de refus. */
   keyModeMismatch(): string | null {
     const key = this.apiKey;
@@ -49,7 +56,9 @@ export class SasPayConfig {
     const test = key.startsWith('sk_test_');
     if (!live && !test) return 'clé API SasPay au format inattendu (sk_test_/sk_live_ attendu)';
     if (this.mode === 'LIVE' && !live) return 'mode LIVE avec une clé non-live : utilisez sk_live_…';
-    if (this.mode === 'TEST' && !test) return 'mode TEST avec une clé non-test : utilisez sk_test_…';
+    if (this.mode === 'TEST' && live) {
+      return 'mode TEST avec une clé live (sk_live_…) : appels réels désactivés — passez en LIVE pour le réel ou utilisez une clé de test.';
+    }
     return null;
   }
 }
