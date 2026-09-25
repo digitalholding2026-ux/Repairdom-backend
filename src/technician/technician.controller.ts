@@ -22,6 +22,7 @@ import { Roles } from '../auth/roles.decorator.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
+import { UpdateTechnicianLocationDto } from './dto/update-location.dto.js';
 import { UpdateCoverageDto } from './dto/update-coverage.dto.js';
 import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from './avatar-file.js';
@@ -45,6 +46,15 @@ export class TechnicianController {
   @Patch('profile')
   updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateTechnicianProfileDto) {
     return this.technicianService.updateProfile(user.id, dto);
+  }
+
+  /* GPS V1 — dernière position connue (transmission explicite et ponctuelle,
+   * jamais de tracking). Route strictement personnelle : le technicien ne
+   * touche que sa propre position (JWT, aucun identifiant de tiers). */
+  @Patch('location')
+  @HttpCode(HttpStatus.OK)
+  updateLocation(@CurrentUser() user: RequestUser, @Body() dto: UpdateTechnicianLocationDto) {
+    return this.technicianService.updateLocation(user.id, dto.latitude, dto.longitude);
   }
 
   /* Sprint 8.8.2 — couverture géographique personnelle (zones de la ville de

@@ -6,6 +6,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -110,6 +111,22 @@ export class CreateDemandeDto {
   @IsString()
   @MaxLength(30)
   contactPhone?: string;
+
+  /* GPS V1 — position de la demande, strictement optionnelle (anciennes
+   * demandes sans GPS inchangées). Bornes validées ici ; le texte
+   * (ville/adresse) reste obligatoire et n'est jamais déduit du GPS.
+   * (Pas de @Type() : la transformation d'un champ absent produirait NaN.) */
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
 
   @IsOptional()
   @IsArray()

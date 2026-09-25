@@ -20,6 +20,7 @@ import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { resolveCityId } from '../geo/city-reference.js';
 import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
+import { demandeTechnicianDistanceMeters } from '../geo/geo-distance.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -89,6 +90,10 @@ interface PrivateProfileRow {
   specialties: string[];
   kycStatus: string;
   kycRejectionReason: string | null;
+  // GPS V1 — dernière position transmise (nullable, jamais d'historique).
+  lastLatitude: number | null;
+  lastLongitude: number | null;
+  locationUpdatedAt: Date | null;
   createdAt: Date;
   user: { firstName: string; lastName: string | null; phone: string | null; email: string; role: string };
 }
@@ -183,6 +188,26 @@ export class TechnicianService {
 
     const completedInterventions = await this.completedInterventionsCount(userId);
     return this.serializePrivate(profile, completedInterventions);
+  }
+
+  /* GPS V1 — dernière position connue (transmission explicite et
+   * ponctuelle du technicien connecté, jamais de tracking ni d'historique).
+   * Route strictement personnelle : seul le JWT désigne le profil modifié.
+   * `locationUpdatedAt` = horodatage de CETTE transmission. */
+  async updateLocation(userId: string, latitude: number, longitude: number) {
+    const existing = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    if (!existing) throw new NotFoundException('Profil technicien introuvable.');
+    const updated = await this.prisma.technicianProfile.update({
+      where: { userId },
+      data: {
+        lastLatitude: latitude,
+        lastLongitude: longitude,
+        locationUpdatedAt: new Date(),
+      },
+      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+    });
+    const completedInterventions = await this.completedInterventionsCount(userId);
+    return this.serializePrivate(updated, completedInterventions);
   }
 
   /* Sprint 8.8.2 — couvertures géographiques du technicien connecté.
@@ -512,6 +537,12 @@ export class TechnicianService {
       specialties: profile.specialties,
       kycStatus: profile.kycStatus,
       kycRejectionReason: profile.kycRejectionReason ?? null,
+      // GPS V1 — exposé au seul propriétaire (jamais dans le profil public).
+      lastLatitude: profile.lastLatitude ?? null,
+      lastLongitude: profile.lastLongitude ?? null,
+      locationUpdatedAt: profile.locationUpdatedAt
+        ? profile.locationUpdatedAt.toISOString()
+        : null,
       completedInterventions,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,
@@ -620,6 +651,9 @@ export class TechnicianService {
         ...api,
         client: client ?? null,
         clientReputation,
+        // GPS V1 — distance informative (lecture seule, sans effet sur le
+        // matching) ; null si l'une des positions est absente.
+        distanceMeters: demandeTechnicianDistanceMeters(demande, profile),
       };
     }
 

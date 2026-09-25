@@ -317,6 +317,11 @@ model Demande {
   address     String?
   landmark    String?
   contactPhone String?
+  // GPS V1 — position de la demande (nullable : demandes historiques sans
+  // GPS). Complète city/cityId/zone/adresse (jamais remplacés). Bornes
+  // validées côté API (-90..90 / -180..180).
+  latitude    Float?
+  longitude   Float?
   client      User          @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
   clientId    String
   technician  User?         @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
@@ -442,6 +447,14 @@ model TechnicianProfile {
   specialties String[] @default([])
   kycStatus  KycStatus @default(NOT_SUBMITTED)
   kycRejectionReason String?
+  // GPS V1 — dernière position connue transmise explicitement par le
+  // technicien (pas d'historique, pas de tracking). Nullable : aucune
+  // position tant que le technicien ne l'a jamais envoyée.
+  // `locationUpdatedAt` = horodatage de la dernière transmission (distinct
+  // de `updatedAt` qui suit toute modification du profil).
+  lastLatitude     Float?
+  lastLongitude    Float?
+  locationUpdatedAt DateTime?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   zoneCoverages TechnicianZoneCoverage[]

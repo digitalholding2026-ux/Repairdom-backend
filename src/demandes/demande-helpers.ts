@@ -58,6 +58,9 @@ export interface DemandeRecord {
   address: string | null;
   landmark: string | null;
   contactPhone: string | null;
+  // GPS V1 — nullable (demandes historiques sans GPS).
+  latitude: number | null;
+  longitude: number | null;
   clientId: string;
   technicianId: string | null;
   scheduledAt: Date | null;
@@ -97,6 +100,10 @@ export function toApiDemande(demande: DemandeRecord) {
     address: demande.address,
     landmark: demande.landmark,
     contactPhone: demande.contactPhone,
+    // GPS V1 — exposé aux contextes propriétaires/assignés ; neutralisé
+    // dans `toApiDemandePublic` (opportunités non assignées).
+    latitude: demande.latitude ?? null,
+    longitude: demande.longitude ?? null,
     technicianId: demande.technicianId,
     technician: demande.technician ?? null,
     scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
@@ -133,7 +140,8 @@ export function toApiDemande(demande: DemandeRecord) {
 }
 
 // Sérialisation publique (opportunités) : aucun détail privé (adresse,
-// contact téléphonique) n'est exposé tant que le technicien n'est pas assigné.
+// contact téléphonique, GPS) n'est exposé tant que le technicien n'est pas
+// assigné.
 export function toApiDemandePublic(demande: DemandeRecord) {
   const api = toApiDemande(demande);
   return {
@@ -142,6 +150,8 @@ export function toApiDemandePublic(demande: DemandeRecord) {
     address: null,
     landmark: null,
     contactPhone: null,
+    latitude: null,
+    longitude: null,
   };
 }
 

@@ -87,6 +87,9 @@ export class DemandesService {
               address: dto.address ?? null,
               landmark: dto.landmark ?? null,
               contactPhone: dto.contactPhone ?? null,
+              // GPS V1 — transmis tel quel si fourni, sinon null.
+              latitude: dto.latitude ?? null,
+              longitude: dto.longitude ?? null,
               clientId,
               requestedMode,
               requestedAt,
@@ -440,6 +443,8 @@ export class DemandesService {
     address: string | null;
     landmark: string | null;
     contactPhone: string | null;
+    latitude: number | null;
+    longitude: number | null;
     clientId: string;
     technicianId: string | null;
     scheduledAt: Date | null;
