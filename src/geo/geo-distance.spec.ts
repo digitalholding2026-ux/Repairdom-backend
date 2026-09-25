@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   demandeTechnicianDistanceMeters,
+  GPS_FRESHNESS_MS,
   haversineMeters,
+  isLocationFresh,
   isValidCoordinates,
   isValidLatitude,
   isValidLongitude,
@@ -87,8 +89,7 @@ describe('haversineMeters', () => {
   });
 });
 
-describe('demandeTechnicianDistanceMeters', () => {
-  it('les deux positions présentes → distance', () => {
+describe('demandeTechnicianDistanceMeters', () => {  it('les deux positions présentes → distance', () => {
     expect(
       demandeTechnicianDistanceMeters(
         { latitude: 4.05, longitude: 9.7 },
@@ -112,5 +113,22 @@ describe('demandeTechnicianDistanceMeters', () => {
     ).toBeNull();
     expect(demandeTechnicianDistanceMeters(null, { lastLatitude: 4, lastLongitude: 9 })).toBeNull();
     expect(demandeTechnicianDistanceMeters({ latitude: 4, longitude: 9 }, null)).toBeNull();
+  });
+});
+
+describe('isLocationFresh — fenêtre 24 h', () => {
+  const NOW = new Date('2026-09-25T12:00:00.000Z');
+
+  it('récent → frais ; limite incluse', () => {
+    expect(isLocationFresh(new Date(NOW.getTime() - 3600_000), NOW)).toBe(true);
+    expect(isLocationFresh(new Date(NOW.getTime() - GPS_FRESHNESS_MS), NOW)).toBe(true);
+  });
+
+  it('périmé, futur, absent ou invalide → non frais', () => {
+    expect(isLocationFresh(new Date(NOW.getTime() - GPS_FRESHNESS_MS - 1), NOW)).toBe(false);
+    expect(isLocationFresh(new Date(NOW.getTime() + 60000), NOW)).toBe(false);
+    expect(isLocationFresh(null, NOW)).toBe(false);
+    expect(isLocationFresh(undefined, NOW)).toBe(false);
+    expect(isLocationFresh('not-a-date', NOW)).toBe(false);
   });
 });

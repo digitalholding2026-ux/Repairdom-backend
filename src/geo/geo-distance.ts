@@ -13,6 +13,30 @@ export interface GpsCoordinates {
 
 const EARTH_RADIUS_METERS = 6371000;
 
+/* GPS V2 — fraîcheur d'une position : la transmission est manuelle et
+ * ponctuelle (bouton « Mettre à jour ma position »), pas du tracking.
+ * 24 h couvre un cycle de journée de travail : un technicien qui transmet
+ * le matin reste exploitable toute la journée ; au-delà, la position est
+ * considérée périmée (GPS_STALE : candidat SANS distance, jamais exclu). */
+export const GPS_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+
+/** Vrai si `locationUpdatedAt` est présent, passé et vieux d'au plus la
+ *  fenêtre de fraîcheur (jamais d'exception, jamais de futur accepté). */
+export function isLocationFresh(
+  locationUpdatedAt: Date | string | null | undefined,
+  now: Date = new Date(),
+  freshnessMs: number = GPS_FRESHNESS_MS,
+): boolean {
+  if (locationUpdatedAt === null || locationUpdatedAt === undefined) return false;
+  const updatedTime =
+    locationUpdatedAt instanceof Date
+      ? locationUpdatedAt.getTime()
+      : Date.parse(locationUpdatedAt);
+  if (!Number.isFinite(updatedTime)) return false;
+  const nowTime = now.getTime();
+  return updatedTime <= nowTime && nowTime - updatedTime <= freshnessMs;
+}
+
 function toRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
 }

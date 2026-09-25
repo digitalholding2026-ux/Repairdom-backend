@@ -10,6 +10,10 @@ import {
   isGeoEligible,
   normalizeValue,
 } from '../geo/geo-eligibility.js';
+import { haversineMeters, isLocationFresh } from '../geo/geo-distance.js';
+
+/* Fenêtre de fraîcheur GPS (définie en geo, réexportée pour les tests). */
+export { GPS_FRESHNESS_MS } from '../geo/geo-distance.js';
 import { isMatchingStatus, labelForCategory } from '../demandes/demande-helpers.js';
 import {
   buildNotification,
@@ -56,6 +60,11 @@ export interface DispatchCandidate {
   isAvailable: boolean;
   kycStatus: string;
   coverageZoneIds: string[];
+  // GPS V2 — dernière position connue (optionnelle : absence = candidat
+  // sans distance, jamais exclu pour autant).
+  lastLatitude?: number | null;
+  lastLongitude?: number | null;
+  locationUpdatedAt?: Date | string | null;
 }
 
 export interface DispatchDemandeGeo {
@@ -63,7 +72,16 @@ export interface DispatchDemandeGeo {
   cityId: string | null;
   zoneId: string | null;
   category: string;
+  // GPS V1 — position de la demande (optionnelle).
+  latitude?: number | null;
+  longitude?: number | null;
 }
+
+export type RankedDispatchCandidate = DispatchCandidate & {
+  /** Distance en mètres si GPS frais des deux côtés, sinon `null`.
+   *  Jamais inventée (ni ville ni zone ne fabriquent une distance). */
+  distanceMeters: number | null;
+};
 
 /** Demande encore « dispatchable » : non attribuée + statut de matching. */
 export function isDispatchableDemande(demande: {
@@ -111,6 +129,57 @@ export function selectCandidatesForWave(
     }
     return isCityMatch(demande.cityId, demande.city, candidate.cityId, candidate.city);
   });
+}
+
+/* GPS V2 — classement par proximité des candidats DÉJÀ compatibles
+ * (sortie de `selectCandidatesForWave`, filtres métier inchangés).
+ * - GPS frais des deux côtés → `distanceMeters` (Haversine local) ;
+ * - GPS absent ou périmé (> GPS_FRESHNESS_MS) → `distanceMeters: null`,
+ *   candidat conservé, placé APRÈS les candidats avec distance ;
+ * - jamais de distance inventée ; jamais d'exclusion pour absence de GPS ;
+ * - égalités : tri stable (conserve l'ordre de sélection préexistant),
+ *   aucun aléa, aucune règle métier modifiée.
+ * Pur et testable sans base. */
+export function rankCandidatesByProximity(
+  candidates: DispatchCandidate[],
+  demande: Pick<DispatchDemandeGeo, 'latitude' | 'longitude'>,
+  now: Date = new Date(),
+): RankedDispatchCandidate[] {
+  const ranked = candidates.map((candidate) => {
+    const fresh = isLocationFresh(candidate.locationUpdatedAt, now);
+    const distanceMeters =
+      fresh &&
+      demande.latitude !== null &&
+      demande.latitude !== undefined &&
+      demande.longitude !== null &&
+      demande.longitude !== undefined &&
+      candidate.lastLatitude !== null &&
+      candidate.lastLatitude !== undefined &&
+      candidate.lastLongitude !== null &&
+      candidate.lastLongitude !== undefined
+        ? haversineMeters(
+            { latitude: demande.latitude, longitude: demande.longitude },
+            { latitude: candidate.lastLatitude, longitude: candidate.lastLongitude },
+          )
+        : null;
+    return { ...candidate, distanceMeters };
+  });
+  // Tri stable : distances croissantes, `null` en dernier (l'ordre relatif
+  // à distance égale et des sans-distance est préservé).
+  return ranked
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => {
+      if (a.candidate.distanceMeters === null && b.candidate.distanceMeters === null) {
+        return a.index - b.index;
+      }
+      if (a.candidate.distanceMeters === null) return 1;
+      if (b.candidate.distanceMeters === null) return -1;
+      if (a.candidate.distanceMeters !== b.candidate.distanceMeters) {
+        return (a.candidate.distanceMeters as number) - (b.candidate.distanceMeters as number);
+      }
+      return a.index - b.index;
+    })
+    .map(({ candidate }) => candidate);
 }
 
 interface WaveRunResult {
@@ -187,6 +256,8 @@ export class DispatchService {
         city: true,
         cityId: true,
         zoneId: true,
+        latitude: true,
+        longitude: true,
         technicianId: true,
       },
     });
@@ -213,6 +284,15 @@ export class DispatchService {
       wave,
       alreadyNotified.map((row) => row.userId),
     );
+    // GPS V2 — classement par proximité des seuls compatibles (filtres
+    // métier ci-dessus inchangés ; vagues, idempotence et ASAP temporel
+    // préservés). Les notifications partent dans cet ordre (plus proches
+    // d'abord), sans exposer de coordonnées brutes.
+    const ranked = rankCandidatesByProximity(
+      selected,
+      { latitude: demande.latitude, longitude: demande.longitude },
+      now,
+    );
 
     const emailOk = this.email.isConfigured;
     if (!emailOk) {
@@ -224,7 +304,7 @@ export class DispatchService {
     // événement de vague. Les e-mails partent APRÈS (non bloquants).
     await this.prisma.$transaction(async (tx) => {
       await tx.dispatchWave.createMany({
-        data: selected.flatMap((candidate) => {
+        data: ranked.flatMap((candidate) => {
           const rows = [
             {
               demandeId,
@@ -249,7 +329,7 @@ export class DispatchService {
       });
       if (selected.length > 0) {
         await tx.notification.createMany({
-          data: selected.map((candidate) => {
+          data: ranked.map((candidate) => {
             const built = buildNotification('MISSION_AVAILABLE', demandeId, candidate.userId, 'TECHNICIAN');
             return {
               userId: built.userId,
@@ -273,7 +353,7 @@ export class DispatchService {
     // la vague ni les notifications In-App déjà persistées.
     if (emailOk) {
       const demandeLink = `${this.frontendUrl}/technicien/demandes/${demandeId}`;
-      for (const candidate of selected) {
+      for (const candidate of ranked) {
         if (!candidate.email) continue;
         try {
           await this.email.sendMissionAvailable(candidate.email, {
@@ -292,7 +372,7 @@ export class DispatchService {
       }
     }
 
-    return { wave, notified: selected.length, skipped: false };
+    return { wave, notified: ranked.length, skipped: false };
   }
 
   /* Chargement ciblé en 2 requêtes (pas de N+1) : techniciens disponibles
@@ -318,6 +398,10 @@ export class DispatchService {
             categories: true,
             isAvailable: true,
             kycStatus: true,
+            // GPS V2 — dernière position (même requête, pas de N+1).
+            lastLatitude: true,
+            lastLongitude: true,
+            locationUpdatedAt: true,
             zoneCoverages: {
               select: {
                 zoneId: true,
@@ -340,6 +424,9 @@ export class DispatchService {
           categories: profile.categories,
           isAvailable: profile.isAvailable,
           kycStatus: profile.kycStatus,
+          lastLatitude: profile.lastLatitude ?? null,
+          lastLongitude: profile.lastLongitude ?? null,
+          locationUpdatedAt: profile.locationUpdatedAt ?? null,
           coverageZoneIds: filterActiveCoverageZoneIdsForCity(profile.zoneCoverages, profile.cityId),
         },
       ];

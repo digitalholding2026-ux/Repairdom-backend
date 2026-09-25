@@ -20,7 +20,10 @@ import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { resolveCityId } from '../geo/city-reference.js';
 import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
-import { demandeTechnicianDistanceMeters } from '../geo/geo-distance.js';
+import {
+  demandeTechnicianDistanceMeters,
+  isLocationFresh,
+} from '../geo/geo-distance.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -584,9 +587,17 @@ export class TechnicianService {
       )
       // Les demandes « dès que possible » passent en premier (signal de priorité) ;
       // à besoin équivalent, la plus récente d'abord (voir `compareDemandePriority`).
+      // GPS V2 — ordre métier inchangé (ASAP préservé) ; `distanceMeters`
+      // additif par opportunité (null sans GPS frais des deux côtés),
+      // sans coordonnées brutes.
       .sort((a, b) => compareDemandePriority(a, b))
       .slice(0, 50)
-      .map((d) => toApiDemandePublic(d));
+      .map((d) => ({
+        ...toApiDemandePublic(d),
+        distanceMeters: isLocationFresh(profile.locationUpdatedAt)
+          ? demandeTechnicianDistanceMeters(d, profile)
+          : null,
+      }));
   }
 
   async listMine(userId: string) {

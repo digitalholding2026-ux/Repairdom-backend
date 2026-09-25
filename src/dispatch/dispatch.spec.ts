@@ -5,8 +5,10 @@ import {
   DISPATCH_WAVE_1,
   DISPATCH_WAVE_2,
   DispatchService,
+  GPS_FRESHNESS_MS,
   isDispatchableDemande,
   isWave2Due,
+  rankCandidatesByProximity,
   selectCandidatesForWave,
   type DispatchCandidate,
 } from './dispatch.service.js';
@@ -194,6 +196,8 @@ function mockPrisma(demande: {
   cityId: string | null;
   zoneId: string | null;
   technicianId: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 } | null, techs: Array<{
   id: string;
   email: string | null;
@@ -204,6 +208,9 @@ function mockPrisma(demande: {
     isAvailable: boolean;
     kycStatus: string;
     zoneCoverages: Array<{ zoneId: string; zone: { isActive: boolean; cityId: string } }>;
+    lastLatitude?: number | null;
+    lastLongitude?: number | null;
+    locationUpdatedAt?: Date | null;
   } | null;
 }>, existingWaves: Array<{ userId: string }> = [], existingWave = false) {
   const calls: MockCalls = { waveRows: [], notifications: [], events: [], emails: [] };
@@ -372,5 +379,152 @@ describe('runWave — arrêt et idempotence', () => {
     const result = await service.dispatchWave1('d-1');
     expect(result.notified).toBe(1);
     expect(calls.waveRows).toHaveLength(1);
+  });
+});
+
+/* GPS V2 — classement par proximité des seuls compatibles (filtres métier
+ * inchangés) : GPS frais → distance croissante ; absent/périmé → null en
+ * dernier, jamais exclu ; aucune distance inventée ; ASAP temporel intact. */
+const GPS_DEMANDE = { latitude: 4.05, longitude: 9.68 };
+const NOW = new Date('2026-09-25T12:00:00.000Z');
+const freshAt = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3600 * 1000);
+
+function gpsCandidate(
+  userId: string,
+  gps: { lastLatitude?: number | null; lastLongitude?: number | null; locationUpdatedAt?: Date | null } = {},
+  overrides: Partial<DispatchCandidate> = {},
+): DispatchCandidate {
+  return candidate({ userId, email: `${userId}@example.com`, ...gps, ...overrides });
+}
+
+describe('rankCandidatesByProximity', () => {
+  it('A frais 2 km, B frais 7 km, C absent, D périmé → A, B puis C, D (distances/null)', () => {
+    const ranked = rankCandidatesByProximity(
+      [
+        gpsCandidate('tech-far', { lastLatitude: 4.1, lastLongitude: 9.75, locationUpdatedAt: freshAt(1) }),
+        gpsCandidate('tech-none'),
+        gpsCandidate('tech-near', { lastLatitude: 4.06, lastLongitude: 9.69, locationUpdatedAt: freshAt(2) }),
+        gpsCandidate('tech-stale', { lastLatitude: 4.051, lastLongitude: 9.681, locationUpdatedAt: freshAt(25) }),
+      ],
+      GPS_DEMANDE,
+      NOW,
+    );
+    expect(ranked.map((c) => c.userId)).toEqual(['tech-near', 'tech-far', 'tech-none', 'tech-stale']);
+    expect(ranked[0].distanceMeters).not.toBeNull();
+    expect(ranked[1].distanceMeters).not.toBeNull();
+    expect((ranked[0].distanceMeters as number)).toBeLessThan(ranked[1].distanceMeters as number);
+    expect(ranked[2].distanceMeters).toBeNull();
+    expect(ranked[3].distanceMeters).toBeNull();
+  });
+
+  it('demande sans GPS → tous null, ordre stable conservé', () => {
+    const ranked = rankCandidatesByProximity(
+      [
+        gpsCandidate('t1', { lastLatitude: 4.06, lastLongitude: 9.69, locationUpdatedAt: freshAt(1) }),
+        gpsCandidate('t2'),
+      ],
+      { latitude: null, longitude: null },
+      NOW,
+    );
+    expect(ranked.map((c) => c.userId)).toEqual(['t1', 't2']);
+    expect(ranked.every((c) => c.distanceMeters === null)).toBe(true);
+  });
+
+  it('égalités → ordre stable, aucun aléa', () => {
+    const gps = { lastLatitude: 4.06, lastLongitude: 9.69, locationUpdatedAt: freshAt(1) };
+    const ranked = rankCandidatesByProximity(
+      [gpsCandidate('t1', gps), gpsCandidate('t2', gps), gpsCandidate('t3', gps)],
+      GPS_DEMANDE,
+      NOW,
+    );
+    expect(ranked.map((c) => c.userId)).toEqual(['t1', 't2', 't3']);
+    expect(ranked[0].distanceMeters).toBe(ranked[1].distanceMeters);
+  });
+
+  it('fenêtre 24 h : limite incluse, +1 ms et futur → périmés', () => {
+    const at = (ms: number) => new Date(NOW.getTime() - ms);
+    const mk = (updatedAt: Date | null) =>
+      rankCandidatesByProximity(
+        [gpsCandidate('t', { lastLatitude: 4.06, lastLongitude: 9.69, locationUpdatedAt: updatedAt })],
+        GPS_DEMANDE,
+        NOW,
+      )[0].distanceMeters;
+    expect(mk(at(GPS_FRESHNESS_MS))).not.toBeNull();
+    expect(mk(at(GPS_FRESHNESS_MS + 1))).toBeNull();
+    expect(mk(new Date(NOW.getTime() + 60000))).toBeNull();
+    expect(mk(null)).toBeNull();
+  });
+
+  it('GPS ne rend jamais compatible un incompatible (ville/catégorie/disponibilité)', () => {
+    const near = { lastLatitude: 4.051, lastLongitude: 9.681, locationUpdatedAt: freshAt(1) };
+    // Filtres métier d'abord : hors ville / mauvaise catégorie / indisponible.
+    expect(
+      selectCandidatesForWave(
+        [gpsCandidate('x', near, { cityId: CITY_B, city: 'Yaoundé', coverageZoneIds: [] })],
+        DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+    expect(
+      selectCandidatesForWave(
+        [gpsCandidate('x', near, { categories: ['electricite'] })],
+        DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+    expect(
+      selectCandidatesForWave(
+        [gpsCandidate('x', near, { isAvailable: false })],
+        DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('runWave GPS V2 — notifications dans l’ordre de proximité', () => {
+  function techRow(
+    id: string,
+    gps: { lastLatitude?: number | null; lastLongitude?: number | null; locationUpdatedAt?: Date | null } = {},
+  ) {
+    return {
+      id,
+      email: `${id}@example.com`,
+      technicianProfile: { ...TECH_ROW.technicianProfile, ...gps },
+    };
+  }
+
+  it('vague 1 : notifications nearest-first, sans coordonnées brutes persistées', async () => {
+    const { service, calls } = mockService(
+      { ...DEMANDE_ROW, latitude: 4.05, longitude: 9.68 },
+      [
+        techRow('tech-far', { lastLatitude: 4.1, lastLongitude: 9.75, locationUpdatedAt: new Date(Date.now() - 3600_000) }),
+        techRow('tech-none'),
+        techRow('tech-near', { lastLatitude: 4.06, lastLongitude: 9.69, locationUpdatedAt: new Date(Date.now() - 3600_000) }),
+      ],
+    );
+    const result = await service.dispatchWave1('d-1');
+    expect(result).toEqual({ wave: 1, notified: 3, skipped: false });
+    expect(calls.notifications.map((n) => (n as { userId: string }).userId)).toEqual([
+      'tech-near',
+      'tech-far',
+      'tech-none',
+    ]);
+    for (const row of [...calls.notifications, ...calls.waveRows]) {
+      expect(row).not.toHaveProperty('latitude');
+      expect(row).not.toHaveProperty('longitude');
+      expect(row).not.toHaveProperty('lastLatitude');
+      expect(row).not.toHaveProperty('distanceMeters');
+    }
+  });
+
+  it('sans aucun GPS : vague identique à avant (ordre et volume inchangés)', async () => {
+    const { service, calls } = mockService(DEMANDE_ROW, [TECH_ROW]);
+    const result = await service.dispatchWave1('d-1');
+    expect(result).toEqual({ wave: 1, notified: 1, skipped: false });
+    expect(calls.notifications).toHaveLength(1);
   });
 });
