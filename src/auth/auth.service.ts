@@ -56,8 +56,10 @@ export class AuthService {
     private readonly storage: SupabaseStorageService,
   ) {
     this.isProduction = this.config.get<string>('NODE_ENV') === 'production';
+    // Base des liens e-mail (vérification). En production, définir
+    // FRONTEND_URL (jamais l'ancien domaine public).
     this.frontendUrl =
-      this.config.get<string>('FRONTEND_URL')?.replace(/\/+$/, '') ?? 'https://repairdom.vercel.app';
+      this.config.get<string>('FRONTEND_URL')?.replace(/\/+$/, '') ?? 'https://relioo.space';
     const configured = this.config.get<string>('JWT_SECRET');
     if (!configured && this.isProduction) {
       throw new Error(

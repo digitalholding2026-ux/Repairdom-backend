@@ -129,8 +129,10 @@ export class DispatchService {
     private readonly config: ConfigService,
     private readonly email: EmailService,
   ) {
+    // Base des liens e-mail dispatch. En production, définir FRONTEND_URL
+    // (jamais l'ancien domaine public).
     this.frontendUrl =
-      this.config.get<string>('FRONTEND_URL')?.replace(/\/+$/, '') ?? 'https://repairdom.vercel.app';
+      this.config.get<string>('FRONTEND_URL')?.replace(/\/+$/, '') ?? 'https://relioo.space';
   }
 
   /** Vague 1, appelée après création d'une demande (hors transaction créatrice). */

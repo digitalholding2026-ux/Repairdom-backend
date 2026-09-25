@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  buildMissionAvailableEmail,
+  buildVerificationEmail,
+} from './email-templates.js';
 
 /**
  * Envoi d'e-mails transactionnels (vérification de compte) via Resend (API HTTPS).
@@ -36,6 +40,7 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private readonly apiKey: string | null;
   private readonly from: string;
+  private readonly siteUrl: string;
 
   constructor(private readonly config: ConfigService) {
     const apiKey = this.config.get<string>('RESEND_API_KEY');
@@ -49,6 +54,10 @@ export class EmailService {
       this.config.get<string>('EMAIL_FROM') ??
       this.config.get<string>('SMTP_FROM') ??
       'Relio <onboarding@resend.dev>';
+    // Base publique pour les liens du footer (jamais l'ancien domaine).
+    this.siteUrl =
+      this.config.get<string>('FRONTEND_URL')?.trim().replace(/\/+$/, '') ||
+      'https://relioo.space';
     if (!this.apiKey) {
       this.logger.warn(
         'RESEND_API_KEY non définie : les e-mails (vérification de compte) ne seront pas envoyés. ' +
@@ -79,43 +88,27 @@ export class EmailService {
     }
   }
 
+  private footerLinks(): { siteUrl: string; cguUrl: string; suiviUrl: string } {
+    return {
+      siteUrl: this.siteUrl,
+      cguUrl: `${this.siteUrl}/conditions-utilisation`,
+      suiviUrl: `${this.siteUrl}/suivi`,
+    };
+  }
+
   async sendVerificationEmail(to: string, verificationLink: string): Promise<void> {
     if (!this.apiKey) {
       this.logger.warn(`[email non envoyé] lien de vérification pour ${to} : ${verificationLink}`);
       return;
     }
     try {
+      const content = buildVerificationEmail(verificationLink, this.footerLinks());
       await this.postEmail({
         to,
-        subject: 'Vérifiez votre adresse email — Relio',
-        text: [
-            'Bonjour,',
-            '',
-            'Bienvenue sur Relio. Pour activer votre compte et passer vos premières demandes de dépannage,',
-            'confirmez votre adresse email en cliquant sur le lien ci-dessous :',
-            '',
-            verificationLink,
-            '',
-            'Ce lien est valable 24 heures. Si vous n\'êtes pas à l\'origine de cette inscription, ignorez cet e-mail.',
-            '',
-            'À bientôt,',
-            "L'équipe Relio",
-          ].join('\n'),
-          html: [
-            '<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#111827">',
-            '<h2 style="color:#007bff">Bienvenue sur Relio</h2>',
-            '<p>Pour activer votre compte et passer vos premières demandes de dépannage,',
-            'confirmez votre adresse email en cliquant sur le bouton ci-dessous :</p>',
-            '<p style="margin:24px 0"><a href="' +
-              verificationLink +
-              '" style="background:#007bff;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600">Je vérifie mon adresse email</a></p>',
-            '<p style="font-size:13px;color:#6b7280">Ce lien est valable 24 heures.',
-            'Si vous n\'êtes pas à l\'origine de cette inscription, ignorez cet e-mail.</p>',
-            '<p style="color:#6b7280;font-size:12px">— L\'équipe Relio</p>',
-            '</div>',
-          ].join(''),
-        },
-      );
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+      });
       this.logger.log(`E-mail de vérification envoyé à ${to}.`);
     } catch (error) {
       // Réseau/timeout/HTTP : journalisé sans secret, sans propagation (le compte
@@ -131,31 +124,12 @@ export class EmailService {
    * assainie en cas d'échec : c'est le DispatchService qui isole l'erreur
    * par destinataire (In-App conservée) et journalise. */
   async sendMissionAvailable(to: string, input: MissionEmailInput): Promise<void> {
+    const content = buildMissionAvailableEmail(input, this.footerLinks());
     await this.postEmail({
       to,
-      subject: `Nouvelle mission disponible — Relio (${input.reference})`,
-      text: [
-        'Bonjour,',
-        '',
-        'Une nouvelle mission est disponible dans votre secteur ' +
-          `(${input.categoryLabel}, ${input.city}, réf. ${input.reference}).`,
-        'Consultez les détails dans l’application pour accepter la mission :',
-        '',
-        input.demandeLink,
-        '',
-        'À bientôt,',
-        "L'équipe Relio",
-      ].join('\n'),
-      html: [
-        '<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#111827">',
-        '<h2 style="color:#007bff">Nouvelle mission disponible</h2>',
-        `<p>Une intervention correspondant à votre zone est disponible (${input.categoryLabel}, ${input.city}, réf. ${input.reference}).</p>`,
-        '<p style="margin:24px 0"><a href="' +
-          input.demandeLink +
-          '" style="background:#007bff;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600">Voir la mission</a></p>',
-        '<p style="color:#6b7280;font-size:12px">— L\'équipe Relio</p>',
-        '</div>',
-      ].join(''),
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
     });
   }
 
