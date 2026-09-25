@@ -146,21 +146,6 @@ export class FinancialService {
     }
   }
 
-  /* ── RECETTE PAYOUT (TEMPORAIRE, à supprimer après validation) ── */
-  /* Dérogation recette : permet à `createWithdrawalRequest()` de franchir
-   * le contrôle `requestedAmount > availableBalance` pour atteindre SasPay
-   * `POST /payouts/initialize/` avec 0 XAF disponible (ex. 1000 demandés).
-   * Activée UNIQUEMENT si `RECETTE_PAYOUT_BYPASS_BALANCE=true` (défaut :
-   * désactivée → contrôle normal). Ne crée AUCUN crédit, ne modifie AUCUN
-   * solde/calcul, conserve le hold ACTIVE + PENDING + idempotence + payload
-   * SasPay réel ; le débit ledger définitif reste réservé au SUCCESS
-   * (`settleWithdrawalSuccess`), FAILED/CANCELLED libèrent le hold sans
-   * débit. Ne pas pérenniser. */
-  private isRecettePayoutBalanceBypassEnabled(): boolean {
-    const raw = this.config.get<string>('RECETTE_PAYOUT_BYPASS_BALANCE');
-    return raw !== undefined && raw !== null && String(raw).trim().toLowerCase() === 'true';
-  }
-
   /* ── Écriture ledger (interne, idempotente) ─────────────────── */
 
   /** Crée une écriture VALIDATED immuable. Idempotente : si la `reference`
@@ -2271,18 +2256,10 @@ export class FinancialService {
       });
       if (duplicate) return toApiWithdrawalRequest(duplicate);
       const available = await this.getAvailableBalance(targetUserId, mode, tx);
-      // RECETTE PAYOUT (TEMPORAIRE) : bypass du contrôle de solde sous flag
-      // explicite uniquement. Sans `RECETTE_PAYOUT_BYPASS_BALANCE=true`, le
-      // comportement normal (400 Fonds insuffisants) est inchangé.
+      // Retrait réel : solde insuffisant → refus avant toute création SasPay.
       if (amount > available) {
-        if (!this.isRecettePayoutBalanceBypassEnabled()) {
-          throw new BadRequestException(
-            `Fonds insuffisants : ${amount} XAF demandés pour ${available} XAF disponibles.`,
-          );
-        }
-        this.logger.warn(
-          `[RECETTE PAYOUT TEMPORAIRE] Bypass solde retrait : ${amount} XAF demandés pour ${available} XAF disponibles ` +
-            `(user ${targetUserId}, mode ${mode}). Hold ACTIVE + PENDING conservés, aucun débit avant SUCCESS. À supprimer après validation.`,
+        throw new BadRequestException(
+          `Fonds insuffisants : ${amount} XAF demandés pour ${available} XAF disponibles.`,
         );
       }
       for (let attempt = 0; attempt < 5; attempt += 1) {

@@ -141,10 +141,10 @@ function asNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-/* ── DIAGNOSTIC TEMPORAIRE 403 payout (à supprimer après recette) ──
+/* ── DIAGNOSTIC 403 payout ──
  * But : conserver/logguer le body exact SasPay lors d'un HTTP 403 sur
  * `POST /payouts/initialize/`, car le parsing actuel (`message`/`code`
- * uniquement) a produit `code — : Retrait refusé par SasPay (HTTP 403).`
+ * uniquement) peut produire une erreur sans détail exploitable.
  * Instrumentation LOG-ONLY : aucun changement de logique métier, statuts,
  * idempotence, endpoints ou frontend. Ne jamais logger `Authorization`,
  * clé API, webhook secret ni autre secret (redaction + troncature). */
@@ -432,10 +432,9 @@ export class SasPayApiClient {
           );
     const body = asRecord(payload);
     const data = asRecord(body?.data) ?? body ?? {};
-    // DIAGNOSTIC TEMPORAIRE 403 (log-only, à supprimer après recette) : le
-    // 403 observé en production n'avait ni `message` ni `code` exploitables
-    // (`code —`), donc la raison SasPay exacte était perdue. On journalise
-    // ici le body redacted/tronqué + champs utiles, SANS toucher à
+    // DIAGNOSTIC 403 (log-only) : le body SasPay peut ne contenir ni
+    // `message` ni `code` exploitables, donc la raison exacte serait perdue.
+    // On journalise ici le body redacted/tronqué + champs utiles, SANS toucher à
     // l'exception levée ci-dessous (comportement FAILED/hold inchangé) et
     // SANS logger headers/secrets. `idempotencyKey` (UUID) et la référence
     // WD (déjà loggée côté service) ne sont pas des secrets.
@@ -447,7 +446,7 @@ export class SasPayApiClient {
           ? (input.metadata as Record<string, string>)
           : null;
       this.logger.warn(
-        `[DIAG PAYOUT 403 TEMPORAIRE] HTTP 403 sur POST /payouts/initialize/ ` +
+        `[DIAG PAYOUT 403] HTTP 403 sur POST /payouts/initialize/ ` +
           `(idempotencyKey=${input.idempotencyKey}, ` +
           `withdrawalRef=${diagMetadata?.withdrawalRequestReference ?? '—'}) : ` +
           `code=${pick('code') ?? '—'} | message=${pick('message') ?? '—'} | ` +
