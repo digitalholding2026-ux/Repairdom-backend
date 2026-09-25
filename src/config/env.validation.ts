@@ -112,6 +112,20 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   SASPAY_WEBHOOK_SECRET?: string;
+
+  // Relais payout VPS (sortie IP fixe, init payout uniquement) : optionnel.
+  // Si SASPAY_PAYOUT_RELAY_URL est définie, `initializePayout()` transite
+  // par le relay (secret partagé, même Idempotency-Key, sans clé SasPay).
+  // Verify/webhooks/top-up restent directs (SASPAY_API_KEY conservée).
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SASPAY_PAYOUT_RELAY_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  SASPAY_PAYOUT_RELAY_SECRET?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

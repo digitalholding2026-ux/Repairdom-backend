@@ -237,6 +237,51 @@ export class SasPayApiClient {
     return { httpStatus: res.status, payload };
   }
 
+  /* POST vers le relay payout VPS (sortie IP fixe). Même body et même
+   * Idempotency-Key que l'appel direct, header X-Relio-Relay-Secret, et
+   * SURTOUT aucune clé SasPay (ni Authorization) : elle vit sur le VPS.
+   * Le relay propage statut + JSON SasPay, interprétés à l'identique
+   * ci-dessous. Secret jamais journalisé. */
+  private async requestViaRelay<T>(
+    body: Record<string, unknown>,
+    idempotencyKey: string,
+    relayUrl: string,
+  ): Promise<{ httpStatus: number; payload: T }> {
+    const relaySecret = this.config.payoutRelaySecret;
+    if (!relaySecret) {
+      throw new SasPayTerminalException(
+        'Retrait indisponible : relais payout non configuré côté serveur.',
+        'relay_misconfigured',
+        503,
+      );
+    }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Relio-Relay-Secret': relaySecret,
+      'Idempotency-Key': idempotencyKey,
+    };
+    let res: Response;
+    try {
+      res = await fetch(relayUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(SASPAY_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new SasPayUpstreamException(
+        `Relais payout injoignable (${error instanceof Error ? error.message : 'réseau'}). Réessayez.`,
+      );
+    }
+    let payload: T;
+    try {
+      payload = (await res.json()) as T;
+    } catch {
+      throw new SasPayUpstreamException(`Réponse du relais illisible (HTTP ${res.status}). Réessayez.`);
+    }
+    return { httpStatus: res.status, payload };
+  }
+
   /** Initie un pay-in softpay. 201/200 → résultat ; 409 clé rejouée avec un
    *  corps différent → terminal ; 4xx métier → terminal ; 5xx → rejouable. */
   async initializeSoftpay(input: SoftpayInitInput): Promise<SoftpayInitResult> {
@@ -350,31 +395,41 @@ export class SasPayApiClient {
    *  `ip_not_whitelisted` si aucune IP whitelistée) et 422 métier →
    *  terminal ; 409 clé rejouée → terminal ; 5xx → rejouable. La réponse
    *  201 ne contient que `{message, id}` : montants/frais exacts connus
-   *  plus tard via verify/webhook (jamais calculés par Relio). */
+   *  plus tard via verify/webhook (jamais calculés par Relio).
+   *
+   *  Si `SASPAY_PAYOUT_RELAY_URL` est configurée, l'init transite par le
+   *  relay VPS (sortie IP fixe) : même body, même Idempotency-Key, header
+   *  X-Relio-Relay-Secret, SANS clé SasPay. Réponse interprétée à
+   *  l'identique (le relay propage statut + JSON SasPay). */
   async initializePayout(input: PayoutInitInput): Promise<PayoutInitResult> {
     if (!input.idempotencyKey || input.idempotencyKey.length > SASPAY_IDEMPOTENCY_KEY_MAX_LENGTH) {
       throw new Error('Idempotency-Key invalide pour SasPay.');
     }
-    const { httpStatus, payload } = await this.request<Record<string, unknown>>(
-      'POST',
-      '/payouts/initialize/',
-      {
-        amount: toSasPayDecimal(input.amountMinor),
-        currency: input.currency,
-        country: input.country,
-        method: input.method,
-        description: input.description,
-        customer: {
-          email: input.customer.email,
-          first_name: input.customer.first_name,
-          last_name: input.customer.last_name,
-          phone: input.customer.phone,
-        },
-        recipient: { msisdn: input.recipient.msisdn },
-        ...(input.metadata ? { metadata: input.metadata } : {}),
+    const payoutBody = {
+      amount: toSasPayDecimal(input.amountMinor),
+      currency: input.currency,
+      country: input.country,
+      method: input.method,
+      description: input.description,
+      customer: {
+        email: input.customer.email,
+        first_name: input.customer.first_name,
+        last_name: input.customer.last_name,
+        phone: input.customer.phone,
       },
-      input.idempotencyKey,
-    );
+      recipient: { msisdn: input.recipient.msisdn },
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+    };
+    const relayUrl = this.config.payoutRelayUrl;
+    const { httpStatus, payload } =
+      relayUrl
+        ? await this.requestViaRelay(payoutBody, input.idempotencyKey, relayUrl)
+        : await this.request<Record<string, unknown>>(
+            'POST',
+            '/payouts/initialize/',
+            payoutBody,
+            input.idempotencyKey,
+          );
     const body = asRecord(payload);
     const data = asRecord(body?.data) ?? body ?? {};
     // DIAGNOSTIC TEMPORAIRE 403 (log-only, à supprimer après recette) : le

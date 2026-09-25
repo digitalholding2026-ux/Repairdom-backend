@@ -205,6 +205,153 @@ describe('initializePayout', () => {
   });
 });
 
+describe('initializePayout via relay VPS', () => {
+  const RELAY_URL = 'https://api.relioo.space/payout/initialize';
+  const RELAY_SECRET = 'relay-secret-test';
+  const PAYOUT_INPUT = {
+    amountMinor: 10000,
+    currency: 'XAF',
+    country: 'CM',
+    method: 'mtn_cm',
+    description: 'Retrait Relio WD-1',
+    customer: { email: 'c@example.com', first_name: 'Awa', last_name: 'S', phone: '+237677889900' },
+    recipient: { msisdn: '677889900' },
+    metadata: { withdrawalRequestReference: 'WD-1' },
+    idempotencyKey: 'wkey-1',
+  };
+
+  function relayClient() {
+    const config = {
+      baseUrl: 'https://api.saspay.me/api/v1',
+      mode: 'TEST' as const,
+      apiKey: 'sk_test_xxx',
+      webhookSecret: 'whsec',
+      payoutRelayUrl: RELAY_URL,
+      payoutRelaySecret: RELAY_SECRET,
+      isConfigured: () => true,
+      keyModeMismatch: () => null,
+    };
+    return new SasPayApiClient(config as never);
+  }
+
+  it('Test 1 : utilise SASPAY_PAYOUT_RELAY_URL pour initialize', async () => {
+    const seen: { url: string }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        seen.push({ url });
+        return { status: 201, json: async () => ({ message: 'ok', id: 'po-1' }) };
+      }),
+    );
+    const result = await relayClient().initializePayout(PAYOUT_INPUT);
+    expect(result).toMatchObject({ id: 'po-1' });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe(RELAY_URL);
+  });
+
+  it('Test 2 : X-Relio-Relay-Secret présent, sans Authorization SasPay', async () => {
+    const seen: { headers: Record<string, string> }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        seen.push({ headers: init.headers as Record<string, string> });
+        return { status: 201, json: async () => ({ message: 'ok', id: 'po-1' }) };
+      }),
+    );
+    await relayClient().initializePayout(PAYOUT_INPUT);
+    expect(seen[0].headers['X-Relio-Relay-Secret']).toBe(RELAY_SECRET);
+    expect(seen[0].headers['Authorization']).toBeUndefined();
+  });
+
+  it('Test 3 : même Idempotency-Key transmise', async () => {
+    const seen: { headers: Record<string, string> }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        seen.push({ headers: init.headers as Record<string, string> });
+        return { status: 201, json: async () => ({ message: 'ok', id: 'po-1' }) };
+      }),
+    );
+    await relayClient().initializePayout(PAYOUT_INPUT);
+    expect(seen[0].headers['Idempotency-Key']).toBe('wkey-1');
+  });
+
+  it('Test 4 : body SasPay non altéré (montants, méthode, bénéficiaire, metadata)', async () => {
+    const seen: { body: unknown }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        seen.push({ body: JSON.parse(init.body as string) });
+        return { status: 201, json: async () => ({ message: 'ok', id: 'po-1' }) };
+      }),
+    );
+    await relayClient().initializePayout(PAYOUT_INPUT);
+    expect(seen[0].body).toEqual({
+      amount: '10000.00',
+      currency: 'XAF',
+      country: 'CM',
+      method: 'mtn_cm',
+      description: 'Retrait Relio WD-1',
+      customer: { email: 'c@example.com', first_name: 'Awa', last_name: 'S', phone: '+237677889900' },
+      recipient: { msisdn: '677889900' },
+      metadata: { withdrawalRequestReference: 'WD-1' },
+    });
+  });
+
+  it('Test 5 : réponse du relay propagée (201 id, 403 terminal avec code)', async () => {
+    stubFetchOnce(201, { message: 'ok', id: 'po-9' });
+    await expect(relayClient().initializePayout(PAYOUT_INPUT)).resolves.toMatchObject({ id: 'po-9' });
+    stubFetchOnce(403, { message: 'IP non autorisée pour les payouts.', code: 'ip_not_whitelisted' });
+    const err = await relayClient().initializePayout(PAYOUT_INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(SasPayTerminalException);
+    expect((err as SasPayTerminalException).code).toBe('ip_not_whitelisted');
+  });
+
+  it('Test 6 : timeout relay → rejouable, jamais un succès', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed'); }));
+    await expect(relayClient().initializePayout(PAYOUT_INPUT)).rejects.toBeInstanceOf(
+      SasPayUpstreamException,
+    );
+  });
+
+  it('Test 7 : ni secret relay ni clé SasPay dans erreurs/logs', async () => {
+    const c = relayClient();
+    const logged: string[] = [];
+    const inner = c as unknown as { logger: { warn: (msg: string) => void } };
+    const originalWarn = inner.logger.warn.bind(inner.logger);
+    inner.logger.warn = (msg: string) => {
+      logged.push(String(msg));
+      return originalWarn(msg);
+    };
+    stubFetchOnce(403, { message: 'Refusé.', code: 'some_code' });
+    const err = await c.initializePayout(PAYOUT_INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(SasPayTerminalException);
+    expect(String((err as Error).message)).not.toContain(RELAY_SECRET);
+    expect(String((err as Error).message)).not.toContain('sk_test_xxx');
+    for (const line of logged) {
+      expect(line).not.toContain(RELAY_SECRET);
+      expect(line).not.toContain('sk_test_xxx');
+    }
+  });
+
+  it('secret relay manquant → terminal explicite, sans exposer de valeur', async () => {
+    const config = {
+      baseUrl: 'https://api.saspay.me/api/v1',
+      mode: 'TEST' as const,
+      apiKey: 'sk_test_xxx',
+      webhookSecret: 'whsec',
+      payoutRelayUrl: RELAY_URL,
+      payoutRelaySecret: null,
+      isConfigured: () => true,
+      keyModeMismatch: () => null,
+    };
+    const c = new SasPayApiClient(config as never);
+    const err = await c.initializePayout(PAYOUT_INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(SasPayTerminalException);
+    expect((err as SasPayTerminalException).code).toBe('relay_misconfigured');
+  });
+});
+
 describe('verifyPayout', () => {
   it('200 SUCCESS (RETRAIT/OUTBOUND) → montants mappés', async () => {
     stubFetchOnce(200, {

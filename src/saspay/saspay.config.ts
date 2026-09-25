@@ -33,6 +33,23 @@ export class SasPayConfig {
     return raw && raw.length > 0 ? raw : null;
   }
 
+  /* Relais payout VPS (sortie IP fixe) — optionnel, init payout uniquement.
+   * Si `SASPAY_PAYOUT_RELAY_URL` est définie, `initializePayout()` POSTe au
+   * relay (X-Relio-Relay-Secret, même Idempotency-Key, même body, SANS clé
+   * SasPay) au lieu d'appeler SasPay directement. Verify/webhooks/top-up
+   * restent directs. Valeurs lues, jamais journalisées. */
+  /** URL publique du relay payout (ex. https://api.relioo.space/payout/initialize). */
+  get payoutRelayUrl(): string | null {
+    const raw = this.config.get<string>('SASPAY_PAYOUT_RELAY_URL')?.trim().replace(/\/+$/, '');
+    return raw && raw.length > 0 ? raw : null;
+  }
+
+  /** Secret partagé Railway → relay (header X-Relio-Relay-Secret). */
+  get payoutRelaySecret(): string | null {
+    const raw = this.config.get<string>('SASPAY_PAYOUT_RELAY_SECRET')?.trim();
+    return raw && raw.length > 0 ? raw : null;
+  }
+
   /** Vrai uniquement si les secrets minimaux sont configurés. */
   isConfigured(): boolean {
     return this.apiKey !== null && this.webhookSecret !== null;
