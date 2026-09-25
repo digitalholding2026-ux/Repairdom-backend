@@ -141,6 +141,53 @@ function asNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+/* ── DIAGNOSTIC TEMPORAIRE 403 payout (à supprimer après recette) ──
+ * But : conserver/logguer le body exact SasPay lors d'un HTTP 403 sur
+ * `POST /payouts/initialize/`, car le parsing actuel (`message`/`code`
+ * uniquement) a produit `code — : Retrait refusé par SasPay (HTTP 403).`
+ * Instrumentation LOG-ONLY : aucun changement de logique métier, statuts,
+ * idempotence, endpoints ou frontend. Ne jamais logger `Authorization`,
+ * clé API, webhook secret ni autre secret (redaction + troncature). */
+const PAYOUT_403_DIAG_MAX_LENGTH = 1000;
+const SENSITIVE_KEY_PATTERN = /api[_-]?key|secret|authorization|bearer|token|password|passwd/i;
+const SENSITIVE_VALUE_PATTERN = /sk_(live|test)_[A-Za-z0-9]+/g;
+
+function redactSensitive(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(SENSITIVE_VALUE_PATTERN, '[REDACTED]');
+  }
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : redactSensitive(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+function safeBodySnapshot(payload: unknown, maxLength = PAYOUT_403_DIAG_MAX_LENGTH): string {
+  try {
+    const raw = JSON.stringify(redactSensitive(payload)) ?? 'null';
+    return raw.length > maxLength ? `${raw.slice(0, maxLength)}…[TRONQUE]` : raw;
+  } catch {
+    return '[BODY_NON_SERIALISABLE]';
+  }
+}
+
+function diagFieldToString(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const clean = value.trim();
+    return clean ? clean.slice(0, 300) : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value && typeof value === 'object') {
+    return safeBodySnapshot(value, 500);
+  }
+  return null;
+}
+
 @Injectable()
 export class SasPayApiClient {
   private readonly logger = new Logger(SasPayApiClient.name);
@@ -330,6 +377,32 @@ export class SasPayApiClient {
     );
     const body = asRecord(payload);
     const data = asRecord(body?.data) ?? body ?? {};
+    // DIAGNOSTIC TEMPORAIRE 403 (log-only, à supprimer après recette) : le
+    // 403 observé en production n'avait ni `message` ni `code` exploitables
+    // (`code —`), donc la raison SasPay exacte était perdue. On journalise
+    // ici le body redacted/tronqué + champs utiles, SANS toucher à
+    // l'exception levée ci-dessous (comportement FAILED/hold inchangé) et
+    // SANS logger headers/secrets. `idempotencyKey` (UUID) et la référence
+    // WD (déjà loggée côté service) ne sont pas des secrets.
+    if (httpStatus === 403) {
+      const pick = (key: string): string | null =>
+        diagFieldToString(data[key]) ?? diagFieldToString(body?.[key]);
+      const diagMetadata =
+        input.metadata && typeof input.metadata === 'object'
+          ? (input.metadata as Record<string, string>)
+          : null;
+      this.logger.warn(
+        `[DIAG PAYOUT 403 TEMPORAIRE] HTTP 403 sur POST /payouts/initialize/ ` +
+          `(idempotencyKey=${input.idempotencyKey}, ` +
+          `withdrawalRef=${diagMetadata?.withdrawalRequestReference ?? '—'}) : ` +
+          `code=${pick('code') ?? '—'} | message=${pick('message') ?? '—'} | ` +
+          `detail=${pick('detail') ?? pick('details') ?? '—'} | ` +
+          `error=${pick('error') ?? '—'} | errors=${pick('errors') ?? '—'} | ` +
+          `reason=${pick('reason') ?? pick('error_code') ?? pick('errorCode') ?? '—'} | ` +
+          `status=${pick('status') ?? '—'} | type=${pick('type') ?? '—'} | ` +
+          `raw=${safeBodySnapshot(payload)}`,
+      );
+    }
     if (httpStatus === 409) {
       throw new SasPayTerminalException(
         asNonEmptyString(data.message) ?? 'Conflit idempotence SasPay : clé déjà utilisée avec un autre contenu.',
