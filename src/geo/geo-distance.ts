@@ -27,6 +27,35 @@ export const GPS_FRESHNESS_MS = 24 * 60 * 60 * 1000;
  * (« dernière mise à jour il y a X min »), jamais inventée. */
 export const GPS_TRAVEL_FRESHNESS_MS = 15 * 60 * 1000;
 
+/* CHANTIER GPS P0/P1 — seuil d'exploitabilité d'un fix de déplacement
+ * (mètres, valeur `accuracy` fournie par le navigateur) : au-delà, le fix
+ * est trop imprécis pour être présenté comme une localisation précise
+ * (ex. 2 km). Il n'est jamais stocké comme position « fraîche » ; l'action
+ * métier (« En route ») reste possible SANS position exploitable. `null` /
+ * `undefined` (navigateur muet, ancien client) = exploitable par
+ * compatibilité (les bornes lat/lng restent exigées). */
+export const GPS_TRAVEL_MAX_ACCURACY_M = 500;
+
+/* CHANTIER GPS P0/P1 — throttle du refresh manuel de position de
+ * déplacement : deux écritures à moins de 30 s d'intervalle sont
+ * considérées comme du spam (double-clic, retry agressif). Le backend
+ * renvoie alors l'état courant SANS écrire (aucun background tracking,
+ * aucun cron, actualisation manuelle préservée au-delà du délai). */
+export const GPS_TRAVEL_REFRESH_THROTTLE_MS = 30_000;
+
+/** Vrai si une `accuracy` navigateur est exploitable comme localisation
+ *  précise (jamais inventée : `null`/`undefined` = information absente,
+ *  traitée comme exploitable par compatibilité). */
+export function isUsableTravelAccuracy(accuracy: number | null | undefined): boolean {
+  if (accuracy === null || accuracy === undefined) return true;
+  return (
+    typeof accuracy === 'number' &&
+    Number.isFinite(accuracy) &&
+    accuracy >= 0 &&
+    accuracy <= GPS_TRAVEL_MAX_ACCURACY_M
+  );
+}
+
 /** Vrai si `locationUpdatedAt` est présent, passé et vieux d'au plus la
  *  fenêtre de fraîcheur (jamais d'exception, jamais de futur accepté). */
 export function isLocationFresh(

@@ -22,10 +22,13 @@ import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { resolveCityId } from '../geo/city-reference.js';
 import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
 import {
+  GPS_FRESHNESS_MS,
   demandeTechnicianDistanceMeters,
   isLocationFresh,
+  isUsableTravelAccuracy,
   isValidLatitude,
   isValidLongitude,
+  GPS_TRAVEL_REFRESH_THROTTLE_MS,
 } from '../geo/geo-distance.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
@@ -555,6 +558,10 @@ export class TechnicianService {
       locationUpdatedAt: profile.locationUpdatedAt
         ? profile.locationUpdatedAt.toISOString()
         : null,
+      /* CHANTIER GPS P0/P1 — fraîcheur calculée CÔTÉ SERVEUR (fenêtre V2
+       * `GPS_FRESHNESS_MS`) : l'UI ne doit plus déduire « à jour » de
+       * l'horloge du téléphone (`Date.now()`), falsifiable. */
+      isLocationFresh: isLocationFresh(profile.locationUpdatedAt, new Date(), GPS_FRESHNESS_MS),
       completedInterventions,
       createdAt: profile.createdAt.toISOString(),
       user: profile.user,
@@ -944,12 +951,37 @@ export class TechnicianService {
     throw new ForbiddenException("Vous n'êtes pas le technicien assigné à cette demande.");
   }
 
-  /* « Je suis en route » : enregistre la position + le début du
-   * déplacement. Réémission avant arrivée = simple actualisation (le
+  /* « Je suis en route » : enregistre le début du déplacement, avec ou
+   * SANS coordonnées (CHANTIER GPS P0/P1 : permission refusée, GPS
+   * désactivé, timeout ou fix trop imprécis ne bloquent jamais le départ —
+   * l'action métier part quand même, sans position inventée).
+   * Réémission avant arrivée = simple actualisation (le
    * `technicianEnRouteAt` d'origine est conservé, une seule notification
-   * client au premier démarrage). */
-  async startTravel(userId: string, demandeId: string, latitude: number, longitude: number) {
-    this.assertTravelCoordinates(latitude, longitude);
+   * client au premier démarrage). Sans coordonnées exploitables,
+   * `travelLocationUpdatedAt` reste inchangé (null au premier départ) :
+   * la vue `travel` expose alors `enRoute: true, fresh: false` (fenêtre V3
+   * 15 min), le marqueur n'est affiché ni côté technicien ni côté client.
+   * Aucun nouveau statut, aucune coordonnée dans les logs. */
+  async startTravel(
+    userId: string,
+    demandeId: string,
+    latitude?: number,
+    longitude?: number,
+    accuracy?: number,
+  ) {
+    const hasCoords = latitude !== undefined || longitude !== undefined;
+    // Corps vide ou partiel sans les deux coordonnées = départ sans GPS.
+    // Coordonnées partielles invalides (une seule sur deux) = 400.
+    if (hasCoords && (latitude === undefined || longitude === undefined)) {
+      throw new BadRequestException('Coordonnées GPS incomplètes.');
+    }
+    let withPosition = false;
+    if (latitude !== undefined && longitude !== undefined) {
+      this.assertTravelCoordinates(latitude, longitude);
+      // Fix trop imprécis : départ enregistré SANS position exploitable
+      // (jamais transformé en position précise artificielle).
+      withPosition = isUsableTravelAccuracy(accuracy);
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await this.requireAssignedDemande(tx, userId, demandeId);
       if (
@@ -969,12 +1001,19 @@ export class TechnicianService {
           status: current.status,
           technicianArrivedAt: null,
         },
-        data: {
-          travelLatitude: latitude,
-          travelLongitude: longitude,
-          travelLocationUpdatedAt: now,
-          technicianEnRouteAt: current.technicianEnRouteAt ?? now,
-        },
+        // Sans position exploitable : seul le départ est enregistré (les
+        // coordonnées/horodatage précédents sont conservés tels quels, la
+        // fraîcheur V3 reste calculée côté serveur).
+        data: withPosition
+          ? {
+              travelLatitude: latitude,
+              travelLongitude: longitude,
+              travelLocationUpdatedAt: now,
+              technicianEnRouteAt: current.technicianEnRouteAt ?? now,
+            }
+          : {
+              technicianEnRouteAt: current.technicianEnRouteAt ?? now,
+            },
       });
       if (claimed.count !== 1) {
         throw new ConflictException(
@@ -1005,9 +1044,26 @@ export class TechnicianService {
   }
 
   /* « Actualiser ma position » : remplace la position précédente (aucun
-   * historique). Exige un déplacement actif (démarré ET non arrivé). */
-  async refreshTravelLocation(userId: string, demandeId: string, latitude: number, longitude: number) {
+   * historique, aucun tracking). Exige un déplacement actif (démarré ET non
+   * arrivé). CHANTIER GPS P0/P1 :
+   * - fix trop imprécis (`accuracy` > `GPS_TRAVEL_MAX_ACCURACY_M`) : refusé
+   *   en 400 SANS écrire (jamais présenté comme localisation précise) ;
+   * - appels trop rapprochés (< `GPS_TRAVEL_REFRESH_THROTTLE_MS`) : état
+   *   courant renvoyé SANS écriture (protège la DB même si le frontend est
+   *   contourné ; l'actualisation manuelle reste fonctionnelle au-delà). */
+  async refreshTravelLocation(
+    userId: string,
+    demandeId: string,
+    latitude: number,
+    longitude: number,
+    accuracy?: number,
+  ) {
     this.assertTravelCoordinates(latitude, longitude);
+    if (!isUsableTravelAccuracy(accuracy)) {
+      throw new BadRequestException(
+        'Position trop imprécise pour être actualisée. Réessayez dans un endroit à ciel ouvert.',
+      );
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await this.requireAssignedDemande(tx, userId, demandeId);
       if (!current.technicianEnRouteAt || current.technicianArrivedAt) {
@@ -1020,6 +1076,18 @@ export class TechnicianService {
         !TRAVEL_COMPATIBLE_STATUSES.includes(current.status)
       ) {
         throw this.resolveTravelDenial(current);
+      }
+      // Throttle : une position actualisée il y a moins de 30 s ne justifie
+      // pas une nouvelle écriture (double-clic, retry agressif, spam).
+      const lastUpdate =
+        current.travelLocationUpdatedAt instanceof Date
+          ? current.travelLocationUpdatedAt.getTime()
+          : null;
+      if (lastUpdate !== null && Date.now() - lastUpdate < GPS_TRAVEL_REFRESH_THROTTLE_MS) {
+        return tx.demande.findFirstOrThrow({
+          where: { id: current.id, technicianId: userId },
+          include: this.deviceInclude,
+        });
       }
 
       const claimed = await tx.demande.updateMany({
@@ -1051,13 +1119,14 @@ export class TechnicianService {
 
   /* « Je suis arrivé » : clôt le déplacement (la position de déplacement
    * n'est plus exposée comme active). La dernière position n'est mise à
-   * jour que si des coordonnées valides sont fournies (autorisation GPS
-   * disponible) ; la date d'arrivée est toujours enregistrée. */
+   * jour que si des coordonnées valides ET exploitables sont fournies ; la
+   * date d'arrivée est toujours enregistrée (comportement préservé). */
   async markArrived(
     userId: string,
     demandeId: string,
     latitude?: number,
     longitude?: number,
+    accuracy?: number,
   ) {
     if (latitude !== undefined || longitude !== undefined) {
       this.assertTravelCoordinates(latitude, longitude);
@@ -1088,7 +1157,9 @@ export class TechnicianService {
         },
         data: {
           technicianArrivedAt: now,
-          ...(latitude !== undefined && longitude !== undefined
+          // Fix trop imprécis : arrivée enregistrée SANS stocker la
+          // position (jamais de précision artificielle).
+          ...(latitude !== undefined && longitude !== undefined && isUsableTravelAccuracy(accuracy)
             ? {
                 travelLatitude: latitude,
                 travelLongitude: longitude,

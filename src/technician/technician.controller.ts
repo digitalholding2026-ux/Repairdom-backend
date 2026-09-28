@@ -23,7 +23,7 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import { UpdateTechnicianLocationDto } from './dto/update-location.dto.js';
-import { TravelArrivedDto, TravelLocationDto } from './dto/travel-location.dto.js';
+import { TravelArrivedDto, TravelLocationDto, TravelStartOptionalDto } from './dto/travel-location.dto.js';
 import { UpdateCoverageDto } from './dto/update-coverage.dto.js';
 import { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
 import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from './avatar-file.js';
@@ -163,22 +163,25 @@ export class TechnicianController {
   /* GPS V3 — déplacement temporaire lié à la mission (« technicien en
    * route »). Transmissions explicites et ponctuelles uniquement (aucun
    * tracking, aucun WebSocket) ; le technicien JWT n'agit que sur SES
-   * missions assignées (aucun identifiant de tiers). */
+   * missions assignées (aucun identifiant de tiers).
+   * CHANTIER GPS P0/P1 — le départ accepte un corps vide (« En route »
+   * sans GPS) ; `accuracy` optionnelle partout (fix trop imprécis jamais
+   * stocké comme position fraîche, action métier préservée). */
   @Post('demandes/:id/en-route')
   @HttpCode(HttpStatus.OK)
-  startTravel(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TravelLocationDto) {
-    return this.technicianService.startTravel(user.id, id, dto.latitude, dto.longitude);
+  startTravel(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TravelStartOptionalDto) {
+    return this.technicianService.startTravel(user.id, id, dto.latitude, dto.longitude, dto.accuracy);
   }
 
   @Post('demandes/:id/location')
   @HttpCode(HttpStatus.OK)
   refreshTravelLocation(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TravelLocationDto) {
-    return this.technicianService.refreshTravelLocation(user.id, id, dto.latitude, dto.longitude);
+    return this.technicianService.refreshTravelLocation(user.id, id, dto.latitude, dto.longitude, dto.accuracy);
   }
 
   @Post('demandes/:id/arrived')
   @HttpCode(HttpStatus.OK)
   markArrived(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TravelArrivedDto) {
-    return this.technicianService.markArrived(user.id, id, dto.latitude, dto.longitude);
+    return this.technicianService.markArrived(user.id, id, dto.latitude, dto.longitude, dto.accuracy);
   }
 }
