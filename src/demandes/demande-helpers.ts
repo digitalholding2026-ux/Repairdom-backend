@@ -281,6 +281,45 @@ export function toApiTravelClient(
   return travelBase(demande, now);
 }
 
+/* GPS V4 — carte de mission côté client : coordonnées nécessaires au
+ * RENDU des marqueurs (jamais affichées en chiffres à l'utilisateur).
+ * `technician` n'est renseigné que si le déplacement est ACTIF et la
+ * position FRAÎCHE (fenêtre V3) ; sinon `null` et l'UI affiche
+ * « dernière position indisponible ou trop ancienne ». Le lieu
+ * d'intervention reste exposé via `latitude`/`longitude` du détail
+ * (contexte propriétaire existant, inchangé).
+ * Réservé au détail de LA mission du client (findForClient) — jamais
+ * dans les listes ni les endpoints publics. */
+export interface TravelMapPoint {
+  latitude: number;
+  longitude: number;
+}
+
+export interface TravelMapClientView {
+  technician: TravelMapPoint | null;
+}
+
+export function toApiTravelMapClient(
+  demande: TravelSource,
+  now: Date = new Date(),
+): TravelMapClientView {
+  const base = travelBase(demande, now);
+  if (!base.enRoute || !base.fresh) return { technician: null };
+  if (
+    demande.travelLatitude === null ||
+    demande.travelLatitude === undefined ||
+    demande.travelLongitude === null ||
+    demande.travelLongitude === undefined ||
+    !Number.isFinite(demande.travelLatitude) ||
+    !Number.isFinite(demande.travelLongitude)
+  ) {
+    return { technician: null };
+  }
+  return {
+    technician: { latitude: demande.travelLatitude, longitude: demande.travelLongitude },
+  };
+}
+
 export function hasCategory(category: string): category is DemandeCategory {
   return (ALLOWED_CATEGORIES as readonly string[]).includes(category);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TechnicianService } from './technician.service.js';
-import { toApiTravelClient, toApiTravelTechnician } from '../demandes/demandes.service.js';
+import { toApiTravelClient, toApiTravelMapClient, toApiTravelTechnician } from '../demandes/demandes.service.js';
 import { GPS_TRAVEL_FRESHNESS_MS, isLocationFresh } from '../geo/geo-distance.js';
 
 /* GPS V3 — déplacement temporaire lié à la mission (service) :
@@ -395,5 +395,59 @@ describe('vues travel (fraîcheur + confidentialité)', () => {
       travelLocationUpdatedAt: new Date(),
     });
     expect(view.distanceMeters).toBeNull();
+  });
+});
+
+describe('travelMap V4 (rendu carte client)', () => {
+  const base = {
+    latitude: 4.0511,
+    longitude: 9.7085,
+    travelLatitude: 4.06,
+    travelLongitude: 9.71,
+    technicianEnRouteAt: new Date('2026-02-01T10:00:00.000Z'),
+    technicianArrivedAt: null,
+  };
+  const freshAt = new Date('2026-02-01T10:05:00.000Z');
+  const now = new Date('2026-02-01T10:10:00.000Z');
+
+  it('déplacement actif + position fraîche → point technicien exposé', () => {
+    const view = toApiTravelMapClient({ ...base, travelLocationUpdatedAt: freshAt }, now);
+    expect(view).toEqual({ technician: { latitude: 4.06, longitude: 9.71 } });
+  });
+
+  it('position périmée → point null (jamais présentée comme actuelle)', () => {
+    const view = toApiTravelMapClient(
+      { ...base, travelLocationUpdatedAt: new Date('2026-02-01T09:00:00.000Z') },
+      now,
+    );
+    expect(view).toEqual({ technician: null });
+  });
+
+  it('pas encore en route → point null', () => {
+    const view = toApiTravelMapClient(
+      { ...base, technicianEnRouteAt: null, travelLocationUpdatedAt: freshAt },
+      now,
+    );
+    expect(view).toEqual({ technician: null });
+  });
+
+  it('technicien arrivé (déplacement clos) → point null', () => {
+    const view = toApiTravelMapClient(
+      {
+        ...base,
+        technicianArrivedAt: new Date('2026-02-01T10:30:00.000Z'),
+        travelLocationUpdatedAt: freshAt,
+      },
+      now,
+    );
+    expect(view).toEqual({ technician: null });
+  });
+
+  it('coordonnées de déplacement absentes → point null', () => {
+    const view = toApiTravelMapClient(
+      { ...base, travelLatitude: null, travelLongitude: null, travelLocationUpdatedAt: freshAt },
+      now,
+    );
+    expect(view).toEqual({ technician: null });
   });
 });
