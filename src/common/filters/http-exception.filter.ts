@@ -78,11 +78,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // (ex. INSUFFICIENT_FUNDS → required/available/currency pour proposer
     // une recharge). Strictement additif : sans ces champs, la forme reste
     // { statusCode, error, message } comme avant.
+    // CHANTIER ERREURS P1 : les erreurs ValidationPipe (`message: string[]`,
+    // 400) reçoivent le code `VALIDATION_ERROR` pour que le frontend les
+    // mappe sans parser des chaînes (forme par ailleurs inchangée).
+    const isValidationArray = Array.isArray(message) && statusCode === 400;
     return {
       statusCode,
       message: message ?? exception.message,
       error: error ?? this.httpErrorLabel(statusCode),
-      ...(typeof extra.code === 'string' ? { code: extra.code } : {}),
+      ...(typeof extra.code === 'string'
+        ? { code: extra.code }
+        : isValidationArray
+          ? { code: 'VALIDATION_ERROR' }
+          : {}),
       ...(typeof extra.required === 'number' ? { required: extra.required } : {}),
       ...(typeof extra.available === 'number' ? { available: extra.available } : {}),
       ...(typeof extra.currency === 'string' ? { currency: extra.currency } : {}),

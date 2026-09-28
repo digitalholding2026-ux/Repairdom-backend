@@ -3,7 +3,9 @@ import { SasPayWebhookController } from './saspay-webhook.controller.js';
 
 /* Sprint SASPAY-03 — le contrôleur exige les octets exacts (req.rawBody) :
  * sans raw body → 401 (jamais de re-sérialisation) ; le JSON n'est parsé
- * qu'après vérification de la signature. */
+ * qu'après vérification de la signature.
+ * CHANTIER ERREURS P1 — body non-JSON (signature valide) → 400 (plus de
+ * 401 trompeur : contenu malformé, pas un défaut d'authentification). */
 
 function controller() {
   const webhooks = {
@@ -46,11 +48,11 @@ describe('webhook controller : raw body exact exigé', () => {
     expect(webhooks.handleEvent).not.toHaveBeenCalled();
   });
 
-  it('rawBody non-JSON mais signé → 401 (parse après vérification uniquement)', async () => {
+  it('rawBody non-JSON mais signé → 400 (contenu malformé, HMAC vérifiée avant)', async () => {
     const { controller: c, webhooks } = controller();
     const raw = Buffer.from('not-json{{{');
     await expect(c.handle({ rawBody: raw } as never, 'sig', '123', 'x')).rejects.toMatchObject({
-      status: 401,
+      status: 400,
     });
     expect(webhooks.verifySignature).toHaveBeenCalledTimes(1);
     expect(webhooks.handleEvent).not.toHaveBeenCalled();

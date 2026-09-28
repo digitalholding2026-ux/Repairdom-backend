@@ -1,4 +1,4 @@
-import { Controller, Headers, HttpCode, HttpStatus, Post, Req, UnauthorizedException, type RawBodyRequest } from '@nestjs/common';
+import { BadRequestException, Controller, Headers, HttpCode, HttpStatus, Post, Req, UnauthorizedException, type RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { SasPayWebhookService } from './saspay-webhook.service.js';
 
@@ -11,6 +11,10 @@ import { SasPayWebhookService } from './saspay-webhook.service.js';
  *  - sans raw body exact → 401 (AUCUN fallback re-sérialisé : une
  *    re-sérialisation casse la comparaison bit à bit) ;
  *  - le JSON n'est parsé qu'APRÈS validation de la signature ;
++ *  - CHANTIER ERREURS P1 : un body non-JSON (signature valide mais contenu
++ *    malformé) → 400 `Corps webhook non-JSON` (plus de 401 trompeur : ce
++ *    n'est pas un problème d'authentification). La vérification HMAC reste
++ *    inchangée et préalable (aucun affaiblissement) ;
  *  - réponse 200 rapide ; traitement idempotent (rejouabilité sans double
  *    écriture ledger ; SasPay retente 5 fois sur non-2xx). */
 @Controller('webhooks/saspay')
@@ -35,7 +39,7 @@ export class SasPayWebhookController {
     try {
       parsed = JSON.parse(raw.toString('utf8'));
     } catch {
-      throw new UnauthorizedException('Corps webhook non-JSON.');
+      throw new BadRequestException('Corps webhook non-JSON.');
     }
     const record =
       parsed && typeof parsed === 'object' && !Array.isArray(parsed)
