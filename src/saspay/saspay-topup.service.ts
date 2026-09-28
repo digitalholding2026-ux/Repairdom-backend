@@ -54,7 +54,7 @@ export class SasPayTopupService {
   private ensureRealMode() {
     if (this.financial.getMode() !== 'REAL') {
       throw new ForbiddenException(
-        'Paiement réel indisponible : le mode financier serveur est SIMULATION.',
+        'Paiement indisponible : service de paiement non configuré.',
       );
     }
   }

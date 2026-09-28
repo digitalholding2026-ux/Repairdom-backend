@@ -57,7 +57,7 @@ export class SasPayPayoutService {
   private ensureRealMode() {
     if (this.financial.getMode() !== 'REAL') {
       throw new ForbiddenException(
-        'Retrait réel indisponible : le mode financier serveur est SIMULATION.',
+        'Retrait indisponible : service de paiement non configuré.',
       );
     }
   }
