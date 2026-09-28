@@ -2585,6 +2585,14 @@ function assertWithdrawalAmount(amount: number) {
   }
 }
 
+function feeChargeModeOf(metadata: unknown): string | null {
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    const mode = (metadata as Record<string, unknown>).feeChargeMode;
+    return typeof mode === 'string' && mode ? mode : null;
+  }
+  return null;
+}
+
 function toApiTopupIntent(intent: {
   id: string;
   reference: string;
@@ -2604,6 +2612,7 @@ function toApiTopupIntent(intent: {
   netAmount: number | null;
   creditedTransactionId: string | null;
   errorMessage: string | null;
+  metadata?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -2626,6 +2635,9 @@ function toApiTopupIntent(intent: {
     netAmount: intent.netAmount,
     creditedTransactionId: intent.creditedTransactionId,
     errorMessage: intent.errorMessage,
+    // Mode de facturation des frais constaté (metadata, jamais calculé) :
+    // l'UI l'utilise pour expliquer « ajoutés » vs « déduits ».
+    feeChargeMode: feeChargeModeOf(intent.metadata),
     // Message utilisateur sûr dérivé du statut (l'UI ne lit jamais
     // errorMessage, réservé au backend/logs).
     userMessage: topupUserMessage(intent.status, intent.errorMessage),
@@ -2654,6 +2666,7 @@ function toApiWithdrawalRequest(request: {
   chargedAmount: number | null;
   netAmount: number | null;
   errorMessage: string | null;
+  metadata?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -2677,6 +2690,8 @@ function toApiWithdrawalRequest(request: {
     chargedAmount: request.chargedAmount,
     netAmount: request.netAmount,
     errorMessage: request.errorMessage,
+    // Mode de facturation des frais constaté (metadata, jamais calculé).
+    feeChargeMode: feeChargeModeOf(request.metadata),
     // Message utilisateur sûr dérivé du statut (l'UI ne lit jamais
     // errorMessage, réservé au backend/logs).
     userMessage: payoutUserMessage(request.status, request.errorMessage),

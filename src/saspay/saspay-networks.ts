@@ -34,14 +34,24 @@ export function isSupportedPayoutNetwork(value: unknown): value is SasPayPayoutN
   return isSupportedTopupNetwork(value);
 }
 
-/** Normalise un numéro de téléphone (espaces/points/tirets retirés).
- *  Retourne null si le format de base est invalide (le gateway reste seul
- *  juge de l'existence réelle du numéro). */
+/** Normalise un numéro de téléphone vers le format E.164 camerounais
+ *  (`+237XXXXXXXXX`, convention déjà stockée et transmise à SasPay dans le
+ *  projet). Espaces/points/tirets/parenthèses retirés ; `690000000`,
+ *  `237690000000` et `+237690000000` convergent vers `+237690000000`
+ *  (jamais de double préfixe). Retourne null si le format de base est
+ *  invalide (le gateway reste seul juge de l'existence réelle du numéro).
+ *  Les numéros non-camerounais déjà acceptés (9-15 chiffres) sont conservés
+ *  avec un `+` initial pour rester compatibles. */
 export function normalizeMsisdn(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const clean = value.replace(/[\s.\-()]/g, '');
-  if (!/^\+?[0-9]{9,15}$/.test(clean)) return null;
-  return clean;
+  if (clean.length === 0) return null;
+  const hasPlus = clean.startsWith('+');
+  const digits = hasPlus ? clean.slice(1) : clean;
+  if (!/^[0-9]{9,15}$/.test(digits)) return null;
+  if (digits.length === 9) return `+237${digits}`;
+  if (digits.length === 12 && digits.startsWith('237')) return `+${digits}`;
+  return `+${digits}`;
 }
 
 /** Code réseau/devise plausible (exclut les UUID renvoyés par /verify/). */
