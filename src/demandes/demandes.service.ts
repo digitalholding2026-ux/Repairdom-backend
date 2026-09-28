@@ -19,15 +19,19 @@ export {
   resolveRequestedAt,
   toApiDemande,
   toApiDemandePublic,
+  toApiTravelClient,
+  toApiTravelTechnician,
 } from './demande-helpers.js';
 export type {
   DemandeCategory,
   DemandeMediaRow,
   DemandeRecord,
   DemandeTechnicianInfo,
+  TravelClientView,
+  TravelTechnicianView,
 } from './demande-helpers.js';
 import type { DemandeMediaRow, DemandeRecord } from './demande-helpers.js';
-import { resolveRequestedAt, toApiDemande } from './demande-helpers.js';
+import { resolveRequestedAt, toApiDemande, toApiTravelClient } from './demande-helpers.js';
 import {
   findCityMatches,
   resolveCityIdFromCandidates,
@@ -318,7 +322,9 @@ export class DemandesService {
       include: this.clientInclude(),
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
-    return toApiDemande(this.withTechnician(demande));
+    // GPS V3 — vue déplacement SANS coordonnées brutes (jamais exposées
+    // au client) : statut, fraîcheur et distance approximative uniquement.
+    return { ...toApiDemande(this.withTechnician(demande)), travel: toApiTravelClient(demande) };
   }
 
   async updateStatus(clientId: string, id: string, dto: UpdateDemandeStatusDto) {

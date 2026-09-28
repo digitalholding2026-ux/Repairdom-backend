@@ -8,13 +8,14 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { toApiDemande, toApiDemandePublic, isMatchingStatus, compareDemandePriority } from '../demandes/demande-helpers.js';
+import { toApiDemande, toApiDemandePublic, toApiTravelTechnician, isMatchingStatus, compareDemandePriority } from '../demandes/demande-helpers.js';
 import { assertTransition } from '../demandes/demandes-lifecycle.js';
 import {
   buildNotification,
   createNotification,
   eventTypeForStatus,
   recordEvent,
+  type Tx as TravelTx,
 } from '../mission-events/mission-events.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
@@ -23,6 +24,8 @@ import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
 import {
   demandeTechnicianDistanceMeters,
   isLocationFresh,
+  isValidLatitude,
+  isValidLongitude,
 } from '../geo/geo-distance.js';
 import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
 import {
@@ -58,6 +61,12 @@ import { isGeoEligible, normalizeValue } from '../geo/geo-eligibility.js';
 function normalizeCategory(value: string): string {
   return normalizeValue(value);
 }
+
+/* GPS V3 — états mission compatibles avec le déplacement temporaire :
+ * mission planifiée ou intervention démarrée. Les états clos refusent
+ * toute action GPS ; les autres états la refusent proprement. */
+const TRAVEL_COMPATIBLE_STATUSES = ['SCHEDULED', 'IN_PROGRESS'];
+const TRAVEL_CLOSED_STATUSES = ['COMPLETED', 'CONFIRMED', 'CANCELED'];
 
 export interface PublicTechnicianProfile {
   id: string;
@@ -665,6 +674,9 @@ export class TechnicianService {
         // GPS V1 — distance informative (lecture seule, sans effet sur le
         // matching) ; null si l'une des positions est absente.
         distanceMeters: demandeTechnicianDistanceMeters(demande, profile),
+        // GPS V3 — déplacement temporaire (coordonnées visibles par le
+        // technicien assigné, propriétaire de ces données).
+        travel: toApiTravelTechnician(demande),
       };
     }
 
@@ -879,6 +891,232 @@ export class TechnicianService {
     }
 
     return toApiDemande(result);
+  }
+
+  /* GPS V3 — déplacement temporaire lié à la mission (« technicien en
+   * route »). Principes : transmission EXPLICITE et ponctuelle (aucun
+   * tracking, aucun WebSocket, aucun historique — chaque position remplace
+   * la précédente) ; acteur = technicien JWT assigné (aucun identifiant de
+   * tiers) ; mission dans un état compatible (SCHEDULED/IN_PROGRESS) ;
+   * le lifecycle existant reste la source de vérité (aucun changement de
+   * statut ici) ; aucune coordonnée dans les logs. */
+
+  private assertTravelCoordinates(latitude: unknown, longitude: unknown): void {
+    if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+      throw new BadRequestException('Coordonnées GPS invalides.');
+    }
+  }
+
+  private resolveTravelDenial(existing: {
+    technicianId: string | null;
+    technicianArrivedAt: Date | null;
+    technicianEnRouteAt: Date | null;
+    status: string;
+  }): Error {
+    if (existing.technicianArrivedAt) {
+      return new ConflictException(
+        'Le déplacement est déjà clôturé (arrivée enregistrée).',
+      );
+    }
+    if (TRAVEL_CLOSED_STATUSES.includes(existing.status)) {
+      return new ConflictException(
+        'Le déplacement est impossible sur une mission terminée.',
+      );
+    }
+    return new BadRequestException(
+      'Le déplacement ne peut démarrer que sur une mission planifiée ou en cours.',
+    );
+  }
+
+  /* Point d'entrée commun : mission assignée au technicien connecté,
+   * sinon 404 (inexistante) ou 403 (autre technicien / autre rôle). */
+  private async requireAssignedDemande(
+    tx: TravelTx,
+    userId: string,
+    demandeId: string,
+  ) {
+    const current = await tx.demande.findFirst({
+      where: { id: demandeId, technicianId: userId },
+    });
+    if (current) return current;
+    const existing = await tx.demande.findUnique({ where: { id: demandeId } });
+    if (!existing) throw new NotFoundException('Demande introuvable.');
+    throw new ForbiddenException("Vous n'êtes pas le technicien assigné à cette demande.");
+  }
+
+  /* « Je suis en route » : enregistre la position + le début du
+   * déplacement. Réémission avant arrivée = simple actualisation (le
+   * `technicianEnRouteAt` d'origine est conservé, une seule notification
+   * client au premier démarrage). */
+  async startTravel(userId: string, demandeId: string, latitude: number, longitude: number) {
+    this.assertTravelCoordinates(latitude, longitude);
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await this.requireAssignedDemande(tx, userId, demandeId);
+      if (
+        current.technicianArrivedAt ||
+        TRAVEL_CLOSED_STATUSES.includes(current.status) ||
+        !TRAVEL_COMPATIBLE_STATUSES.includes(current.status)
+      ) {
+        throw this.resolveTravelDenial(current);
+      }
+
+      const now = new Date();
+      const firstStart = !current.technicianEnRouteAt;
+      const claimed = await tx.demande.updateMany({
+        where: {
+          id: current.id,
+          technicianId: userId,
+          status: current.status,
+          technicianArrivedAt: null,
+        },
+        data: {
+          travelLatitude: latitude,
+          travelLongitude: longitude,
+          travelLocationUpdatedAt: now,
+          technicianEnRouteAt: current.technicianEnRouteAt ?? now,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
+        );
+      }
+      const updated = await tx.demande.findFirstOrThrow({
+        where: { id: current.id, technicianId: userId },
+        include: this.deviceInclude,
+      });
+
+      await recordEvent(tx, {
+        demandeId: current.id,
+        type: 'TECHNICIAN_EN_ROUTE',
+        actorUserId: userId,
+        fromStatus: current.status,
+      });
+      if (firstStart) {
+        await createNotification(
+          tx,
+          buildNotification('TECHNICIAN_EN_ROUTE', current.id, current.clientId, 'CLIENT'),
+        );
+      }
+      return updated;
+    });
+
+    return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
+  }
+
+  /* « Actualiser ma position » : remplace la position précédente (aucun
+   * historique). Exige un déplacement actif (démarré ET non arrivé). */
+  async refreshTravelLocation(userId: string, demandeId: string, latitude: number, longitude: number) {
+    this.assertTravelCoordinates(latitude, longitude);
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await this.requireAssignedDemande(tx, userId, demandeId);
+      if (!current.technicianEnRouteAt || current.technicianArrivedAt) {
+        throw new BadRequestException(
+          'Aucun déplacement actif : démarrez votre déplacement (« Je suis en route »).',
+        );
+      }
+      if (
+        TRAVEL_CLOSED_STATUSES.includes(current.status) ||
+        !TRAVEL_COMPATIBLE_STATUSES.includes(current.status)
+      ) {
+        throw this.resolveTravelDenial(current);
+      }
+
+      const claimed = await tx.demande.updateMany({
+        where: {
+          id: current.id,
+          technicianId: userId,
+          status: current.status,
+          technicianArrivedAt: null,
+        },
+        data: {
+          travelLatitude: latitude,
+          travelLongitude: longitude,
+          travelLocationUpdatedAt: new Date(),
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
+        );
+      }
+      return tx.demande.findFirstOrThrow({
+        where: { id: current.id, technicianId: userId },
+        include: this.deviceInclude,
+      });
+    });
+
+    return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
+  }
+
+  /* « Je suis arrivé » : clôt le déplacement (la position de déplacement
+   * n'est plus exposée comme active). La dernière position n'est mise à
+   * jour que si des coordonnées valides sont fournies (autorisation GPS
+   * disponible) ; la date d'arrivée est toujours enregistrée. */
+  async markArrived(
+    userId: string,
+    demandeId: string,
+    latitude?: number,
+    longitude?: number,
+  ) {
+    if (latitude !== undefined || longitude !== undefined) {
+      this.assertTravelCoordinates(latitude, longitude);
+    }
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await this.requireAssignedDemande(tx, userId, demandeId);
+      if (!current.technicianEnRouteAt) {
+        throw new BadRequestException(
+          'Démarrez d\u2019abord votre déplacement (« Je suis en route »).',
+        );
+      }
+      if (current.technicianArrivedAt) {
+        throw new ConflictException("L'arrivée est déjà enregistrée.");
+      }
+      if (TRAVEL_CLOSED_STATUSES.includes(current.status)) {
+        throw new ConflictException(
+          'Le déplacement est impossible sur une mission terminée.',
+        );
+      }
+
+      const now = new Date();
+      const claimed = await tx.demande.updateMany({
+        where: {
+          id: current.id,
+          technicianId: userId,
+          status: current.status,
+          technicianArrivedAt: null,
+        },
+        data: {
+          technicianArrivedAt: now,
+          ...(latitude !== undefined && longitude !== undefined
+            ? {
+                travelLatitude: latitude,
+                travelLongitude: longitude,
+                travelLocationUpdatedAt: now,
+              }
+            : {}),
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException(
+          'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
+        );
+      }
+      const updated = await tx.demande.findFirstOrThrow({
+        where: { id: current.id, technicianId: userId },
+        include: this.deviceInclude,
+      });
+
+      await recordEvent(tx, {
+        demandeId: current.id,
+        type: 'TECHNICIAN_ARRIVED',
+        actorUserId: userId,
+        fromStatus: current.status,
+      });
+      return updated;
+    });
+
+    return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
   }
 
   private async requireProfile(userId: string) {

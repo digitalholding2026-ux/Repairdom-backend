@@ -35,7 +35,10 @@ export type DemandeEventType =
   | 'CONFIRMED'
   | 'CANCELED'
   // Sprint DISPATCH-V1 : vague de dispatch notifiée.
-  | 'DISPATCH_WAVE';
+  | 'DISPATCH_WAVE'
+  // GPS V3 : déplacement temporaire (aucun changement de statut).
+  | 'TECHNICIAN_EN_ROUTE'
+  | 'TECHNICIAN_ARRIVED';
 
 export type NotificationType =
   | 'TECHNICIAN_ACCEPTED'
@@ -46,7 +49,9 @@ export type NotificationType =
   | 'SCHEDULED'
   | 'COMPLETED'
   | 'CONFIRMED'
-  | 'MISSION_AVAILABLE';
+  | 'MISSION_AVAILABLE'
+  // GPS V3 : notifiée au client de la mission uniquement.
+  | 'TECHNICIAN_EN_ROUTE';
 
 export interface EventInput {
   demandeId: string;
@@ -123,6 +128,8 @@ export function eventLabel(type: string): string {
     CONFIRMED: 'Mission confirmée',
     CANCELED: 'Mission annulée',
     DISPATCH_WAVE: 'Vague de dispatch envoyée',
+    TECHNICIAN_EN_ROUTE: 'Technicien en route',
+    TECHNICIAN_ARRIVED: 'Technicien arrivé',
   };
   return labels[type] ?? type;
 }
@@ -201,6 +208,10 @@ export function buildNotification(
         audience === 'TECHNICIAN'
           ? 'Une intervention correspondant à votre zone est disponible. Consultez les détails pour accepter la mission.'
           : 'Une nouvelle mission est disponible.',
+    },
+    TECHNICIAN_EN_ROUTE: {
+      title: 'Technicien en route',
+      message: 'Le technicien est en route vers votre intervention.',
     },
   };
   const { title, message } = content[type];

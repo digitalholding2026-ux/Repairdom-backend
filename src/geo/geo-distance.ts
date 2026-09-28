@@ -20,6 +20,13 @@ const EARTH_RADIUS_METERS = 6371000;
  * considérée périmée (GPS_STALE : candidat SANS distance, jamais exclu). */
 export const GPS_FRESHNESS_MS = 24 * 60 * 60 * 1000;
 
+/* GPS V3 — fraîcheur d'une position DE DÉPLACEMENT (« technicien en
+ * route ») : 15 minutes. Même principe que V2 (`isLocationFresh` avec
+ * fenêtre paramétrable), mais fenêtre courte adaptée au déplacement en
+ * cours : au-delà, la position n'est plus présentée comme actuelle
+ * (« dernière mise à jour il y a X min »), jamais inventée. */
+export const GPS_TRAVEL_FRESHNESS_MS = 15 * 60 * 1000;
+
 /** Vrai si `locationUpdatedAt` est présent, passé et vieux d'au plus la
  *  fenêtre de fraîcheur (jamais d'exception, jamais de futur accepté). */
 export function isLocationFresh(
@@ -97,8 +104,7 @@ interface LocatedTechnician {
 /** Distance demande ↔ dernière position technicien (mètres), `null` si
  *  l'une des deux positions est absente. Utilisé en lecture seule (jamais
  *  dans le matching V1). */
-export function demandeTechnicianDistanceMeters(
-  demande: LocatedDemande | null | undefined,
+export function demandeTechnicianDistanceMeters(  demande: LocatedDemande | null | undefined,
   technician: LocatedTechnician | null | undefined,
 ): number | null {
   if (!demande || !technician) return null;
@@ -117,5 +123,45 @@ export function demandeTechnicianDistanceMeters(
   return haversineMeters(
     { latitude: demande.latitude, longitude: demande.longitude },
     { latitude: technician.lastLatitude, longitude: technician.lastLongitude },
+  );
+}
+
+/* GPS V3 — minutes entières écoulées depuis `at` (0 si futur ou invalide
+ * exclu : retourne `null` si l'horodatage est absent ou illisible). */
+export function minutesSince(
+  at: Date | string | null | undefined,
+  now: Date = new Date(),
+): number | null {
+  if (at === null || at === undefined) return null;
+  const time = at instanceof Date ? at.getTime() : Date.parse(at);
+  if (!Number.isFinite(time)) return null;
+  const diff = now.getTime() - time;
+  if (diff < 0) return null;
+  return Math.floor(diff / 60000);
+}
+
+/** Distance lieu d'intervention ↔ position de déplacement (mètres),
+ *  `null` si l'une des deux positions est absente ou invalide. Jamais
+ *  de valeur de remplacement (notamment jamais `0 km` forcé). */
+export function travelDistanceMeters(
+  demande: LocatedDemande | null | undefined,
+  travel: { travelLatitude: number | null; travelLongitude: number | null } | null | undefined,
+): number | null {
+  if (!demande || !travel) return null;
+  if (
+    demande.latitude === null ||
+    demande.latitude === undefined ||
+    demande.longitude === null ||
+    demande.longitude === undefined ||
+    travel.travelLatitude === null ||
+    travel.travelLatitude === undefined ||
+    travel.travelLongitude === null ||
+    travel.travelLongitude === undefined
+  ) {
+    return null;
+  }
+  return haversineMeters(
+    { latitude: demande.latitude, longitude: demande.longitude },
+    { latitude: travel.travelLatitude, longitude: travel.travelLongitude },
   );
 }

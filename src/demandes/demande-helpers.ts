@@ -20,6 +20,12 @@
 
 import { BadRequestException } from '@nestjs/common';
 import { ALLOWED_CATEGORIES } from './categories.js';
+import {
+  GPS_TRAVEL_FRESHNESS_MS,
+  haversineMeters,
+  isLocationFresh,
+  minutesSince,
+} from '../geo/geo-distance.js';
 
 export type DemandeCategory = (typeof ALLOWED_CATEGORIES)[number];
 
@@ -61,6 +67,12 @@ export interface DemandeRecord {
   // GPS V1 — nullable (demandes historiques sans GPS).
   latitude: number | null;
   longitude: number | null;
+  // GPS V3 — déplacement temporaire (tous NULLABLES, détail uniquement).
+  travelLatitude?: number | null;
+  travelLongitude?: number | null;
+  travelLocationUpdatedAt?: Date | null;
+  technicianEnRouteAt?: Date | null;
+  technicianArrivedAt?: Date | null;
   clientId: string;
   technicianId: string | null;
   scheduledAt: Date | null;
@@ -153,6 +165,120 @@ export function toApiDemandePublic(demande: DemandeRecord) {
     latitude: null,
     longitude: null,
   };
+}
+
+/* GPS V3 — vues de déplacement (jamais d'historique, jamais de tracking).
+ *
+ * Vue TECHNICIEN (mission assignée, propriétaire des données) : coordonnées
+ * de déplacement + fraîcheur + distance au lieu d'intervention (mètres,
+ * null si indisponible — jamais 0 forcé).
+ *
+ * Vue CLIENT (client de LA mission uniquement) : mêmes informations SANS
+ * les coordonnées brutes (jamais exposées) ; `fresh` + `minutesSinceUpdate`
+ * permettent l'affichage « il y a X min » / « momentanément indisponible ».
+ *
+ * Les deux vues partagent : `enRoute` (déplacement actif : démarré ET non
+ * arrivé), `arrived` (déplacement clos), horodatages ISO.
+ * La distance n'est calculée que sur position FRAÎCHE (fenêtre V3) :
+ * une position périmée ne produit jamais de distance « actuelle ». */
+
+export interface TravelTechnicianView {
+  enRoute: boolean;
+  arrived: boolean;
+  enRouteAt: string | null;
+  arrivedAt: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  locationUpdatedAt: string | null;
+  fresh: boolean;
+  minutesSinceUpdate: number | null;
+  distanceMeters: number | null;
+}
+
+export interface TravelClientView {
+  enRoute: boolean;
+  arrived: boolean;
+  enRouteAt: string | null;
+  arrivedAt: string | null;
+  locationUpdatedAt: string | null;
+  fresh: boolean;
+  minutesSinceUpdate: number | null;
+  distanceMeters: number | null;
+}
+
+interface TravelSource {
+  latitude: number | null;
+  longitude: number | null;
+  travelLatitude?: number | null;
+  travelLongitude?: number | null;
+  travelLocationUpdatedAt?: Date | string | null;
+  technicianEnRouteAt?: Date | string | null;
+  technicianArrivedAt?: Date | string | null;
+}
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  return value.toISOString();
+}
+
+function travelBase(demande: TravelSource, now: Date) {
+  const enRouteAt = demande.technicianEnRouteAt ?? null;
+  const arrivedAt = demande.technicianArrivedAt ?? null;
+  const locationUpdatedAt = demande.travelLocationUpdatedAt ?? null;
+  const arrived = arrivedAt !== null && arrivedAt !== undefined;
+  const enRoute =
+    enRouteAt !== null && enRouteAt !== undefined && !arrived;
+  const fresh =
+    enRoute &&
+    isLocationFresh(locationUpdatedAt, now, GPS_TRAVEL_FRESHNESS_MS);
+  const minutes = minutesSince(
+    locationUpdatedAt instanceof Date || typeof locationUpdatedAt === 'string'
+      ? locationUpdatedAt
+      : null,
+    now,
+  );
+  // Distance uniquement sur position fraîche (jamais de 0 forcé).
+  const distanceMeters = fresh
+    ? haversineMeters(
+        demande.latitude === null || demande.latitude === undefined ||
+          demande.longitude === null || demande.longitude === undefined
+          ? null
+          : { latitude: demande.latitude, longitude: demande.longitude },
+        demande.travelLatitude === null || demande.travelLatitude === undefined ||
+          demande.travelLongitude === null || demande.travelLongitude === undefined
+          ? null
+          : { latitude: demande.travelLatitude, longitude: demande.travelLongitude },
+      )
+    : null;
+  return {
+    enRoute,
+    arrived,
+    enRouteAt: toIso(enRouteAt),
+    arrivedAt: toIso(arrivedAt),
+    locationUpdatedAt: toIso(locationUpdatedAt),
+    fresh,
+    minutesSinceUpdate: minutes,
+    distanceMeters,
+  };
+}
+
+export function toApiTravelTechnician(
+  demande: TravelSource,
+  now: Date = new Date(),
+): TravelTechnicianView {
+  return {
+    ...travelBase(demande, now),
+    latitude: demande.travelLatitude ?? null,
+    longitude: demande.travelLongitude ?? null,
+  };
+}
+
+export function toApiTravelClient(
+  demande: TravelSource,
+  now: Date = new Date(),
+): TravelClientView {
+  return travelBase(demande, now);
 }
 
 export function hasCategory(category: string): category is DemandeCategory {
