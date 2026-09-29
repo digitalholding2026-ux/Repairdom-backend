@@ -157,6 +157,33 @@ export class CatalogController {
 
   /* ── CatalogDiagnostic ──────────────────────────────────────── */
 
+  /* IA-2 — barèmes par diagnostic (lecture seule, ADMIN) : liste paginée
+   * + détail agrégé (diagnostic → domaine → barème actif) pour l'admin et
+   * les futurs chantiers IA. Aucune écriture, aucun workflow modifié. */
+  @Get('diagnostics/scales')
+  listDiagnosticScales(
+    @Query('search') search?: string,
+    @Query('domainId') domainId?: string,
+    @Query('active') active?: string,
+    @Query('hasScale') hasScale?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.catalog.listDiagnosticScales({
+      search,
+      domainId,
+      active: active === undefined || active === '' ? undefined : active === 'true',
+      hasScale: hasScale === undefined || hasScale === '' ? undefined : hasScale === 'true',
+      page: page !== undefined ? Number(page) : undefined,
+      limit: limit !== undefined ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('diagnostics/:id/scale')
+  getDiagnosticScale(@Param('id') id: string) {
+    return this.catalog.getDiagnosticScale(id);
+  }
+
   @Get('problems/:problemId/diagnostics')
   listDiagnostics(@Param('problemId') problemId: string) {
     return this.catalog.listDiagnostics(problemId);

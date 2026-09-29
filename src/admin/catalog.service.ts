@@ -463,6 +463,175 @@ export class CatalogService {
     });
   }
 
+  /* IA-2 — vue « barème par diagnostic » (lecture seule, aucune table
+   * ajoutée : le barème reste porté par les Pricing d'interventions).
+   * Agrégation sur les interventions ACTIVES au pricing ACTIF :
+   *   min = min des minPrice, max = max des maxPrice,
+   *   reference = l'unique referencePrice distincte, sinon null (ambigu).
+   * `hasActiveScale` = diagnostic actif ET ≥1 pricing actif (seule cette
+   * combinaison est une référence pour les futurs services IA ; les
+   * inactifs restent consultables pour l'historique, jamais supprimés
+   * physiquement ici). */
+  private toDiagnosticScale(diagnostic: {
+    id: string;
+    name: string;
+    slug: string;
+    isActive: boolean;
+    updatedAt: Date;
+    problem: { id: string; name: string; slug: string; domain: { id: string; name: string; slug: string } };
+    interventions: Array<{
+      id: string;
+      name: string;
+      isActive: boolean;
+      pricing: {
+        minPrice: number | null;
+        referencePrice: number | null;
+        maxPrice: number | null;
+        currency: string;
+        isActive: boolean;
+        updatedAt: Date;
+      } | null;
+    }>;
+  }) {
+    const priced = diagnostic.interventions.filter(
+      (intervention) => intervention.isActive && intervention.pricing?.isActive,
+    );
+    const mins = priced.map((i) => i.pricing?.minPrice).filter((v): v is number => v !== null && v !== undefined);
+    const maxs = priced.map((i) => i.pricing?.maxPrice).filter((v): v is number => v !== null && v !== undefined);
+    const refs = [...new Set(priced.map((i) => i.pricing?.referencePrice).filter((v): v is number => v !== null && v !== undefined))];
+    const changes = priced
+      .map((i) => i.pricing?.updatedAt.getTime())
+      .filter((v): v is number => v !== undefined);
+    const lastPricingChange = changes.length > 0 ? new Date(Math.max(...changes)) : null;
+    return {
+      id: diagnostic.id,
+      name: diagnostic.name,
+      slug: diagnostic.slug,
+      isActive: diagnostic.isActive,
+      updatedAt: diagnostic.updatedAt,
+      problem: { id: diagnostic.problem.id, name: diagnostic.problem.name, slug: diagnostic.problem.slug },
+      domain: {
+        id: diagnostic.problem.domain.id,
+        name: diagnostic.problem.domain.name,
+        slug: diagnostic.problem.domain.slug,
+      },
+      scale: {
+        min: mins.length > 0 ? Math.min(...mins) : null,
+        reference: refs.length === 1 ? refs[0] : null,
+        max: maxs.length > 0 ? Math.max(...maxs) : null,
+        currency: 'XAF',
+        pricedInterventions: priced.length,
+        totalInterventions: diagnostic.interventions.length,
+      },
+      hasActiveScale: diagnostic.isActive && priced.length > 0,
+      lastChangeAt: lastPricingChange ?? diagnostic.updatedAt,
+      interventions: diagnostic.interventions.map((intervention) => ({
+        id: intervention.id,
+        name: intervention.name,
+        isActive: intervention.isActive,
+        pricing: intervention.pricing
+          ? {
+              minPrice: intervention.pricing.minPrice,
+              referencePrice: intervention.pricing.referencePrice,
+              maxPrice: intervention.pricing.maxPrice,
+              currency: intervention.pricing.currency,
+              isActive: intervention.pricing.isActive,
+              updatedAt: intervention.pricing.updatedAt,
+            }
+          : null,
+      })),
+    };
+  }
+
+  /** Barème d'un diagnostic (futurs IA-5/6/7 : diagnostic → domaine → barème). */
+  async getDiagnosticScale(id: string) {
+    const diagnostic = await this.prisma.catalogDiagnostic.findUnique({
+      where: { id },
+      include: {
+        problem: { include: { domain: true } },
+        interventions: {
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          include: { pricing: true },
+        },
+      },
+    });
+    if (!diagnostic) throw new NotFoundException('Diagnostic introuvable.');
+    return this.toDiagnosticScale(diagnostic);
+  }
+
+  /* IA-2 — liste paginée des barèmes (plusieurs centaines de diagnostics) :
+   * recherche insensible à la casse (diagnostic/intervention), filtre
+   * domaine, filtre statut (actif/inactif/avec barème/sans barème).
+   * Pagination serveur (défaut 20, max 100). Tri : domaine, problème,
+   * diagnostic (sortOrder puis nom). */
+  async listDiagnosticScales(query: {
+    search?: string;
+    domainId?: string;
+    active?: boolean;
+    hasScale?: boolean;
+    page?: number;
+    limit?: number;
+  }) {
+    const search = query.search?.trim() || null;
+    const page = Math.max(1, Math.floor(query.page ?? 1));
+    const limit = Math.min(Math.max(1, Math.floor(query.limit ?? 20)), 100);
+    const where: Record<string, unknown> = {
+      ...(query.domainId ? { problem: { domainId: query.domainId } } : {}),
+      ...(query.active !== undefined ? { isActive: query.active } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' } },
+              { slug: { contains: search, mode: 'insensitive' } },
+              { interventions: { some: { name: { contains: search, mode: 'insensitive' } } } },
+            ],
+          }
+        : {}),
+    };
+    const useDbPagination = query.hasScale === undefined;
+    const [total, rows] = await Promise.all([
+      useDbPagination
+        ? this.prisma.catalogDiagnostic.count({ where: where as never })
+        : Promise.resolve(0),
+      this.prisma.catalogDiagnostic.findMany({
+        where: where as never,
+        orderBy: [
+          { problem: { domain: { sortOrder: 'asc' } } },
+          { problem: { domain: { name: 'asc' } } },
+          { problem: { sortOrder: 'asc' } },
+          { problem: { name: 'asc' } },
+          { sortOrder: 'asc' },
+          { name: 'asc' },
+        ],
+        // Le filtre `hasScale` porte sur l'agrégation calculée (barème
+        // actif) : chargement complet puis pagination en mémoire (volume
+        // catalogue : centaines de lignes, sans sur-indexation). Sinon,
+        // pagination serveur classique.
+        ...(useDbPagination ? { skip: (page - 1) * limit, take: limit } : {}),
+        include: {
+          problem: { include: { domain: true } },
+          interventions: {
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+            include: { pricing: true },
+          },
+        },
+      }),
+    ]);
+    const computed = rows.map((row) => this.toDiagnosticScale(row as never));
+    const items = useDbPagination
+      ? computed
+      : computed.filter((item) => item.hasActiveScale === query.hasScale);
+    const grandTotal = useDbPagination ? total : items.length;
+    const pageItems = useDbPagination ? items : items.slice((page - 1) * limit, page * limit);
+    return {
+      items: pageItems,
+      total: grandTotal,
+      page,
+      limit,
+      pages: Math.max(1, Math.ceil(grandTotal / limit)),
+    };
+  }
+
   async getDiagnostic(id: string) {
     const diagnostic = await this.prisma.catalogDiagnostic.findUnique({
       where: { id },
