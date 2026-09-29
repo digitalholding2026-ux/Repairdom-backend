@@ -53,7 +53,12 @@ function service(options: {
       },
     } as never);
   const gateway = options.gateway ?? ({ completeJson: vi.fn(async () => ({ result: {}, model: 'm', durationMs: 1 })) } as never);
-  return new AiDiagnosisMatchService(prisma as never, gateway as never, new AiConfig(configService as never));
+  return new AiDiagnosisMatchService(
+    prisma as never,
+    gateway as never,
+    new AiConfig(configService as never),
+    { evaluatePendingQuotesForMatch: vi.fn(async () => undefined) } as never,
+  );
 }
 
 function gatewayOk(result: unknown) {

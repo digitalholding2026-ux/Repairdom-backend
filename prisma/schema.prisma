@@ -649,6 +649,40 @@ model DiagnosticCatalogMatch {
   @@index([catalogDiagnosticId])
 }
 
+// IA-6 — contrôle tarifaire déterministe d'un devis (surveillance, jamais
+// de blocage). Snapshot IMMUABLE du barème applicable au moment du devis
+// (min/référence/max + pricings sources) : une modification ultérieure du
+// catalogue ne réécrit jamais cette ligne (création unique par devis).
+// Le devis et son montant restent intacts ; seul ce signal est ajouté.
+model QuotePricingCheck {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
+  quoteId             String   @unique
+  demandeId           String
+  diagnosticId        String?
+  catalogDiagnosticId String?
+  proposedPrice       Int
+  minAtCheck          Int?
+  referenceAtCheck    Int?
+  maxAtCheck          Int?
+  // NORMAL | ABOVE_MAX | BELOW_MIN | UNCERTAIN | NO_BAREME.
+  result              String
+  // IDs des Pricing ayant composé le barème (traçabilité version exacte).
+  pricingIds          String[] @default([])
+  // Écart absolu XAF (entier) et relatif en points de base (entier, null
+  // sans référence > 0). Toujours null pour NORMAL/UNCERTAIN/NO_BAREME.
+  deviationAmount     Int?
+  deviationBps        Int?
+  // Motif technique borné (OK, NO_MATCH, NO_PRICING, INACTIVE_SCALE,
+  // PARTIAL_BOUNDS, UNKNOWN_QUOTE) — jamais de contenu client.
+  reason              String?
+  createdAt           DateTime @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([demandeId])
+  @@index([result])
+}
+
 model Quote {
   id           String      @id @default(dbgenerated("gen_random_uuid()"))
   demandeId    String
@@ -686,6 +720,8 @@ model Quote {
   diagnostic Diagnostic?       @relation(fields: [diagnosticId], references: [id], onDelete: SetNull)
   catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
+  // IA-6 — contrôle tarifaire immuable (un par devis, jamais réécrit).
+  pricingCheck QuotePricingCheck?
 
   @@index([demandeId])
   @@index([diagnosticId])

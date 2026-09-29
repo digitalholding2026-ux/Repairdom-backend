@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AiGatewayService } from './ai-gateway.service.js';
 import { AiConfig } from './ai.config.js';
+import { AiPricingCheckService } from './ai-pricing-check.service.js';
 
 /* IA-5 — correspondance entre un diagnostic libre technicien et un
  * CatalogDiagnostic existant (ANALYTIQUE uniquement).
@@ -57,6 +58,7 @@ export class AiDiagnosisMatchService {
     private readonly prisma: PrismaService,
     private readonly gateway: AiGatewayService,
     private readonly aiConfig: AiConfig,
+    private readonly pricingCheck: AiPricingCheckService,
   ) {}
 
   /** Mappe un diagnostic libre vers le catalogue (idempotent, non bloquant
@@ -237,6 +239,11 @@ export class AiDiagnosisMatchService {
       },
       update: {},
     });
+    // IA-6 — mapping arrivé APRÈS le devis : contrôle les devis MANUAL
+    // PENDING encore sans contrôle (fire-and-forget, jamais bloquant).
+    if (usable) {
+      void this.pricingCheck.evaluatePendingQuotesForMatch(diagnosticId).catch(() => undefined);
+    }
     return this.toOutcome(diagnosticId, row);
   }
 

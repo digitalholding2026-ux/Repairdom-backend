@@ -8,7 +8,7 @@ import { DemandeMediaService } from '../demandes/demande-media.service.js';
 
 function collaboration(prisma: unknown) {
   const diagnosisMatch = { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) };
-  return new CollaborationService(prisma as never, {} as never, diagnosisMatch as never);
+  return new CollaborationService(prisma as never, {} as never, diagnosisMatch as never, { evaluateManualQuote: vi.fn(async () => null) } as never);
 }
 
 function demandeRow(overrides: Record<string, unknown> = {}) {

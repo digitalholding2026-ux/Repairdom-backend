@@ -17,6 +17,7 @@ import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic
 import { FinancialService } from '../financial/financial.service.js';
 import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
 import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
+import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
 /* Phase A (frontend) — le technicien assigné voit le barème (fourchette
  * min/ref/max + frais, SANS historique ni données internes) dès le choix du
  * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
@@ -63,10 +64,13 @@ interface AccessibleDemande {
 
 @Injectable()
 export class CollaborationService {
+  private readonly logger = new Logger(CollaborationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
     private readonly diagnosisMatch: AiDiagnosisMatchService,
+    private readonly pricingCheck: AiPricingCheckService,
   ) {}
 
   /* IA-5 — déclenche le mapping catalogue d'un diagnostic libre, SANS
@@ -487,6 +491,18 @@ export class CollaborationService {
 
       return quote;
     });
+
+    // IA-6 — contrôle tarifaire du devis MANUAL (signal, jamais bloquant) :
+    // best-effort après commit, erreurs silencieuses tracées côté service.
+    try {
+      await this.pricingCheck.evaluateManualQuote(quote.id);
+    } catch (error) {
+      this.logger.warn(
+        `Contrôle tarifaire impossible pour ${quote.id} : ${
+          error instanceof Error ? error.message : 'erreur inconnue'
+        }.`,
+      );
+    }
 
     return this.toApiQuote(quote, user.role);
   }

@@ -285,7 +285,7 @@ function mockWorld(seed: { demandes?: Row[]; quotes?: Row[]; ledger?: Row[] } = 
   };
   const config = { get: vi.fn(() => MODE) } as unknown as ConfigService;
   const financial = new FinancialService(prisma as unknown as PrismaService, config);
-  const collaboration = new CollaborationService(prisma as unknown as PrismaService, financial, { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) } as never);
+  const collaboration = new CollaborationService(prisma as unknown as PrismaService, financial, { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) } as never, { evaluateManualQuote: vi.fn(async () => null) } as never);
   const demandesService = new DemandesService(
     prisma as unknown as PrismaService,
     financial,
