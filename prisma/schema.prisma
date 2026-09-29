@@ -305,7 +305,11 @@ model Demande {
   reference   String        @unique
   status      DemandeStatus @default(SUBMITTED)
   category    String
-  description String
+  // Dépôt multimédia — description textuelle OPTIONNELLE depuis le dépôt
+  // multimédia (vocal/vidéo/photos). Nullable : les demandes historiques
+  // gardent leur texte ; les nouvelles demandes multimédia ont NULL (le
+  // technicien lit les pièces jointes). Colonne conservée (compatibilité).
+  description String?
   // Sprint 8.7 — `city` reste le snapshot texte historique de la mission
   // (JAMAIS supprimé ni rendu optionnel) ; `cityId` est une référence
   // optionnelle vers ServiceCity. Un ON DELETE SET NULL garantit qu'une ville
@@ -519,6 +523,12 @@ model DemandeMedia {
   sizeBytes Int
   stored    Boolean   @default(false)
   url       String?
+  // Dépôt multimédia — chemin d'objet dans le bucket privé
+  // `relio-demande-medias` (`demandes/{userId}/{uuid}-...`). Renseigné dès
+  // l'upload (avant création de la Demande) puis lié en transaction à la
+  // création : le technicien assigné y accède immédiatement via des URLs
+  // signées éphémères (jamais d'URL publique persistée).
+  storagePath String?
   demande   Demande   @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   demandeId String
   createdAt DateTime  @default(now())

@@ -70,6 +70,14 @@ export class DemandesService {
 
   async create(clientId: string, dto: CreateDemandeDto) {
     const medias = dto.medias ?? [];
+    const description = dto.description?.trim() ? dto.description.trim() : null;
+    // Dépôt multimédia : sans texte, au moins un média valide est exigé
+    // (le technicien doit toujours pouvoir comprendre la panne).
+    if (!description && medias.length === 0) {
+      throw new BadRequestException(
+        'Ajoutez un message vocal, une vidéo ou au moins une photo pour décrire votre problème.',
+      );
+    }
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
@@ -85,7 +93,7 @@ export class DemandesService {
             data: {
               reference,
               category: device.category,
-              description: dto.description,
+              description,
               city: dto.city,
               cityId: geo.cityId,
               zoneId: geo.zoneId,
@@ -111,6 +119,11 @@ export class DemandesService {
                         fileName: media.name,
                         mimeType: media.mimeType,
                         sizeBytes: media.sizeBytes,
+                        // Chemin lié en transaction : à la création, les
+                        // octets sont déjà stockés (accès technicien immédiat,
+                        // jamais de demande vide).
+                        storagePath: media.storagePath ?? null,
+                        stored: !!media.storagePath,
                       })),
                     }
                   : undefined,
@@ -448,7 +461,7 @@ export class DemandesService {
     reference: string;
     status: string;
     category: string;
-    description: string;
+    description: string | null;
     city: string;
     cityId: string | null;
     zoneId: string | null;

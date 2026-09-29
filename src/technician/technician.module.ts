@@ -5,11 +5,12 @@ import { TechnicianController } from './technician.controller.js';
 import { TechniciansPublicController } from './technicians-public.controller.js';
 import { TechnicianService } from './technician.service.js';
 import { SupabaseStorageService } from './supabase-storage.service.js';
+import { DemandeMediaService } from '../demandes/demande-media.service.js';
 
 @Module({
   imports: [AuthModule, ReviewsModule],
   controllers: [TechnicianController, TechniciansPublicController],
-  providers: [TechnicianService, SupabaseStorageService],
-  exports: [SupabaseStorageService],
+  providers: [TechnicianService, SupabaseStorageService, DemandeMediaService],
+  exports: [SupabaseStorageService, DemandeMediaService],
 })
 export class TechnicianModule {}

@@ -41,6 +41,16 @@ export class RequestMediaDto {
   @Min(1)
   @Max(MAX_MEDIA_SIZE_BYTES)
   sizeBytes: number;
+
+  /* Dépôt multimédia — chemin d'objet retourné par
+   * `POST /demandes/medias/upload` (upload réel AVANT création).
+   * Optionnel pour compatibilité (métadonnées historiques) ; les nouveaux
+   * médias uploadés le renseignent toujours (accès immédiat garanti). */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  storagePath?: string;
 }
 
 export class CreateDemandeDto {
@@ -73,10 +83,15 @@ export class CreateDemandeDto {
   @MaxLength(80)
   problemId?: string;
 
+  /* Dépôt multimédia — description textuelle OPTIONNELLE : le client
+   * décrit sa panne par vocal/vidéo/photos (au moins un média exigé sans
+   * texte, voir `DemandesService.create`). Les textes historiques restent
+   * valides (colonne conservée). */
+  @IsOptional()
   @IsString()
   @MinLength(10)
   @MaxLength(1000)
-  description: string;
+  description?: string;
 
   @IsString()
   @IsNotEmpty()

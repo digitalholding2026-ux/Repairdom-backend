@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TechnicianService } from './technician.service.js';
+import { DemandeMediaService } from '../demandes/demande-media.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
@@ -37,7 +38,10 @@ import {
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('TECHNICIAN')
 export class TechnicianController {
-  constructor(private readonly technicianService: TechnicianService) {}
+  constructor(
+    private readonly technicianService: TechnicianService,
+    private readonly mediaService: DemandeMediaService,
+  ) {}
 
   @Get('profile')
   getProfile(@CurrentUser() user: RequestUser) {
@@ -183,5 +187,19 @@ export class TechnicianController {
   @HttpCode(HttpStatus.OK)
   markArrived(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: TravelArrivedDto) {
     return this.technicianService.markArrived(user.id, id, dto.latitude, dto.longitude, dto.accuracy);
+  }
+
+  /* Dépôt multimédia — lecture d'une pièce jointe (URL signée éphémère,
+   * technicien ASSIGNÉ uniquement, 404 sinon). Immédiat dès la création
+   * (liaison en transaction), lazy côté UI. */
+  @Get('demandes/:id/medias/:mediaId/file')
+  mediaFileUrl(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Param('mediaId') mediaId: string,
+  ) {
+    return this.mediaService
+      .getMediaFileUrl({ userId: user.id, role: user.role }, id, mediaId)
+      .then((url) => ({ url }));
   }
 }

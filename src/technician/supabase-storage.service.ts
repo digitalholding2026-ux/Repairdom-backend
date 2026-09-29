@@ -8,6 +8,17 @@ export const AVATAR_BUCKET = 'repairdom-profile-images';
  * les documents restent uniquement accessibles côté backend (service role). */
 export const KYC_BUCKET = 'repairdom-kyc-documents';
 
+/** Bucket PRIVÉ dédié aux pièces jointes des demandes (dépôt multimédia :
+ * photos, vidéos, vocaux). Jamais d'URL publique : consultation via URLs
+ * signées éphémères générées à la lecture (client propriétaire ou
+ * technicien assigné uniquement, voir `DemandeMediaService`). */
+export const DEMANDE_BUCKET = 'relio-demande-medias';
+
+/** Durée de validité des URLs signées de consultation des médias (15 min) :
+ * assez longue pour lire un vocal/une vidéo, assez courte pour ne jamais
+ * devenir un lien de partage permanent. */
+export const DEMANDE_SIGNED_URL_TTL_SECONDS = 15 * 60;
+
 /* Délais d’attente explicites : sans eux, un hang réseau (DNS qui ne répond
  * pas, connexion gelée) pend indéfiniment jusqu’au timeout Railway. Avec eux,
  * l’échec devient un timeout identifiable dans les logs. */
@@ -22,15 +33,69 @@ export class SupabaseStorageService {
   private readonly serviceRoleKey: string;
 
   constructor(config: ConfigService) {
-    // Normalisation défensive : un slash final dans SUPABASE_URL doublait le
-    // séparateur (`//storage/v1/...`, toléré mais fragile). Format attendu :
+    // Normalisation défensive : espaces accidentels (copier-coller Railway)
+    // puis slash final — un slash final doublait le séparateur
+    // (`//storage/v1/...`, toléré mais fragile). Format attendu :
     // `https://<ref>.supabase.co` sans slash final ni chemin.
-    this.baseUrl = (config.get<string>('SUPABASE_URL') ?? '').replace(/\/+$/, '');
-    this.serviceRoleKey = config.get<string>('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    this.baseUrl = (config.get<string>('SUPABASE_URL') ?? '').trim().replace(/\/+$/, '');
+    this.serviceRoleKey = (config.get<string>('SUPABASE_SERVICE_ROLE_KEY') ?? '').trim();
   }
 
   get isConfigured(): boolean {
     return this.baseUrl.length > 0 && this.serviceRoleKey.length > 0;
+  }
+
+  /** Hostname seul (jamais de secret) pour les logs et le diagnostic Railway. */
+  getStorageHost(): string {
+    return this.storageHost();
+  }
+
+  /** URL de base valide (https, hostname présent) — détecte une var Railway mal formée. */
+  isBaseUrlValid(): boolean {
+    try {
+      const parsed = new URL(this.baseUrl);
+      return parsed.protocol === 'https:' && parsed.hostname.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Diagnostic non destructif : DNS → HTTPS → API Storage, sans upload ni
+   * suppression ni exposition de secret. Usage manuel / script Railway
+   * uniquement — ne pas exposer tel quel sur un endpoint public.
+   * Retourne une catégorie exploitable : DNS / TCP / TLS / TIMEOUT / HTTP / OK.
+   */
+  async checkStorageConnectivity(): Promise<{
+    ok: boolean;
+    category: string;
+    hostname: string;
+    httpStatus?: number;
+  }> {
+    const hostname = this.storageHost();
+    if (!this.isConfigured || !this.isBaseUrlValid()) {
+      return { ok: false, category: 'CONFIG', hostname };
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/storage/v1/bucket/${AVATAR_BUCKET}`, {
+        method: 'GET',
+        headers: this.storageHeaders(),
+        signal: AbortSignal.timeout(SIGN_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const category = this.classifyNetworkError(error);
+      this.logger.error(
+        `Diagnostic stockage (réseau) — hôte ${hostname}, catégorie ${category} : ${this.describeNetworkError(error)}.`,
+      );
+      return { ok: false, category, hostname };
+    }
+    // 200 = joignable ; 401/403 = joignable mais clé rejetée ; 404 = API
+    // joignable mais bucket absent — dans tous ces cas le DNS/HTTPS fonctionne.
+    if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
+      return { ok: response.ok, category: response.ok ? 'OK' : 'HTTP', hostname, httpStatus: response.status };
+    }
+    return { ok: false, category: 'HTTP', hostname, httpStatus: response.status };
   }
 
   /* En-têtes exigés par la passerelle REST Supabase hébergée : `apikey` pour
@@ -60,6 +125,20 @@ export class SupabaseStorageService {
 
   async deleteKycObject(path: string): Promise<void> {
     await this.deleteFromBucket(KYC_BUCKET, path);
+  }
+
+  async uploadDemandeObject(path: string, data: Buffer, contentType: string): Promise<void> {
+    await this.uploadToBucket(DEMANDE_BUCKET, path, data, contentType);
+  }
+
+  async deleteDemandeObject(path: string): Promise<void> {
+    await this.deleteFromBucket(DEMANDE_BUCKET, path);
+  }
+
+  /** URL signée éphémère de lecture d'une pièce jointe de demande
+   * (bucket privé, jamais d'URL publique persistée). */
+  async createDemandeSignedUrl(path: string): Promise<string> {
+    return this.createSignedUrl(DEMANDE_BUCKET, path, DEMANDE_SIGNED_URL_TTL_SECONDS);
   }
 
   publicUrl(path: string): string {
@@ -136,6 +215,36 @@ export class SupabaseStorageService {
    * `ENOTFOUND`, connexion refusée `ECONNREFUSED`, timeout, TLS…) est nichée
    * dans `cause`, parfois sur plusieurs niveaux. Seuls type/message/code
    * sont conservés (jamais d’en-tête, de clé, de JWT ni de contenu). */
+  /* Catégorie d’une erreur réseau à partir des codes nichés dans `cause`
+   * (undici) : DNS (ENOTFOUND, EAI_AGAIN), TCP/réseau (ECONNREFUSED,
+   * ECONNRESET, ENETUNREACH…), TLS (codes CERT_, ERR_TLS…), TIMEOUT
+   * (AbortError / TimeoutError), sinon NETWORK. Sert à distinguer
+   * « hostname incorrect » (DNS) d’une panne HTTP/Supabase — sans secret. */
+  private classifyNetworkError(error: unknown): string {
+    const codes: string[] = [];
+    let current: unknown = error;
+    for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+      const code = (current as { code?: unknown }).code;
+      if (typeof code === 'string') codes.push(code);
+      if (current.name === 'AbortError' || current.name === 'TimeoutError') codes.push('TIMEOUT');
+      const message = current.message ?? '';
+      if (/certificate|TLS|SSL/i.test(message)) codes.push('TLS');
+      const next = (current as { cause?: unknown }).cause;
+      if (!next || next === current) break;
+      current = next;
+    }
+    if (codes.includes('ENOTFOUND') || codes.includes('EAI_AGAIN')) return 'DNS';
+    if (codes.includes('TIMEOUT')) return 'TIMEOUT';
+    if (codes.some((c) => /CERT|TLS|SSL/.test(c)) || codes.includes('TLS')) return 'TLS';
+    if (
+      codes.some((c) =>
+        ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN'].includes(c),
+      )
+    )
+      return 'TCP';
+    return 'NETWORK';
+  }
+
   private describeNetworkError(error: unknown): string {
     const parts: string[] = [];
     let current: unknown = error;
@@ -180,9 +289,9 @@ export class SupabaseStorageService {
     } catch (error) {
       // Échec avant toute réponse HTTP (DNS, connexion refusée, TLS,
       // timeout, URL mal formée) : journaliser la cause imbriquée réelle,
-      // le hostname visé et la taille — jamais de secret ni de contenu.
+      // la catégorie, le hostname visé et la taille — jamais de secret.
       this.logger.error(
-        `Upload stockage impossible (réseau) vers le bucket « ${bucket} » ` +
+        `Upload stockage impossible (réseau, catégorie ${this.classifyNetworkError(error)}) vers le bucket « ${bucket} » ` +
           `(hôte ${this.storageHost()}, ${data.length} octets, ${contentType}) : ${this.describeNetworkError(error)}.`,
       );
       throw new BadGatewayException('Impossible d’enregistrer le fichier. Réessayez dans un instant.');
@@ -210,7 +319,7 @@ export class SupabaseStorageService {
       });
     } catch (error) {
       this.logger.error(
-        `Suppression stockage impossible (réseau) pour le bucket « ${bucket} » ` +
+        `Suppression stockage impossible (réseau, catégorie ${this.classifyNetworkError(error)}) pour le bucket « ${bucket} » ` +
           `(hôte ${this.storageHost()}) : ${this.describeNetworkError(error)}.`,
       );
       throw new BadGatewayException('Impossible de supprimer le fichier.');
@@ -226,6 +335,15 @@ export class SupabaseStorageService {
 
   private assertConfigured(): void {
     if (!this.isConfigured) {
+      throw new ServiceUnavailableException('Le stockage n’est pas configuré pour le moment.');
+    }
+    // URL mal formée (vide après trim, espace restant, protocole non-https,
+    // hostname absent) : 503 explicite côté logs (hostname seul), message
+    // générique côté client — au lieu d’un 502 DNS trompeur.
+    if (!this.isBaseUrlValid()) {
+      this.logger.error(
+        `Configuration stockage invalide (hôte ${this.storageHost()}) : SUPABASE_URL doit être une URL https://<ref>.supabase.co.`,
+      );
       throw new ServiceUnavailableException('Le stockage n’est pas configuré pour le moment.');
     }
   }

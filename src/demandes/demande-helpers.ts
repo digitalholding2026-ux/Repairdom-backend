@@ -44,6 +44,9 @@ export interface DemandeMediaRow {
   mimeType: string;
   sizeBytes: number;
   stored: boolean;
+  /* Chemin d'objet privé (interne uniquement, jamais exposé tel quel :
+   * lecture via URLs signées éphémères). */
+  storagePath: string | null;
 }
 
 export interface DemandeRecord {
@@ -51,7 +54,9 @@ export interface DemandeRecord {
   reference: string;
   status: string;
   category: string;
-  description: string;
+  // Dépôt multimédia : NULL pour les demandes sans texte (le technicien
+  // lit alors les pièces jointes). Textes historiques conservés.
+  description: string | null;
   city: string;
   // Sprint 8.8.2 — références structurées (null en transition/historique).
   // `zoneRef` reprend le nom exact de la relation Prisma (`Demande.zoneRef`) ;
@@ -144,6 +149,8 @@ export function toApiDemande(demande: DemandeRecord) {
       mimeType: media.mimeType,
       sizeBytes: media.sizeBytes,
       stored: media.stored,
+      // `storagePath` (privé) n'est jamais exposé : lecture via
+      // `GET /:id/medias/:mediaId/file` (URL signée éphémère).
     })),
     mediaPersisted: false,
     storageStatus: 'metadata-only',
@@ -153,7 +160,8 @@ export function toApiDemande(demande: DemandeRecord) {
 
 // Sérialisation publique (opportunités) : aucun détail privé (adresse,
 // contact téléphonique, GPS) n'est exposé tant que le technicien n'est pas
-// assigné.
+// assigné. Dépôt multimédia : les pièces jointes sont également masquées
+// (ni métadonnées ni accès) pour les non-assignés.
 export function toApiDemandePublic(demande: DemandeRecord) {
   const api = toApiDemande(demande);
   return {
@@ -164,6 +172,7 @@ export function toApiDemandePublic(demande: DemandeRecord) {
     contactPhone: null,
     latitude: null,
     longitude: null,
+    medias: [],
   };
 }
 
