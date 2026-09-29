@@ -256,6 +256,7 @@ export class AdminService {
             proposedIntervention: true,
             justification: true,
             notes: true,
+            audioStoragePath: true,
             createdAt: true,
             technician: { select: { id: true, firstName: true, lastName: true } },
             catalogDiagnostic: { select: { id: true, name: true } },
@@ -364,6 +365,8 @@ export class AdminService {
         proposedIntervention: diagnostic.proposedIntervention ?? null,
         justification: diagnostic.justification ?? null,
         notes: diagnostic.notes ?? null,
+        // IA-3 — présence d'une note vocale (chemin privé jamais exposé).
+        hasAudio: !!diagnostic.audioStoragePath,
         createdAt: diagnostic.createdAt.toISOString(),
         technician: diagnostic.technician
           ? {

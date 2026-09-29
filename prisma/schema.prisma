@@ -568,6 +568,12 @@ model Diagnostic {
   // par le technicien + intervention correspondante. NULL = anomalie libre.
   catalogDiagnosticId   String?
   catalogInterventionId String?
+  // IA-3 — note vocale facultative du diagnostic libre : chemin d'objet
+  // dans le bucket privé `relio-demande-medias` (`diagnostics/{userId}/…`),
+  // uploadé AVANT création puis lié en transaction. Lecture via URLs
+  // signées éphémères (jamais d'URL publique). NULL = sans audio.
+  // Immuable avec le diagnostic (source conservée pour IA-5).
+  audioStoragePath String?
   createdAt      DateTime @default(now())
 
   demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)

@@ -148,6 +148,7 @@ export class CollaborationService {
     proposedIntervention: string | null;
     justification: string | null;
     notes: string | null;
+    audioStoragePath?: string | null;
     technicianId: string;
     createdAt: Date;
     technician: { id: string; firstName: string; lastName: string | null };
@@ -160,6 +161,9 @@ export class CollaborationService {
       proposedIntervention: diagnostic.proposedIntervention,
       justification: diagnostic.justification,
       notes: diagnostic.notes,
+      /* IA-3 — présence d'une note vocale (chemin privé jamais exposé :
+       * lecture via URL signée éphémère). */
+      hasAudio: !!diagnostic.audioStoragePath,
       technicianId: diagnostic.technicianId,
       technician: diagnostic.technician,
       createdAt: diagnostic.createdAt.toISOString(),
@@ -321,10 +325,21 @@ export class CollaborationService {
         content,
         recommendation: dto.recommendation?.trim() || null,
         mode: 'MANUAL',
+        audioStoragePath: this.assertOwnAudioPath(user.id, dto.audioStoragePath),
       },
       include: { technician: { select: { id: true, firstName: true, lastName: true } } },
     });
     return this.toApiDiagnostic(diagnostic);
+  }
+
+  /* IA-3 — un chemin audio ne peut lier qu'un upload du technicien auteur
+   * (`diagnostics/{userId}/…`), jamais le fichier d'un tiers. */
+  private assertOwnAudioPath(userId: string, audioStoragePath: string | undefined): string | null {
+    if (audioStoragePath === undefined || audioStoragePath === null) return null;
+    if (typeof audioStoragePath !== 'string' || !audioStoragePath.startsWith(`diagnostics/${userId}/`)) {
+      throw new BadRequestException('Note vocale invalide.');
+    }
+    return audioStoragePath;
   }
 
   async listQuotes(user: RequestUser, demandeId: string) {
@@ -843,6 +858,7 @@ export class CollaborationService {
           notes: dto.notes?.trim() || null,
           catalogDiagnosticId: null,
           catalogInterventionId: null,
+          audioStoragePath: this.assertOwnAudioPath(user.id, dto.audioStoragePath),
         },
         include: { technician: { select: { id: true, firstName: true, lastName: true } } },
       });

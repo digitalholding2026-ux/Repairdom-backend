@@ -111,6 +111,60 @@ export class DemandeMediaService {
     await this.storage.deleteDemandeObject(storagePath);
   }
 
+  /* IA-3 — note vocale du diagnostic libre : même bucket privé, mêmes
+   * garanties (upload AVANT création, URLs signées, aucun accès tiers).
+   * Préfixe `diagnostics/{userId}/…` (jamais de stockage parallèle). */
+
+  /** Upload d'une note vocale AVANT création du diagnostic (aucune ligne). */
+  async uploadDiagnosticAudio(
+    userId: string,
+    file: { buffer: Buffer; mimetype: string; originalname: string; size: number } | undefined,
+  ): Promise<UploadedDemandeMedia> {
+    if (!file || file.size < 1) {
+      throw new BadRequestException('Aucun fichier reçu.');
+    }
+    if (file.size > DEMANDE_MEDIA_MAX_BYTES) {
+      throw new BadRequestException('Fichier trop volumineux (25 Mo maximum).');
+    }
+    if (!kindForMimeType(file.mimetype) || kindForMimeType(file.mimetype) !== 'AUDIO') {
+      throw new BadRequestException(
+        `Format audio non supporté (${file.mimetype || 'inconnu'}). Formats acceptés : WEBM, MP4, MP3, OGG, WAV.`,
+      );
+    }
+    const name = sanitizeFileName(file.originalname).replace(/\.[a-zA-Z0-9]{1,5}$/, '') || 'note-vocale';
+    const ext = file.mimetype.includes('mp4') || file.mimetype.includes('m4a') ? 'm4a' : 'webm';
+    const storagePath = `diagnostics/${userId}/${randomUUID()}-${name}.${ext}`;
+    await this.storage.uploadDemandeObject(storagePath, file.buffer, file.mimetype);
+    return { storagePath, kind: 'AUDIO', name: `${name}.${ext}`, mimeType: file.mimetype, sizeBytes: file.size };
+  }
+
+  /** Suppression best-effort d'une note vocale abandonnée. */
+  async deleteDiagnosticAudio(userId: string, storagePath: string): Promise<void> {
+    if (typeof storagePath !== 'string' || !storagePath.startsWith(`diagnostics/${userId}/`)) {
+      throw new BadRequestException('Chemin de fichier invalide.');
+    }
+    await this.storage.deleteDemandeObject(storagePath);
+  }
+
+  /** URL signée éphémère d'écoute (technicien assigné ou client
+   *  propriétaire, 404 sinon — sans révéler l'existence). */
+  async getDiagnosticAudioUrl(actor: { userId: string; role: string }, demandeId: string, diagnosticId: string): Promise<string> {
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      select: { id: true, clientId: true, technicianId: true },
+    });
+    if (!demande) throw new NotFoundException('Fichier introuvable.');
+    const allowed =
+      (actor.role === 'CLIENT' && demande.clientId === actor.userId) ||
+      (actor.role === 'TECHNICIAN' && demande.technicianId === actor.userId);
+    if (!allowed) throw new NotFoundException('Fichier introuvable.');
+    const diagnostic = await this.prisma.diagnostic.findFirst({
+      where: { id: diagnosticId, demandeId: demande.id },
+    });
+    if (!diagnostic || !diagnostic.audioStoragePath) throw new NotFoundException('Fichier introuvable.');
+    return this.storage.createDemandeSignedUrl(diagnostic.audioStoragePath);
+  }
+
   /** URL signée éphémère de lecture (client propriétaire ou technicien
    *  assigné uniquement, 404 sinon — sans révéler l'existence). */
   async getMediaFileUrl(actor: { userId: string; role: string }, demandeId: string, mediaId: string): Promise<string> {

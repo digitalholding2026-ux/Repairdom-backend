@@ -1,5 +1,7 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CollaborationService } from './collaboration.service.js';
+import { DemandeMediaService, DEMANDE_MEDIA_MAX_BYTES } from '../demandes/demande-media.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
@@ -14,7 +16,10 @@ import { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('CLIENT', 'TECHNICIAN')
 export class CollaborationController {
-  constructor(private readonly collaborationService: CollaborationService) {}
+  constructor(
+    private readonly collaborationService: CollaborationService,
+    private readonly mediaService: DemandeMediaService,
+  ) {}
 
   @Get(':demandeId/messages')
   listMessages(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
@@ -42,6 +47,50 @@ export class CollaborationController {
     @Body() dto: CreateDiagnosticDto,
   ) {
     return this.collaborationService.createDiagnostic(user, demandeId, dto);
+  }
+
+  /* IA-3 — note vocale du diagnostic libre (TECHNICIAN assigné) : upload
+   * réel AVANT création, lié en transaction (aucune ligne orpheline).
+   * 25 Mo max, formats audio validés côté service. */
+  @Post(':demandeId/diagnostics/audio/upload')
+  @Roles('TECHNICIAN')
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { files: 1, fileSize: DEMANDE_MEDIA_MAX_BYTES },
+    }),
+  )
+  uploadDiagnosticAudio(
+    @CurrentUser() user: RequestUser,
+    @UploadedFile() file: { buffer: Buffer; mimetype: string; originalname: string; size: number } | undefined,
+  ) {
+    return this.mediaService.uploadDiagnosticAudio(user.id, file);
+  }
+
+  @Delete(':demandeId/diagnostics/audio/upload')
+  @Roles('TECHNICIAN')
+  @HttpCode(HttpStatus.OK)
+  deleteDiagnosticAudio(
+    @CurrentUser() user: RequestUser,
+    @Body('storagePath') storagePath?: string,
+  ) {
+    if (!storagePath) {
+      throw new BadRequestException('Chemin de fichier manquant.');
+    }
+    return this.mediaService.deleteDiagnosticAudio(user.id, storagePath);
+  }
+
+  /* Écoute (URL signée éphémère) : technicien assigné ou client
+   * propriétaire, 404 sinon. Lazy côté UI. */
+  @Get(':demandeId/diagnostics/:diagnosticId/audio')
+  diagnosticAudioUrl(
+    @CurrentUser() user: RequestUser,
+    @Param('demandeId') demandeId: string,
+    @Param('diagnosticId') diagnosticId: string,
+  ) {
+    return this.mediaService
+      .getDiagnosticAudioUrl({ userId: user.id, role: user.role }, demandeId, diagnosticId)
+      .then((url) => ({ url }));
   }
 
   @Get(':demandeId/catalog/suggestions')
