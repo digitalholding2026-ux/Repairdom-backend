@@ -170,12 +170,19 @@ export class DemandeMediaService {
   async getMediaFileUrl(actor: { userId: string; role: string }, demandeId: string, mediaId: string): Promise<string> {
     const demande = await this.prisma.demande.findUnique({
       where: { id: demandeId },
-      select: { id: true, clientId: true, technicianId: true },
+      select: { id: true, status: true, clientId: true, technicianId: true },
     });
     if (!demande) throw new NotFoundException('Fichier introuvable.');
     const allowed =
       (actor.role === 'CLIENT' && demande.clientId === actor.userId) ||
-      (actor.role === 'TECHNICIAN' && demande.technicianId === actor.userId);
+      (actor.role === 'TECHNICIAN' && demande.technicianId === actor.userId) ||
+      // Mission ouverte non assignée : le technicien peut écouter/voir les
+      // médias AVANT d'accepter (détail d'opportunité éligible). Les IDs
+      // étant des UUID imprévisibles, aucune énumération n'est possible ;
+      // adresse/téléphone/GPS restent masqués par la vue publique.
+      (actor.role === 'TECHNICIAN' &&
+        demande.technicianId === null &&
+        (demande.status === 'SUBMITTED' || demande.status === 'PENDING'));
     if (!allowed) throw new NotFoundException('Fichier introuvable.');
     const media = await this.prisma.demandeMedia.findFirst({
       where: { id: mediaId, demandeId: demande.id },

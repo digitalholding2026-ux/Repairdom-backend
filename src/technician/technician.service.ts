@@ -707,7 +707,12 @@ export class TechnicianService {
       throw new NotFoundException('Demande introuvable.');
     }
 
-    return toApiDemandePublic(demande);
+    // Mission éligible non assignée : le technicien peut consulter les
+    // médias du client AVANT d'accepter (métadonnées + lecture via URLs
+    // signées). Adresse/téléphone/GPS restent masqués (vue publique) ;
+    // les listes d'opportunités n'embarquent toujours aucun média.
+    const full = toApiDemande(demande);
+    return { ...toApiDemandePublic(demande), medias: full.medias };
   }
 
   async acceptDemande(userId: string, demandeId: string) {
