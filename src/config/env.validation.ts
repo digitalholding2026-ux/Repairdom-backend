@@ -158,6 +158,16 @@ class EnvironmentVariables {
   @IsOptional()
   @IsNumberString()
   OPENROUTER_TIMEOUT_MS?: string;
+
+  // IA-4 — classification des demandes « Autre » (aide au dispatch).
+  // Optionnelles : défauts sûrs en code (seuil 0.7, timeout 8 s).
+  @IsOptional()
+  @IsNumberString()
+  AI_CLASSIFICATION_MIN_CONFIDENCE?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  AI_CLASSIFICATION_TIMEOUT_MS?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {

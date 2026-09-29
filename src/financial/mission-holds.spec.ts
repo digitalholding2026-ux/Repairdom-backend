@@ -290,6 +290,7 @@ function mockWorld(seed: { demandes?: Row[]; quotes?: Row[]; ledger?: Row[] } = 
     prisma as unknown as PrismaService,
     financial,
     {} as never,
+    { classifyAutreDemande: vi.fn(async () => ({ classification: 'UNCLASSIFIABLE' })) } as never,
   );
   const clientUser = { id: 'c1', role: 'CLIENT' } as const;
   return { prisma, tx, financial, collaboration, demandesService, clientUser, store: { demandes, quotes, ledger, holds, events, notifications } };

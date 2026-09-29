@@ -7,6 +7,7 @@ import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js'
 import { assertTransition } from './demandes-lifecycle.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { DispatchService } from '../dispatch/dispatch.service.js';
+import { AiClassificationService } from '../ai/ai-classification.service.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
 // module feuille `./demande-helpers.js` (aucune dépendance de service).
 // Ré-exportés ici pour compatibilité des imports existants.
@@ -66,6 +67,7 @@ export class DemandesService {
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
     private readonly dispatch: DispatchService,
+    private readonly aiClassification: AiClassificationService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -141,6 +143,33 @@ export class DemandesService {
 
           return created;
         });
+
+        // IA-4 — classification des demandes « Autre » AVANT la vague 1
+        // (le dispatch enrichi en bénéficie) : best-effort strict, JAMAIS
+        // bloquante (le service ne lève pas, fallback tracé en base).
+        if (demande.category === 'autre') {
+          try {
+            await this.aiClassification.classifyAutreDemande({
+              demandeId: demande.id,
+              deviceLabel: [
+                demande.domain?.name,
+                demande.brand?.name,
+                demande.model?.name,
+              ]
+                .filter(Boolean)
+                .join(' — '),
+              description: demande.description,
+              city: demande.city,
+              mediaKinds: (demande.medias ?? []).map((media) => media.kind),
+            });
+          } catch (error) {
+            this.logger.error(
+              `Classification IA impossible pour ${demande.id} : ${
+                error instanceof Error ? error.message : 'erreur inconnue'
+              } (fallback dispatch standard).`,
+            );
+          }
+        }
 
         // Sprint DISPATCH-V1 — vague 1 APRÈS commit créateur : un échec du
         // dispatch (vague, notification, e-mail) ne doit JAMAIS annuler ni

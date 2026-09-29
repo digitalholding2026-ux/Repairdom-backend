@@ -369,6 +369,10 @@ model Demande {
   // Traçabilité : montant final accepté (quote ACCEPTED) de la mission.
   finalAmount Int?
   medias      DemandeMedia[]
+  // IA-4 — classification « Autre » (proposition IA auditable, donnée
+  // client jamais écrasée). Optionnelle : la plupart des demandes
+  // (domaine connu) n'en ont pas.
+  classification DemandeClassification?
   messages    Message[]
   diagnostics Diagnostic[]
   quotes      Quote[]
@@ -534,6 +538,33 @@ model DemandeMedia {
   createdAt DateTime  @default(now())
 
   @@index([demandeId])
+}
+
+// IA-4 — classification d'une demande « Autre » (aide au dispatch).
+// Sépare strictement la DONNÉE CLIENT (Demande.category, jamais écrasée)
+// de la PROPOSITION IA (cette table, auditable). Une ligne par demande
+// (idempotence : rejouée sans doublon), y compris en fallback (raison
+// tracée). Lue par le dispatch comme signal d'enrichissement uniquement.
+model DemandeClassification {
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId      String   @unique
+  // Domaine proposé (doit exister et être actif, vérifié à l'écriture).
+  domainId       String?
+  // Catégories proposées (toutes dans ALLOWED_CATEGORIES, vérifié).
+  categories     String[] @default([])
+  confidence     Float?
+  // CLASSIFIED | UNCERTAIN | UNCLASSIFIABLE (jamais d'autre valeur).
+  classification String
+  model          String?
+  promptVersion  Int      @default(1)
+  // Motif technique borné (AI_DISABLED, TIMEOUT, INVALID_RESPONSE,
+  // LOW_CONFIDENCE, UNKNOWN_DOMAIN, OK) — jamais de contenu client.
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+
+  @@index([domainId])
 }
 
 model Message {

@@ -1,12 +1,15 @@
 import { Module } from '@nestjs/common';
 import { AiConfig } from './ai.config.js';
 import { AiGatewayService } from './ai-gateway.service.js';
+import { AiClassificationService } from './ai-classification.service.js';
 
 /* IA-1 — socle AI Gateway (infrastructure uniquement).
- * AUCUN contrôleur (aucune route publique `/ai/...`) : le gateway est
- * injecté par les futurs services backend autorisés. Exporté pour eux. */
+ * IA-4 — classification des demandes « Autre » (aide au dispatch,
+ * jamais de décision métier : signal enrichissant, fallback total).
+ * AUCUN contrôleur (aucune route publique `/ai/...`) : injection par les
+ * services backend autorisés uniquement. */
 @Module({
-  providers: [AiConfig, AiGatewayService],
-  exports: [AiConfig, AiGatewayService],
+  providers: [AiConfig, AiGatewayService, AiClassificationService],
+  exports: [AiConfig, AiGatewayService, AiClassificationService],
 })
 export class AiModule {}

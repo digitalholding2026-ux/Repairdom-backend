@@ -110,7 +110,10 @@ function mockPrisma() {
 }
 
 function demandesService(prisma: unknown, dispatch: unknown) {
-  return new DemandesService(prisma as never, {} as never, dispatch as never);
+  const aiClassification = {
+    classifyAutreDemande: vi.fn(async () => ({ classification: 'UNCLASSIFIABLE' })),
+  };
+  return new DemandesService(prisma as never, {} as never, dispatch as never, aiClassification as never);
 }
 
 describe('DemandesService.create — multimédia sans texte', () => {
