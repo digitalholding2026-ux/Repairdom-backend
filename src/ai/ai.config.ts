@@ -69,6 +69,22 @@ export class AiConfig {
     return Math.min(Math.max(Math.round(raw), 1000), OPENROUTER_MAX_TIMEOUT_MS);
   }
 
+  /* IA-4/IA-5 — seuil de confiance CENTRALISÉ (unique, jamais dispersé) :
+   * `AI_CLASSIFICATION_MIN_CONFIDENCE` (défaut 0.7), borné [0, 1]. */
+  get classificationMinConfidence(): number {
+    const raw = Number(this.config.get<string>('AI_CLASSIFICATION_MIN_CONFIDENCE'));
+    if (!Number.isFinite(raw)) return 0.7;
+    return Math.min(Math.max(raw, 0), 1);
+  }
+
+  /* IA-4/IA-5 — timeout court CENTRALISÉ des classifications (défaut 8 s,
+   * borné [1 s, 30 s]) : l'IA ne bloque jamais un workflow. */
+  get classificationTimeoutMs(): number {
+    const raw = Number(this.config.get<string>('AI_CLASSIFICATION_TIMEOUT_MS'));
+    if (!Number.isFinite(raw)) return 8_000;
+    return Math.min(Math.max(Math.round(raw), 1000), 30_000);
+  }
+
   /** Vrai si un appel peut être tenté (activé + clé + URL https). */
   isConfigured(): boolean {
     return this.enabled && this.apiKey !== null && this.validatedBaseUrl() !== null;

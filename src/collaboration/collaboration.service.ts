@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -15,6 +16,7 @@ import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
+import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
 /* Phase A (frontend) — le technicien assigné voit le barème (fourchette
  * min/ref/max + frais, SANS historique ni données internes) dès le choix du
  * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
@@ -29,6 +31,14 @@ import {
 } from '../mission-events/mission-events.js';
 
 export const DEFAULT_QUOTE_CURRENCY = 'XAF';
+
+/* IA-5 — correspondance catalogue jointe aux lectures de diagnostics
+ * (consultation seule pour IA-6/IA-9 et l'admin ; jamais de décision). */
+const DIAGNOSTIC_MATCH_INCLUDE = {
+  catalogMatch: {
+    include: { catalogDiagnostic: { select: { id: true, name: true } } },
+  },
+};
 
 /** Sprint 8.4 — Centrale « Chronologies » : les statuts de chaque pan sont
  *  figés ici (source de vérité, identique à la spec). */
@@ -56,7 +66,27 @@ export class CollaborationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
+    private readonly diagnosisMatch: AiDiagnosisMatchService,
   ) {}
+
+  /* IA-5 — déclenche le mapping catalogue d'un diagnostic libre, SANS
+   * attendre (fire-and-forget) : l'enregistrement répond immédiatement, le
+   * mapping rejoint la base dès disponible. Échec silencieux tracé côté
+   * service (jamais d'exception vers le technicien). */
+  private triggerDiagnosisMatch(user: RequestUser, demandeId: string, diagnosticId: string): void {
+    // Garde DI (tests unitaires sans module) : sans service, pas de mapping.
+    if (!this.diagnosisMatch) return;
+    void this.diagnosisMatch
+      .mapFreeDiagnostic({ userId: user.id, role: user.role }, demandeId, diagnosticId)
+      .catch((error: unknown) => {
+        const logger = new Logger(CollaborationService.name);
+        logger.warn(
+          `Mapping IA du diagnostic ${diagnosticId} impossible : ${
+            error instanceof Error ? error.message : 'erreur inconnue'
+          }.`,
+        );
+      });
+  }
 
   private async requireAccess(user: RequestUser, demandeId: string): Promise<AccessibleDemande> {
     const demande = await this.prisma.demande.findUnique({
@@ -149,6 +179,14 @@ export class CollaborationService {
     justification: string | null;
     notes: string | null;
     audioStoragePath?: string | null;
+    catalogMatch?: {
+      classification: string;
+      confidence: number | null;
+      reason: string | null;
+      createdAt: Date;
+      catalogDiagnosticId: string | null;
+      catalogDiagnostic?: { id: string; name: string } | null;
+    } | null;
     technicianId: string;
     createdAt: Date;
     technician: { id: string; firstName: string; lastName: string | null };
@@ -164,6 +202,18 @@ export class CollaborationService {
       /* IA-3 — présence d'une note vocale (chemin privé jamais exposé :
        * lecture via URL signée éphémère). */
       hasAudio: !!diagnostic.audioStoragePath,
+      /* IA-5 — correspondance catalogue ANALYTIQUE (consultation seule :
+       * ne réécrit rien, ne change ni mode ni devis). */
+      catalogMatch: diagnostic.catalogMatch
+        ? {
+            classification: diagnostic.catalogMatch.classification,
+            confidence: diagnostic.catalogMatch.confidence,
+            reason: diagnostic.catalogMatch.reason,
+            catalogDiagnosticId: diagnostic.catalogMatch.catalogDiagnosticId,
+            catalogDiagnosticName: diagnostic.catalogMatch.catalogDiagnostic?.name ?? null,
+            createdAt: diagnostic.catalogMatch.createdAt.toISOString(),
+          }
+        : null,
       technicianId: diagnostic.technicianId,
       technician: diagnostic.technician,
       createdAt: diagnostic.createdAt.toISOString(),
@@ -302,7 +352,10 @@ export class CollaborationService {
     const diagnostics = await this.prisma.diagnostic.findMany({
       where: { demandeId },
       orderBy: { createdAt: 'desc' },
-      include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+      include: {
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        ...DIAGNOSTIC_MATCH_INCLUDE,
+      },
     });
     return diagnostics.map((diagnostic) => this.toApiDiagnostic(diagnostic));
   }
@@ -327,8 +380,13 @@ export class CollaborationService {
         mode: 'MANUAL',
         audioStoragePath: this.assertOwnAudioPath(user.id, dto.audioStoragePath),
       },
-      include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+      include: {
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        ...DIAGNOSTIC_MATCH_INCLUDE,
+      },
     });
+    // IA-5 — mapping catalogue en arrière-plan (réponse immédiate).
+    this.triggerDiagnosisMatch(user, demandeId, diagnostic.id);
     return this.toApiDiagnostic(diagnostic);
   }
 
@@ -779,7 +837,10 @@ export class CollaborationService {
             catalogDiagnosticId: diag.id,
             catalogInterventionId: intervention.id,
           },
-          include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+          include: {
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        ...DIAGNOSTIC_MATCH_INCLUDE,
+      },
         });
 
         const amount = pricing.referencePrice ?? 0;
@@ -860,7 +921,10 @@ export class CollaborationService {
           catalogInterventionId: null,
           audioStoragePath: this.assertOwnAudioPath(user.id, dto.audioStoragePath),
         },
-        include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+        include: {
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        ...DIAGNOSTIC_MATCH_INCLUDE,
+      },
       });
       // Sprint 8.4 : trace d'événement DÉDIÉE au diagnostic non référencé,
       // distincte du DIAGNOSTIC_SELECTED (catalogue).
@@ -869,6 +933,9 @@ export class CollaborationService {
         type: 'MANUAL_DIAGNOSTIC_DECLARED',
         actorUserId: user.id,
       });
+      // IA-5 — mapping catalogue en arrière-plan (réponse immédiate ; le
+      // devis MANUAL suit son workflow normal, sans attendre l'IA).
+      this.triggerDiagnosisMatch(user, demandeId, diagnostic.id);
       return { mode: 'MANUAL', diagnostic: this.toApiDiagnostic(diagnostic), quote: null };
     });
   }
@@ -1036,7 +1103,10 @@ export class CollaborationService {
       where: { demandeId },
       orderBy: { createdAt: 'desc' },
       take: 1,
-      include: { technician: { select: { id: true, firstName: true, lastName: true } } },
+      include: {
+        technician: { select: { id: true, firstName: true, lastName: true } },
+        ...DIAGNOSTIC_MATCH_INCLUDE,
+      },
     });
     const latestDiagnostic = diagnostics[0] ?? null;
 

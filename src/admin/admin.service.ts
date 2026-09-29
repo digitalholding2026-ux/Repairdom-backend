@@ -257,6 +257,16 @@ export class AdminService {
             justification: true,
             notes: true,
             audioStoragePath: true,
+            catalogMatch: {
+              select: {
+                classification: true,
+                confidence: true,
+                reason: true,
+                createdAt: true,
+                catalogDiagnosticId: true,
+                catalogDiagnostic: { select: { id: true, name: true } },
+              },
+            },
             createdAt: true,
             technician: { select: { id: true, firstName: true, lastName: true } },
             catalogDiagnostic: { select: { id: true, name: true } },
@@ -367,6 +377,17 @@ export class AdminService {
         notes: diagnostic.notes ?? null,
         // IA-3 — présence d'une note vocale (chemin privé jamais exposé).
         hasAudio: !!diagnostic.audioStoragePath,
+        // IA-5 — correspondance catalogue analytique (consultation admin).
+        catalogMatch: diagnostic.catalogMatch
+          ? {
+              classification: diagnostic.catalogMatch.classification,
+              confidence: diagnostic.catalogMatch.confidence,
+              reason: diagnostic.catalogMatch.reason,
+              catalogDiagnosticId: diagnostic.catalogMatch.catalogDiagnosticId,
+              catalogDiagnosticName: diagnostic.catalogMatch.catalogDiagnostic?.name ?? null,
+              createdAt: diagnostic.catalogMatch.createdAt.toISOString(),
+            }
+          : null,
         createdAt: diagnostic.createdAt.toISOString(),
         technician: diagnostic.technician
           ? {

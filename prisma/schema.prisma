@@ -612,10 +612,41 @@ model Diagnostic {
   catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
   quotes      Quote[]
+  // IA-5 — correspondance catalogue ANALYTIQUE du diagnostic libre
+  // (jamais une réécriture : le texte/audio source reste la vérité métier,
+  // `mode` reste MANUAL). Une ligne max (rejouée sans doublon).
+  catalogMatch DiagnosticCatalogMatch?
 
   @@index([demandeId])
   @@index([catalogDiagnosticId])
   @@index([catalogInterventionId])
+}
+
+// IA-5 — correspondance IA entre un diagnostic libre technicien et un
+// CatalogDiagnostic existant (analytique uniquement : ne réécrit jamais le
+// diagnostic, ne change jamais `mode`, ne touche jamais au devis).
+// Une ligne par diagnostic (idempotence), fallback tracé (UNCERTAIN /
+// UNMATCHED + motif). Lue par IA-6/IA-9 et l'admin ; jamais par le client.
+model DiagnosticCatalogMatch {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
+  diagnosticId        String   @unique
+  // Diagnostic catalogue proposé (doit exister et être actif, vérifié).
+  catalogDiagnosticId String?
+  confidence          Float?
+  // MATCHED | UNCERTAIN | UNMATCHED (jamais d'autre valeur).
+  classification      String
+  model               String?
+  promptVersion       Int      @default(1)
+  // Motif technique borné (OK, LOW_CONFIDENCE, UNKNOWN_DIAGNOSTIC,
+  // INACTIVE_DIAGNOSTIC, NO_CANDIDATE, INVALID_RESPONSE, AI_DISABLED,
+  // UPSTREAM, REJECTED) — jamais de contenu client.
+  reason              String?
+  createdAt           DateTime @default(now())
+
+  diagnostic        Diagnostic         @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
+  catalogDiagnostic CatalogDiagnostic? @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
+
+  @@index([catalogDiagnosticId])
 }
 
 model Quote {
@@ -798,6 +829,9 @@ model CatalogDiagnostic {
   problem       Problem             @relation(fields: [problemId], references: [id], onDelete: Cascade)
   interventions CatalogIntervention[]
   missionDiagnostics Diagnostic[]
+  // IA-5 — correspondances analytiques des diagnostics libres (lecture
+  // seule pour IA-6/IA-9 ; ne modifie jamais le catalogue).
+  catalogMatches DiagnosticCatalogMatch[]
   quotes         Quote[]
 
   @@unique([problemId, slug])

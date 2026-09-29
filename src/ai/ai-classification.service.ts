@@ -73,15 +73,11 @@ export class AiClassificationService {
   ) {}
 
   get minConfidence(): number {
-    const raw = Number(this.config.get<string>('AI_CLASSIFICATION_MIN_CONFIDENCE'));
-    if (!Number.isFinite(raw)) return AI_CLASSIFICATION_DEFAULT_MIN_CONFIDENCE;
-    return Math.min(Math.max(raw, 0), 1);
+    return this.aiConfig.classificationMinConfidence;
   }
 
   get timeoutMs(): number {
-    const raw = Number(this.config.get<string>('AI_CLASSIFICATION_TIMEOUT_MS'));
-    if (!Number.isFinite(raw)) return AI_CLASSIFICATION_DEFAULT_TIMEOUT_MS;
-    return Math.min(Math.max(Math.round(raw), 1000), AI_CLASSIFICATION_MAX_TIMEOUT_MS);
+    return this.aiConfig.classificationTimeoutMs;
   }
 
   /** Classifie une demande « Autre » (idempotent, jamais d'exception). */

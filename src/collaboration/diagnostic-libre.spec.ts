@@ -7,7 +7,8 @@ import { DemandeMediaService } from '../demandes/demande-media.service.js';
  * intact. Aucun appel IA. */
 
 function collaboration(prisma: unknown) {
-  return new CollaborationService(prisma as never, {} as never);
+  const diagnosisMatch = { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) };
+  return new CollaborationService(prisma as never, {} as never, diagnosisMatch as never);
 }
 
 function demandeRow(overrides: Record<string, unknown> = {}) {
