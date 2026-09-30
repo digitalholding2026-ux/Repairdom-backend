@@ -180,7 +180,7 @@ export class AiGatewayService {
     return result;
   }
 
-  /** Complétion + parse JSON strict (blocs ``` éventuels tolérés). */
+  /** Complétion + parse JSON (encapsulation ```/prose tolérée, syntaxe jamais réparée). */
   async completeJson<T = unknown>(input: AiCompletionInput): Promise<AiJsonResult<T>> {
     const completion = await this.complete(input);
     const parsed = parseJsonBody(completion.result);
@@ -213,14 +213,98 @@ export class AiGatewayService {
   }
 }
 
-/** Parse JSON tolérant aux blocs markdown (```json … ```). `undefined` si
- *  le corps n'est pas du JSON. */
-export function parseJsonBody(text: string): unknown | undefined {
-  const clean = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-  if (!clean) return undefined;
+/* IA-11.1 — extraction JSON robuste (les modèles encapsulent parfois le
+ * JSON : fence ```json, prose avant/après). Stratégie, sans JAMAIS réparer
+ * la syntaxe (pas de JSON5, pas de correction de clés, pas de contenu
+ * inventé) :
+ *  1. JSON pur (cas nominal, rapide) ;
+ *  2. premier bloc fenced (```json … ``` ou ``` … ```), contenu parsé ;
+ *  3. première structure {…} ou […] équilibrée du texte (chaînes et
+ *     échappements respectés) — refusée si le reste contient une SECONDE
+ *     structure JSON valide (ambiguïté → invalide, pas d'arbitraire).
+ * `undefined` si rien de récupérable : l'appelant conserve son fail-open
+ * (contrat validé en aval, inchangé). Travail borné (MAX_SCAN_CHARS). */
+
+const JSON_SCAN_LIMIT = 32_768;
+
+function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   try {
-    return JSON.parse(clean) as unknown;
+    return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
-    return undefined;
+    return { ok: false };
   }
+}
+
+/** Première structure {…}/[…] équilibrée depuis `start` (pile d'attentes,
+ *  chaînes "..." et `\` respectés). `null` si tronquée ou malformée. */
+function scanBalancedStructure(text: string, start: number): { candidate: string; rest: string } | null {
+  const closers: Record<string, string> = { '{': '}', '[': ']' };
+  const expected: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{' || ch === '[') {
+      expected.push(closers[ch]);
+    } else if (ch === '}' || ch === ']') {
+      if (expected.pop() !== ch) return null;
+      if (expected.length === 0) {
+        return { candidate: text.slice(start, i + 1), rest: text.slice(i + 1) };
+      }
+    }
+  }
+  return null;
+}
+
+/** Vrai si le texte contient une structure JSON valide (ambiguïté). */
+function containsValidJsonStructure(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== '{' && ch !== '[') continue;
+    const scanned = scanBalancedStructure(text, i);
+    if (scanned && tryParseJson(scanned.candidate).ok) return true;
+  }
+  return false;
+}
+
+/** Parse JSON tolérant à l'encapsulation (fence, prose). `undefined` si
+ *  le corps ne contient aucune structure JSON valide et non ambiguë. */
+export function parseJsonBody(text: string): unknown | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  // 1. JSON pur.
+  const direct = tryParseJson(trimmed);
+  if (direct.ok) return direct.value;
+  if (trimmed.length > JSON_SCAN_LIMIT) return undefined;
+  // 2. Premier bloc fenced.
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
+  if (fence) {
+    const inner = tryParseJson(fence[1].trim());
+    if (inner.ok) return inner.value;
+  }
+  // 3. Première structure équilibrée (reste sans seconde structure valide).
+  let start = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === '{' || trimmed[i] === '[') {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return undefined;
+  const scanned = scanBalancedStructure(trimmed, start);
+  if (!scanned) return undefined;
+  const parsed = tryParseJson(scanned.candidate);
+  if (!parsed.ok) return undefined;
+  if (containsValidJsonStructure(scanned.rest)) return undefined;
+  return parsed.value;
 }
