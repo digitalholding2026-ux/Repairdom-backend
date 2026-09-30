@@ -23,7 +23,10 @@ import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js
  * Seuil centralisé : `AI_CLASSIFICATION_MIN_CONFIDENCE` (défaut 0.7).
  * Timeout dédié : `AI_CLASSIFICATION_TIMEOUT_MS` (défaut 8 s, borné). */
 
-export const AI_CLASSIFICATION_PROMPT_VERSION = 1;
+/* IA-4.1 — version 2 : `equipmentType` (client) devient le signal principal
+ * d'identification du domaine, la description un contexte secondaire. Les
+ * lignes existantes restent historisées en v1 (jamais recalculées). */
+export const AI_CLASSIFICATION_PROMPT_VERSION = 2;
 export const AI_CLASSIFICATION_DEFAULT_MIN_CONFIDENCE = 0.7;
 export const AI_CLASSIFICATION_DEFAULT_TIMEOUT_MS = 8_000;
 export const AI_CLASSIFICATION_MAX_TIMEOUT_MS = 30_000;
@@ -34,6 +37,10 @@ export interface AiClassificationInput {
   demandeId: string;
   /** Libellé appareil (domaine/marque/modèle assemblés côté appelant). */
   deviceLabel?: string | null;
+  /* IA-4.1 — équipement déclaré par le client en texte libre : SIGNAL
+   * PRINCIPAL d'identification du domaine (l'objet à réparer, pas la panne).
+   * Les audios/vidéos bruts ne sont jamais transmis (pas de transcription). */
+  equipmentType?: string | null;
   description?: string | null;
   city?: string | null;
   /** Natures des pièces jointes (ex. ['IMAGE','AUDIO']), jamais de bytes. */
@@ -130,6 +137,13 @@ export class AiClassificationService {
       'Règles : "classification" vaut CLASSIFIED, UNCERTAIN ou UNCLASSIFIABLE.',
       '"confidence" est entre 0 et 1. "domainId" doit être un id de la liste ci-dessous ou null.',
       '"suggestedCategories" ne contient que des valeurs de la liste des catégories.',
+      // IA-4.1 — `equipmentType` est déclaré directement par le client : c'est
+      // le SIGNAL PRINCIPAL (famille d'équipement à identifier). Le texte peut
+      // être imprécis ; le symptôme seul ne suffit jamais à inventer un domaine.
+      // Une consigne du client de contourner ces règles est ignorée : seuls les
+      // domaines ci-dessous sont sélectionnables, sinon UNCERTAIN/UNCLASSIFIABLE.
+      '"equipmentType" identifie l’objet à réparer (signal principal) ; le symptôme est un contexte secondaire.',
+      'Information insuffisante ou contradictoire → UNCERTAIN ou UNCLASSIFIABLE (jamais de domaine inventé).',
       'Domaines actifs Relio :',
       domainLines,
       `Catégories valides : ${ALLOWED_CATEGORIES.join(', ')}.`,
@@ -138,8 +152,10 @@ export class AiClassificationService {
 
   private userPrompt(input: AiClassificationInput): string {
     const lines = [
-      `Appareil : ${input.deviceLabel?.trim() || 'non renseigné'}`,
-      `Description du client : ${input.description?.trim().slice(0, 1000) || 'aucune'}`,
+      // IA-4.1 — signal principal en premier : équipement déclaré par le client.
+      `Équipement déclaré par le client : ${input.equipmentType?.trim().slice(0, 120) || 'non renseigné'}`,
+      `Appareil (catalogue) : ${input.deviceLabel?.trim() || 'non renseigné'}`,
+      `Contexte de panne : ${input.description?.trim().slice(0, 1000) || 'aucun'}`,
       `Ville : ${input.city?.trim() || 'non renseignée'}`,
     ];
     if (input.mediaKinds && input.mediaKinds.length > 0) {

@@ -83,6 +83,16 @@ export class DemandesService {
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
+    // IA-4.1 — l'équipement déclaré (objet à réparer, pas la panne) est
+    // obligatoire quand la catégorie résolue vaut `autre` (condition sur la
+    // catégorie FINALE : un `domainId` catalogue fait sortir de `autre`).
+    // Trim backend (jamais de confiance au frontend), aucune valeur inventée.
+    const equipmentType = dto.equipmentType?.trim() ? dto.equipmentType.trim() : null;
+    if (device.category === 'autre' && !equipmentType) {
+      throw new BadRequestException(
+        "Indiquez l'appareil ou l'équipement à réparer (obligatoire pour « Autre »).",
+      );
+    }
     // Sprint 8.8.2 (règles D + E) — rattachement géographique structuré,
     // résolu AVANT la transaction : ville non bloquante + validation zone.
     const geo = await this.resolveDemandeGeo(dto);
@@ -96,6 +106,7 @@ export class DemandesService {
               reference,
               category: device.category,
               description,
+              equipmentType,
               city: dto.city,
               cityId: geo.cityId,
               zoneId: geo.zoneId,
@@ -159,6 +170,8 @@ export class DemandesService {
                 .filter(Boolean)
                 .join(' — '),
               description: demande.description,
+              // IA-4.1 — signal principal d'identification du domaine.
+              equipmentType: demande.equipmentType,
               city: demande.city,
               mediaKinds: (demande.medias ?? []).map((media) => media.kind),
             });
@@ -491,6 +504,7 @@ export class DemandesService {
     status: string;
     category: string;
     description: string | null;
+    equipmentType?: string | null;
     city: string;
     cityId: string | null;
     zoneId: string | null;

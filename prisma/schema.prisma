@@ -322,6 +322,13 @@ model Demande {
   // gardent leur texte ; les nouvelles demandes multimédia ont NULL (le
   // technicien lit les pièces jointes). Colonne conservée (compatibilité).
   description String?
+  // IA-4.1 — équipement déclaré par le client en texte libre (« réfrigérateur »,
+  // « portail électrique »…), obligatoire quand `category` vaut `autre`
+  // (validation backend). Identifie L'OBJET à réparer, pas la panne (les
+  // médias expliquent la panne). Nullable : demandes historiques et domaines
+  // catalogue connus. Signal principal d'IA-4, affiché au technicien comme
+  // information client (jamais un diagnostic).
+  equipmentType String?
   // Sprint 8.7 — `city` reste le snapshot texte historique de la mission
   // (JAMAIS supprimé ni rendu optionnel) ; `cityId` est une référence
   // optionnelle vers ServiceCity. Un ON DELETE SET NULL garantit qu'une ville

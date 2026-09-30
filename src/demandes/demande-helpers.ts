@@ -57,6 +57,10 @@ export interface DemandeRecord {
   // Dépôt multimédia : NULL pour les demandes sans texte (le technicien
   // lit alors les pièces jointes). Textes historiques conservés.
   description: string | null;
+  // IA-4.1 — équipement déclaré par le client (optionnel : NULL pour
+  // l'historique et les domaines catalogue). Exposé tel quel (jamais un
+  // diagnostic) au technicien comme au client propriétaire.
+  equipmentType?: string | null;
   city: string;
   // Sprint 8.8.2 — références structurées (null en transition/historique).
   // `zoneRef` reprend le nom exact de la relation Prisma (`Demande.zoneRef`) ;
@@ -106,6 +110,7 @@ export function toApiDemande(demande: DemandeRecord) {
     categoryId: demande.category,
     categoryLabel: labelForCategory(demande.category),
     description: demande.description,
+    equipmentType: demande.equipmentType ?? null,
     city: demande.city,
     // Sprint 8.8.2 — exposition additive (le frontend lit id/name ; le
     // détail précis reste protégé par `toApiDemandePublic`, inchangé).
