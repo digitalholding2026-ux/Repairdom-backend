@@ -22,6 +22,8 @@ import { ReviewConversationFlagDto } from './dto/review-conversation-flag.dto.js
 import { AiWarningService } from '../ai/ai-warning.service.js';
 import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.js';
 import { AiAdminService } from '../ai/ai-admin.service.js';
+import { AiAdminAgentService } from '../ai/ai-admin-agent.service.js';
+import { AiAgentChatDto } from './dto/ai-agent-chat.dto.js';
 import { AiClassificationService } from '../ai/ai-classification.service.js';
 import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
 import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
@@ -38,6 +40,7 @@ export class AdminController {
     private readonly classifications: AiClassificationService,
     private readonly diagnosisMatches: AiDiagnosisMatchService,
     private readonly pricingChecks: AiPricingCheckService,
+    private readonly aiAgent: AiAdminAgentService,
   ) {}
 
   @Get('kyc')
@@ -220,6 +223,18 @@ export class AdminController {
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
+  }
+
+  /* IA-11 — Agent IA du back-office (ADMIN uniquement, lecture seule :
+   * question → tool contrôlé → synthèse factuelle, jamais de mutation). */
+  @Get('ai-agent/status')
+  getAiAgentStatus() {
+    return this.aiAgent.status();
+  }
+
+  @Post('ai-agent/chat')
+  chatWithAiAgent(@Body() dto: AiAgentChatDto) {
+    return this.aiAgent.chat(dto.message, dto.history ?? []);
   }
 
   @Get('ai/pricing-checks')
