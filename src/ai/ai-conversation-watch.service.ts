@@ -354,7 +354,7 @@ export class AiConversationWatchService {
    * joints pour la revue ; le contenu du message est visible admin car
    * déjà accessible via la supervision des missions). */
   async getFlagsForAdmin(
-    query: { status?: string; category?: string; severity?: string; demandeId?: string; page?: number; limit?: number },
+    query: { status?: string; category?: string; severity?: string; demandeId?: string; senderId?: string; page?: number; limit?: number },
     now: Date = new Date(),
   ) {
     void now;
@@ -370,6 +370,8 @@ export class AiConversationWatchService {
         ? { severity: query.severity }
         : {}),
       ...(query.demandeId ? { demandeId: query.demandeId } : {}),
+      // IA-9 — vue technicien (signaux de l'auteur, lecture seule).
+      ...(query.senderId ? { senderId: query.senderId } : {}),
     };
     const [total, rows] = await Promise.all([
       this.prisma.aiConversationFlag.count({ where: where as never }),

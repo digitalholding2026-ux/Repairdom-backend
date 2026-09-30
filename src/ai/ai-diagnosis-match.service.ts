@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AiGatewayService } from './ai-gateway.service.js';
 import { AiConfig } from './ai.config.js';
 import { AiPricingCheckService } from './ai-pricing-check.service.js';
+import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js';
 
 /* IA-5 — correspondance entre un diagnostic libre technicien et un
  * CatalogDiagnostic existant (ANALYTIQUE uniquement).
@@ -263,6 +264,59 @@ export class AiDiagnosisMatchService {
     });
     this.logger.warn(`Mapping IA indisponible pour ${diagnosticId} (${reason}) : diagnostic libre inchangé.`);
     return this.toOutcome(diagnosticId, row);
+  }
+
+  /* IA-9 — lecture admin paginée des mappings (visualisation seule :
+   * le diagnostic libre reste la source de vérité, jamais remplacé ici). */
+  async listForAdmin(query: {
+    classification?: string;
+    demandeId?: string;
+    since?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = clampPage(query.page);
+    const limit = clampLimit(query.limit);
+    const since = parseSince(query.since);
+    const where: Record<string, unknown> = {
+      ...(query.classification && (MATCH_LABELS as readonly string[]).includes(query.classification)
+        ? { classification: query.classification }
+        : {}),
+      ...(query.demandeId ? { diagnostic: { demandeId: query.demandeId } } : {}),
+      ...(since ? { createdAt: { gte: since } } : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.diagnosticCatalogMatch.count({ where: where as never }),
+      this.prisma.diagnosticCatalogMatch.findMany({
+        where: where as never,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          diagnostic: { select: { id: true, demandeId: true, content: true, createdAt: true } },
+          catalogDiagnostic: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        diagnosticId: row.diagnosticId,
+        catalogDiagnosticId: row.catalogDiagnosticId,
+        catalogDiagnosticName: row.catalogDiagnostic?.name ?? null,
+        classification: row.classification,
+        confidence: row.confidence,
+        model: row.model,
+        promptVersion: row.promptVersion,
+        reason: row.reason,
+        createdAt: row.createdAt.toISOString(),
+        diagnostic: row.diagnostic,
+      })),
+      total,
+      page,
+      limit,
+      pages: pageCount(total, limit),
+    };
   }
 
   private toOutcome(

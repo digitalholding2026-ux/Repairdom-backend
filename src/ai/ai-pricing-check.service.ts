@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AiWarningService } from './ai-warning.service.js';
+import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js';
 
 /* IA-6 — surveillance DÉTERMINISTE des tarifs (signal, jamais de blocage).
  *
@@ -15,6 +16,14 @@ import { AiWarningService } from './ai-warning.service.js';
  * Résultats : NORMAL | ABOVE_MAX | BELOW_MIN | UNCERTAIN | NO_BAREME. */
 
 export type PricingCheckResult = 'NORMAL' | 'ABOVE_MAX' | 'BELOW_MIN' | 'UNCERTAIN' | 'NO_BAREME';
+
+const PRICING_CHECK_RESULTS: readonly PricingCheckResult[] = [
+  'NORMAL',
+  'ABOVE_MAX',
+  'BELOW_MIN',
+  'UNCERTAIN',
+  'NO_BAREME',
+];
 
 export interface PriceScale {
   min: number | null;
@@ -160,6 +169,75 @@ export class AiPricingCheckService {
       where: { demandeId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  /* IA-9 — lecture admin paginée des contrôles (visualisation seule :
+   * snapshot historique figé, jamais recalculé depuis le barème actuel). */
+  async listForAdmin(query: {
+    result?: string;
+    demandeId?: string;
+    technicianId?: string;
+    since?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = clampPage(query.page);
+    const limit = clampLimit(query.limit);
+    const since = parseSince(query.since);
+    const where: Record<string, unknown> = {
+      ...(query.result && PRICING_CHECK_RESULTS.includes(query.result as PricingCheckResult)
+        ? { result: query.result }
+        : {}),
+      ...(query.demandeId ? { demandeId: query.demandeId } : {}),
+      ...(query.technicianId ? { quote: { technicianId: query.technicianId } } : {}),
+      ...(since ? { createdAt: { gte: since } } : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.quotePricingCheck.count({ where: where as never }),
+      this.prisma.quotePricingCheck.findMany({
+        where: where as never,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          quote: {
+            select: {
+              id: true,
+              amount: true,
+              currency: true,
+              status: true,
+              technicianId: true,
+              demande: { select: { id: true, reference: true, status: true } },
+            },
+          },
+        },
+      }),
+    ]);
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        quoteId: row.quoteId,
+        demandeId: row.demandeId,
+        diagnosticId: row.diagnosticId,
+        catalogDiagnosticId: row.catalogDiagnosticId,
+        // Snapshot figé au moment du devis (jamais recalculé).
+        proposedPrice: row.proposedPrice,
+        minAtCheck: row.minAtCheck,
+        referenceAtCheck: row.referenceAtCheck,
+        maxAtCheck: row.maxAtCheck,
+        result: row.result,
+        pricingIds: row.pricingIds,
+        deviationAmount: row.deviationAmount,
+        deviationBps: row.deviationBps,
+        reason: row.reason,
+        createdAt: row.createdAt.toISOString(),
+        quote: row.quote,
+      })),
+      total,
+      page,
+      limit,
+      pages: pageCount(total, limit),
+    };
   }
 
   private async persist(

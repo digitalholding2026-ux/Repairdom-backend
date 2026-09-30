@@ -374,7 +374,8 @@ describe('minimisation — aucune donnée sensible envoyée au Gateway', () => {
     expect(gatewayInputs).toHaveLength(1);
     const input = gatewayInputs[0] as { messages: Array<{ role: string; content: string }> };
     // Seules les colonnes métier minimales sont sélectionnées.
-    const demandeSelect = (prisma.demande.findUnique.mock.calls[0][0] as { select: Record<string, boolean> }).select;
+    const demandeCalls = prisma.demande.findUnique.mock.calls as unknown[][];
+    const demandeSelect = ((demandeCalls[0]?.[0] ?? {}) as { select?: Record<string, boolean> }).select ?? {};
     for (const forbidden of ['contactPhone', 'address', 'latitude', 'longitude', 'clientId', 'technicianId']) {
       expect(demandeSelect).not.toHaveProperty(forbidden);
     }

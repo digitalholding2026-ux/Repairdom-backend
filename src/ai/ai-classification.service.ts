@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { ALLOWED_CATEGORIES } from '../demandes/categories.js';
 import { AiGatewayService } from './ai-gateway.service.js';
 import { AiConfig } from './ai.config.js';
+import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js';
 
 /* IA-4 — classification des demandes « Autre » (aide au dispatch).
  *
@@ -225,6 +226,70 @@ export class AiClassificationService {
     });
     this.logger.warn(`Classification IA indisponible pour ${demandeId} (${reason}) : fallback dispatch standard.`);
     return this.toOutcome(demandeId, row);
+  }
+
+  /* IA-9 — lecture admin paginée des classifications (visualisation
+   * seule : aucune analyse, aucun recalcul, données existantes telles
+   * quelles). Domaine résolu en une requête (pas de N+1). */
+  async listForAdmin(query: {
+    classification?: string;
+    domainId?: string;
+    demandeId?: string;
+    since?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = clampPage(query.page);
+    const limit = clampLimit(query.limit);
+    const since = parseSince(query.since);
+    const where: Record<string, unknown> = {
+      ...(query.classification && (CLASSIFICATION_LABELS as readonly string[]).includes(query.classification)
+        ? { classification: query.classification }
+        : {}),
+      ...(query.domainId ? { domainId: query.domainId } : {}),
+      ...(query.demandeId ? { demandeId: query.demandeId } : {}),
+      ...(since ? { createdAt: { gte: since } } : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.demandeClassification.count({ where: where as never }),
+      this.prisma.demandeClassification.findMany({
+        where: where as never,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          demande: { select: { id: true, reference: true, status: true, category: true } },
+        },
+      }),
+    ]);
+    const domainIds = [...new Set(rows.map((row) => row.domainId).filter((id): id is string => !!id))];
+    const domains = domainIds.length > 0
+      ? await this.prisma.serviceDomain.findMany({
+          where: { id: { in: domainIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const domainNames = new Map(domains.map((domain) => [domain.id, domain.name]));
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        demandeId: row.demandeId,
+        classification: row.classification,
+        domainId: row.domainId,
+        domainName: (row.domainId ? domainNames.get(row.domainId) : null) ?? null,
+        categories: row.categories,
+        confidence: row.confidence,
+        model: row.model,
+        promptVersion: row.promptVersion,
+        reason: row.reason,
+        createdAt: row.createdAt.toISOString(),
+        demande: row.demande,
+      })),
+      total,
+      page,
+      limit,
+      pages: pageCount(total, limit),
+    };
   }
 
   private toOutcome(

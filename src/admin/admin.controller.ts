@@ -21,6 +21,10 @@ import { ReviewAiWarningDto } from './dto/review-ai-warning.dto.js';
 import { ReviewConversationFlagDto } from './dto/review-conversation-flag.dto.js';
 import { AiWarningService } from '../ai/ai-warning.service.js';
 import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.js';
+import { AiAdminService } from '../ai/ai-admin.service.js';
+import { AiClassificationService } from '../ai/ai-classification.service.js';
+import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
+import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -30,6 +34,10 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly warnings: AiWarningService,
     private readonly conversationWatch: AiConversationWatchService,
+    private readonly aiAdmin: AiAdminService,
+    private readonly classifications: AiClassificationService,
+    private readonly diagnosisMatches: AiDiagnosisMatchService,
+    private readonly pricingChecks: AiPricingCheckService,
   ) {}
 
   @Get('kyc')
@@ -146,6 +154,7 @@ export class AdminController {
     @Query('category') category?: string,
     @Query('severity') severity?: string,
     @Query('demandeId') demandeId?: string,
+    @Query('senderId') senderId?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -154,6 +163,7 @@ export class AdminController {
       category: category?.trim() || undefined,
       severity: severity?.trim() || undefined,
       demandeId: demandeId?.trim() || undefined,
+      senderId: senderId?.trim() || undefined,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
@@ -166,5 +176,68 @@ export class AdminController {
     @Body() dto: ReviewConversationFlagDto,
   ) {
     return this.conversationWatch.reviewFlag(user.id, id, dto.decision, dto.reviewNote);
+  }
+
+  /* IA-9 — dashboard IA admin (visualisation + revue humaine, jamais de
+   * décision automatique : voir, filtrer, examiner — l'humain décide). */
+
+  @Get('ai/overview')
+  getAiOverview() {
+    return this.aiAdmin.getOverview();
+  }
+
+  @Get('ai/classifications')
+  listAiClassifications(
+    @Query('classification') classification?: string,
+    @Query('domainId') domainId?: string,
+    @Query('demandeId') demandeId?: string,
+    @Query('since') since?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.classifications.listForAdmin({
+      classification: classification?.trim() || undefined,
+      domainId: domainId?.trim() || undefined,
+      demandeId: demandeId?.trim() || undefined,
+      since: since?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('ai/matches')
+  listAiMatches(
+    @Query('classification') classification?: string,
+    @Query('demandeId') demandeId?: string,
+    @Query('since') since?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.diagnosisMatches.listForAdmin({
+      classification: classification?.trim() || undefined,
+      demandeId: demandeId?.trim() || undefined,
+      since: since?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('ai/pricing-checks')
+  listAiPricingChecks(
+    @Query('result') result?: string,
+    @Query('demandeId') demandeId?: string,
+    @Query('technicianId') technicianId?: string,
+    @Query('since') since?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.pricingChecks.listForAdmin({
+      result: result?.trim() || undefined,
+      demandeId: demandeId?.trim() || undefined,
+      technicianId: technicianId?.trim() || undefined,
+      since: since?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 }
