@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { AiWarningService } from './ai-warning.service.js';
 
 /* IA-6 — surveillance DÉTERMINISTE des tarifs (signal, jamais de blocage).
  *
@@ -55,7 +56,10 @@ export function comparePriceToScale(proposedPrice: number, scale: PriceScale): P
 export class AiPricingCheckService {
   private readonly logger = new Logger(AiPricingCheckService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly warnings: AiWarningService,
+  ) {}
 
   /** Contrôle un devis MANUAL (création unique, idempotent, non bloquant
    *  pour l'appelant qui attrape les erreurs). `null` = devis non-MANUAL
@@ -159,7 +163,7 @@ export class AiPricingCheckService {
   }
 
   private async persist(
-    quote: { id: string; demandeId: string; amount: number },
+    quote: { id: string; demandeId: string; amount: number; diagnosticId: string | null },
     diagnosticId: string | null,
     catalogDiagnosticId: string | null,
     check:
@@ -189,6 +193,28 @@ export class AiPricingCheckService {
     this.logger.log(
       `Contrôle tarifaire ${quote.id} : ${row.result} (${row.reason ?? '—'}, pricings=${row.pricingIds.length}).`,
     );
+    // IA-7 — signal d'avertissement sur ABOVE_MAX (best-effort, jamais
+    // bloquant : le devis est déjà créé et accepté dans son workflow).
+    if (row.result === 'ABOVE_MAX' && this.warnings) {
+      try {
+        await this.warnings.ensureWarningForCheck({
+          id: row.id,
+          quoteId: quote.id,
+          demandeId: quote.demandeId,
+          diagnosticId: quote.diagnosticId,
+          result: row.result,
+          proposedPrice: row.proposedPrice,
+          maxAtCheck: row.maxAtCheck,
+          deviationAmount: row.deviationAmount,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Avertissement impossible pour le contrôle ${row.id} : ${
+            error instanceof Error ? error.message : 'erreur inconnue'
+          }.`,
+        );
+      }
+    }
     return row;
   }
 }

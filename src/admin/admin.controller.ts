@@ -17,12 +17,17 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { SendTechnicianMessageDto } from './dto/send-technician-message.dto.js';
+import { ReviewAiWarningDto } from './dto/review-ai-warning.dto.js';
+import { AiWarningService } from '../ai/ai-warning.service.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('ADMIN')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly warnings: AiWarningService,
+  ) {}
 
   @Get('kyc')
   listKycFolders(@Query('status') status?: string) {
@@ -89,5 +94,42 @@ export class AdminController {
     @CurrentUser() user: RequestUser,
   ) {
     return this.adminService.sendTechnicianMessage(user.id, dto.email, dto.message);
+  }
+
+  /* IA-7 — surveillance tarifaire (lecture + revue humaine, jamais de
+   * sanction automatique). Données : avertissements, technicien, demande,
+   * quote, diagnostic, prix, barème snapshot, justification, statut
+   * effectif, niveau de surveillance, dates, historique. */
+  @Get('ai-warnings')
+  listAiWarnings(
+    @Query('technicianId') technicianId?: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.warnings.getWarningsForAdmin({
+      technicianId: technicianId?.trim() || undefined,
+      status: status?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('ai-warnings/technician/:id/level')
+  getTechnicianSurveillanceLevel(@Param('id') id: string) {
+    return this.warnings.getSurveillanceLevel(id).then((level) => ({
+      technicianId: id,
+      surveillanceLevel: level,
+      humanReviewRequired: level >= 3,
+    }));
+  }
+
+  @Post('ai-warnings/:id/review')
+  reviewAiWarning(
+    @Param('id') id: string,
+    @CurrentUser() user: RequestUser,
+    @Body() dto: ReviewAiWarningDto,
+  ) {
+    return this.warnings.reviewWarning(user.id, id, dto.reviewNote);
   }
 }

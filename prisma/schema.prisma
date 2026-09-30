@@ -69,6 +69,9 @@ enum NotificationType {
   // GPS V3 : le technicien assigné a démarré son déplacement (notifié au
   // client de la mission uniquement).
   TECHNICIAN_EN_ROUTE
+  // IA-7 : écart au barème (ABOVE_MAX) — avertissement factuel au
+  // technicien, justification 48 h, jamais une sanction.
+  PRICING_WARNING
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -216,6 +219,9 @@ model User {
   messages            Message[]
   diagnostics         Diagnostic[]
   quotes              Quote[]
+  // IA-7 — avertissements reçus (technicien) et revues effectuées (admin).
+  aiWarnings          AiWarning[] @relation("AiWarningTechnician")
+  aiWarningReviews    AiWarning[] @relation("AiWarningReviewer")
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
@@ -369,6 +375,8 @@ model Demande {
   // Traçabilité : montant final accepté (quote ACCEPTED) de la mission.
   finalAmount Int?
   medias      DemandeMedia[]
+  // IA-7 — avertissements tarifaires de la mission (consultation admin).
+  aiWarnings  AiWarning[]
   // IA-4 — classification « Autre » (proposition IA auditable, donnée
   // client jamais écrasée). Optionnelle : la plupart des demandes
   // (domaine connu) n'en ont pas.
@@ -683,6 +691,55 @@ model QuotePricingCheck {
   @@index([result])
 }
 
+// IA-7 — avertissement tarifaire (surveillance progressive, JAMAIS une
+// sanction automatique). Une ligne par contrôle ABOVE_MAX (idempotence via
+// pricingCheckId unique) ; historique immuable (justification et revue
+// s'ajoutent, rien n'est écrasé ni supprimé).
+// Expiration LAZY : `status` stocké ∈ {PENDING, JUSTIFIED, REVIEWED} ;
+// EXPIRED est dérivé (PENDING + dueAt dépassé), sans timer ni réécriture.
+model AiWarning {
+  id              String   @id @default(dbgenerated("gen_random_uuid()"))
+  technicianId    String
+  demandeId       String
+  quoteId         String
+  diagnosticId    String?
+  pricingCheckId  String   @unique
+  warningType     AiWarningType @default(PRICE_ABOVE_MAX)
+  status          AiWarningStatus @default(PENDING)
+  // Échéance calculée backend (createdAt + 48 h), jamais d'horloge frontend.
+  dueAt           DateTime
+  justification   String?
+  justifiedAt     DateTime?
+  // Justification arrivée après l'échéance (conservée, décision à l'admin).
+  isLateJustification Boolean @default(false)
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  reviewNote      String?
+  createdAt       DateTime @default(now())
+
+  technician User             @relation("AiWarningTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
+  demande    Demande          @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  quote      Quote            @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  reviewer   User?            @relation("AiWarningReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([technicianId, status])
+  @@index([demandeId])
+  @@index([status, dueAt])
+}
+
+// IA-7 — types d'avertissement (extensible, un seul aujourd'hui : un
+// BELOW_MIN ou NO_BAREME ne crée JAMAIS d'avertissement).
+enum AiWarningType {
+  PRICE_ABOVE_MAX
+}
+
+// IA-7 — statuts STOCKÉS (EXPIRED est dérivé : PENDING + dueAt dépassé).
+enum AiWarningStatus {
+  PENDING
+  JUSTIFIED
+  REVIEWED
+}
+
 model Quote {
   id           String      @id @default(dbgenerated("gen_random_uuid()"))
   demandeId    String
@@ -722,6 +779,8 @@ model Quote {
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
   // IA-6 — contrôle tarifaire immuable (un par devis, jamais réécrit).
   pricingCheck QuotePricingCheck?
+  // IA-7 — avertissements issus du contrôle (historique immuable).
+  aiWarnings AiWarning[]
 
   @@index([demandeId])
   @@index([diagnosticId])

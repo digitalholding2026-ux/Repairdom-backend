@@ -90,7 +90,14 @@ function checkService(options: {
       findUnique: vi.fn(async () => options.diagnostic ?? null),
     },
   };
-  return { service: new AiPricingCheckService(prisma as never), prisma, upserted };
+  return {
+    service: new AiPricingCheckService(
+      prisma as never,
+      { ensureWarningForCheck: vi.fn(async () => null) } as never,
+    ),
+    prisma,
+    upserted,
+  };
 }
 
 const QUOTE = {
@@ -254,7 +261,10 @@ describe('evaluatePendingQuotesForMatch — mapping tardif', () => {
         findUnique: vi.fn(async () => activeScale()),
       },
     };
-    const service = new AiPricingCheckService(prisma as never);
+    const service = new AiPricingCheckService(
+      prisma as never,
+      { ensureWarningForCheck: vi.fn(async () => null) } as never,
+    );
     await service.evaluatePendingQuotesForMatch('dg-1');
     expect(evaluated).toEqual(['q-pending']);
     expect(prisma.quote.findMany).toHaveBeenCalledWith({
