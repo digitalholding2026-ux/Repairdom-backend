@@ -5,6 +5,7 @@ import { AiClassificationService } from './ai-classification.service.js';
 import { AiDiagnosisMatchService } from './ai-diagnosis-match.service.js';
 import { AiPricingCheckService } from './ai-pricing-check.service.js';
 import { AiWarningService } from './ai-warning.service.js';
+import { AiConversationWatchService } from './ai-conversation-watch.service.js';
 
 /* IA-1 — socle AI Gateway (infrastructure uniquement).
  * IA-4 — classification des demandes « Autre » (aide au dispatch,
@@ -12,7 +13,7 @@ import { AiWarningService } from './ai-warning.service.js';
  * AUCUN contrôleur (aucune route publique `/ai/...`) : injection par les
  * services backend autorisés uniquement. */
 @Module({
-  providers: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService],
-  exports: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService],
+  providers: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService],
+  exports: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService],
 })
 export class AiModule {}

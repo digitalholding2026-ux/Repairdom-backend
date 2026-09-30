@@ -72,6 +72,9 @@ enum NotificationType {
   // IA-7 : écart au barème (ABOVE_MAX) — avertissement factuel au
   // technicien, justification 48 h, jamais une sanction.
   PRICING_WARNING
+  // IA-8 : signal de surveillance conversationnelle — notifié aux ADMIN
+  // uniquement (jamais au client/technicien, jamais dans le chat).
+  CONVERSATION_FLAG
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -222,6 +225,9 @@ model User {
   // IA-7 — avertissements reçus (technicien) et revues effectuées (admin).
   aiWarnings          AiWarning[] @relation("AiWarningTechnician")
   aiWarningReviews    AiWarning[] @relation("AiWarningReviewer")
+  // IA-8 — messages envoyés pouvant porter un signal + revues effectuées.
+  conversationFlagsSent     AiConversationFlag[] @relation("ConversationFlagSender")
+  conversationFlagReviews   AiConversationFlag[] @relation("ConversationFlagReviewer")
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
@@ -377,6 +383,8 @@ model Demande {
   medias      DemandeMedia[]
   // IA-7 — avertissements tarifaires de la mission (consultation admin).
   aiWarnings  AiWarning[]
+  // IA-8 — signaux de surveillance conversationnelle (consultation admin).
+  conversationFlags AiConversationFlag[]
   // IA-4 — classification « Autre » (proposition IA auditable, donnée
   // client jamais écrasée). Optionnelle : la plupart des demandes
   // (domaine connu) n'en ont pas.
@@ -584,6 +592,8 @@ model Message {
 
   demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   sender  User    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  // IA-8 — signaux de surveillance (un par message, jamais une mutation).
+  conversationFlags AiConversationFlag[]
 
   @@index([demandeId])
   @@index([senderId])
@@ -738,6 +748,70 @@ enum AiWarningStatus {
   PENDING
   JUSTIFIED
   REVIEWED
+}
+
+// IA-8 — signal de surveillance conversationnelle (SIGNAL uniquement :
+// jamais d'écriture dans le chat, jamais de blocage, jamais de sanction —
+// toute décision reste humaine, revue admin via IA-9).
+// Un flag par message analysé (idempotence via messageId unique) ; le
+// message original reste la source de vérité (aucune copie intégrale
+// stockée ici). Historique immuable (revue/dismiss s'ajoutent, rien
+// n'est supprimé). Aucun appel OpenRouter hors AiGatewayService.
+model AiConversationFlag {
+  id              String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId       String
+  messageId       String   @unique
+  senderId        String
+  senderRole      String
+  category        AiConversationCategory
+  confidence      Float
+  severity        AiConversationSeverity
+  // Synthèse factuelle courte du modèle (jamais une conclusion de culpabilité).
+  reason          String?
+  model           String?
+  promptVersion   Int      @default(1)
+  status          AiConversationFlagStatus @default(OPEN)
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  reviewNote      String?
+  createdAt       DateTime @default(now())
+
+  demande  Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  message  Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  sender   User    @relation("ConversationFlagSender", fields: [senderId], references: [id], onDelete: Cascade)
+  reviewer User?   @relation("ConversationFlagReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([demandeId, createdAt])
+  @@index([status, createdAt])
+}
+
+// IA-8 — catégories de signaux (documentées : un signal n'est jamais une
+// preuve — OFF_PLATFORM_* exigent un contexte de contournement, une simple
+// mention de numéro/moyen de contact ne suffit pas).
+enum AiConversationCategory {
+  OFF_PLATFORM_PAYMENT
+  OFF_PLATFORM_CONTACT
+  CONVERSATION_INCONSISTENCY
+  PRICE_DISCREPANCY
+  POTENTIAL_FRAUD
+  ABUSIVE_OR_PRESSURING_BEHAVIOR
+  OTHER
+}
+
+// IA-8 — sévérité = priorité de revue humaine (HIGH n'est jamais une
+// fraude confirmée).
+enum AiConversationSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// IA-8 — OPEN : à examiner ; REVIEWED : examiné ; DISMISSED : non pertinent
+// (l'historique est toujours conservé).
+enum AiConversationFlagStatus {
+  OPEN
+  REVIEWED
+  DISMISSED
 }
 
 model Quote {

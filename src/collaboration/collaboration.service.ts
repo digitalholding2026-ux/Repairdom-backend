@@ -18,6 +18,7 @@ import { FinancialService } from '../financial/financial.service.js';
 import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
 import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
 import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
+import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.js';
 /* Phase A (frontend) — le technicien assigné voit le barème (fourchette
  * min/ref/max + frais, SANS historique ni données internes) dès le choix du
  * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
@@ -71,6 +72,7 @@ export class CollaborationService {
     private readonly financial: FinancialService,
     private readonly diagnosisMatch: AiDiagnosisMatchService,
     private readonly pricingCheck: AiPricingCheckService,
+    private readonly conversationWatch?: AiConversationWatchService,
   ) {}
 
   /* IA-5 — déclenche le mapping catalogue d'un diagnostic libre, SANS
@@ -90,6 +92,23 @@ export class CollaborationService {
           }.`,
         );
       });
+  }
+
+  /* IA-8 — surveillance du message enregistré, SANS attendre
+   * (fire-and-forget) : le message répond immédiatement, le signal rejoint
+   * la base dès disponible. Échec silencieux tracé côté service (jamais
+   * d'exception vers l'expéditeur, jamais de blocage du chat). */
+  private triggerConversationWatch(messageId: string): void {
+    // Garde DI (tests unitaires sans module) : sans service, pas d'analyse.
+    if (!this.conversationWatch) return;
+    void this.conversationWatch.analyzeMessage(messageId).catch((error: unknown) => {
+      const logger = new Logger(CollaborationService.name);
+      logger.warn(
+        `Surveillance conversationnelle du message ${messageId} impossible : ${
+          error instanceof Error ? error.message : 'erreur inconnue'
+        }.`,
+      );
+    });
   }
 
   private async requireAccess(user: RequestUser, demandeId: string): Promise<AccessibleDemande> {
@@ -348,6 +367,10 @@ export class CollaborationService {
       data: { demandeId, senderId: user.id, content },
       include: { sender: { select: { id: true, firstName: true, lastName: true } } },
     });
+    // IA-8 — analyse best-effort APRÈS enregistrement (le message est déjà
+    // persisté ; OpenRouter indisponible/timeout/invalide → aucun flag,
+    // message intact, erreur tracée côté service uniquement).
+    this.triggerConversationWatch(message.id);
     return this.toApiMessage(message);
   }
 

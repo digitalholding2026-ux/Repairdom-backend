@@ -18,7 +18,9 @@ import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { SendTechnicianMessageDto } from './dto/send-technician-message.dto.js';
 import { ReviewAiWarningDto } from './dto/review-ai-warning.dto.js';
+import { ReviewConversationFlagDto } from './dto/review-conversation-flag.dto.js';
 import { AiWarningService } from '../ai/ai-warning.service.js';
+import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -27,6 +29,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly warnings: AiWarningService,
+    private readonly conversationWatch: AiConversationWatchService,
   ) {}
 
   @Get('kyc')
@@ -131,5 +134,37 @@ export class AdminController {
     @Body() dto: ReviewAiWarningDto,
   ) {
     return this.warnings.reviewWarning(user.id, id, dto.reviewNote);
+  }
+
+  /* IA-8 — surveillance conversationnelle (signaux OPEN + revue humaine,
+   * jamais de sanction automatique, jamais visible client/technicien).
+   * Données : catégorie, sévérité, confiance, message, conversation,
+   * demande, auteurs, dates, statut, historique de revue. */
+  @Get('conversation-flags')
+  listConversationFlags(
+    @Query('status') status?: string,
+    @Query('category') category?: string,
+    @Query('severity') severity?: string,
+    @Query('demandeId') demandeId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.conversationWatch.getFlagsForAdmin({
+      status: status?.trim() || undefined,
+      category: category?.trim() || undefined,
+      severity: severity?.trim() || undefined,
+      demandeId: demandeId?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Post('conversation-flags/:id/review')
+  reviewConversationFlag(
+    @Param('id') id: string,
+    @CurrentUser() user: RequestUser,
+    @Body() dto: ReviewConversationFlagDto,
+  ) {
+    return this.conversationWatch.reviewFlag(user.id, id, dto.decision, dto.reviewNote);
   }
 }
