@@ -6,6 +6,7 @@ import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
 import { assertTransition } from './demandes-lifecycle.js';
 import { FinancialService } from '../financial/financial.service.js';
+import { DisputesService } from '../disputes/disputes.service.js';
 import { DispatchService } from '../dispatch/dispatch.service.js';
 import { AiClassificationService } from '../ai/ai-classification.service.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
@@ -68,6 +69,7 @@ export class DemandesService {
     private readonly financial: FinancialService,
     private readonly dispatch: DispatchService,
     private readonly aiClassification: AiClassificationService,
+    private readonly disputes: DisputesService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -453,6 +455,15 @@ export class DemandesService {
       // Missions legacy sans quote ACCEPTED : aucune écriture (pas de hold
       // rétroactif, pas de conversion d'historique). Tout est idempotent.
       if (dto.status === 'CONFIRMED') {
+        // Litige : aucun règlement tant qu'un litige bloque la mission
+        // (OPEN/UNDER_REVIEW en cours, ou RESOLVED dont le hold est libéré —
+        // confirmer débiterait sans hold). Seul REJECTED rouvre la voie.
+        // Vérifié DANS la transaction (ouverture concurrente impossible).
+        if (await this.disputes.isConfirmationBlocked(tx, current.id)) {
+          throw new ConflictException(
+            'Un litige est en cours sur cette mission : la confirmation est suspendue jusqu’à la décision de l’administration.',
+          );
+        }
         await this.financial.settleMissionAtConfirmation(tx, {
           demandeId: current.id,
           clientId,

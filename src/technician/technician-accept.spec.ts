@@ -50,3 +50,88 @@ describe('acceptDemande — garde KYC (cas 6)', () => {
     expect(updateMany).not.toHaveBeenCalled();
   });
 });
+
+/* Correctif post-audit — disponibilité et compte relus DANS la transaction :
+ * un technicien devenu indisponible/inactif entre l'affichage et l'acceptation
+ * est refusé en 403 avec rollback, sans contourner les gardes existantes. */
+
+function mockServiceInTx(options: {
+  kycStatus?: string;
+  isAvailable?: boolean;
+  isActive?: boolean | null;
+  demande?: Record<string, unknown> | null;
+} = {}) {
+  const updateMany = vi.fn(async () => ({ count: 1 }));
+  const tx = {
+    demande: {
+      findUnique: vi.fn(async () => options.demande ?? null),
+      updateMany,
+      findFirst: vi.fn(async () => null),
+    },
+    technicianProfile: {
+      findUnique: vi.fn(async () => ({
+        isAvailable: options.isAvailable ?? true,
+        kycStatus: options.kycStatus ?? 'VERIFIED',
+      })),
+    },
+    user: {
+      findUnique: vi.fn(async () =>
+        options.isActive === null ? null : { isActive: options.isActive ?? true },
+      ),
+    },
+    demandeEvent: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    notification: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+  };
+  const prisma = {
+    technicianProfile: {
+      findUnique: vi.fn(async () => ({
+        id: 'profile-1',
+        userId: 'tech-1',
+        city: 'Douala',
+        cityId: 'city-a',
+        categories: ['plomberie'],
+        kycStatus: 'VERIFIED',
+      })),
+    },
+    $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(tx)),
+  };
+  const service = new TechnicianService(prisma as never, {} as never, {} as never);
+  return { service, updateMany, tx };
+}
+
+const OPEN_DEMANDE = {
+  id: 'd-1',
+  status: 'SUBMITTED',
+  category: 'plomberie',
+  city: 'Douala',
+  cityId: 'city-a',
+  zoneId: null,
+  clientId: 'c-1',
+  technicianId: null,
+};
+
+describe('acceptDemande — garde disponibilité/compte en transaction', () => {
+  it('isAvailable=false → 403, claim jamais tenté', async () => {
+    const { service, updateMany } = mockServiceInTx({ isAvailable: false, demande: OPEN_DEMANDE });
+    await expect(service.acceptDemande('tech-1', 'd-1')).rejects.toThrow('indisponible');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('compte désactivé (isActive=false) → 403, claim jamais tenté', async () => {
+    const { service, updateMany } = mockServiceInTx({ isActive: false, demande: OPEN_DEMANDE });
+    await expect(service.acceptDemande('tech-1', 'd-1')).rejects.toThrow('désactivé');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('compte introuvable → 403, claim jamais tenté', async () => {
+    const { service, updateMany } = mockServiceInTx({ isActive: null, demande: OPEN_DEMANDE });
+    await expect(service.acceptDemande('tech-1', 'd-1')).rejects.toThrow('désactivé');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('KYC révoqué en transaction → 403, claim jamais tenté', async () => {
+    const { service, updateMany } = mockServiceInTx({ kycStatus: 'REJECTED', demande: OPEN_DEMANDE });
+    await expect(service.acceptDemande('tech-1', 'd-1')).rejects.toThrow('doit être vérifié');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});

@@ -113,7 +113,8 @@ function demandesService(prisma: unknown, dispatch: unknown) {
   const aiClassification = {
     classifyAutreDemande: vi.fn(async () => ({ classification: 'UNCLASSIFIABLE' })),
   };
-  return new DemandesService(prisma as never, {} as never, dispatch as never, aiClassification as never);
+  const disputes = { isConfirmationBlocked: vi.fn(async () => false) };
+  return new DemandesService(prisma as never, {} as never, dispatch as never, aiClassification as never, disputes as never);
 }
 
 describe('DemandesService.create — multimédia sans texte', () => {

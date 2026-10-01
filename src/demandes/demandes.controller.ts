@@ -9,6 +9,8 @@ import { CurrentUser } from './../auth/current-user.decorator.js';
 import type { RequestUser } from './../auth/auth.types.js';
 import { CreateDemandeDto } from './dto/create-demande.dto.js';
 import { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
+import { DisputesService } from '../disputes/disputes.service.js';
+import { OpenDisputeDto } from '../disputes/dto/open-dispute.dto.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -17,6 +19,7 @@ export class DemandesController {
   constructor(
     private readonly demandesService: DemandesService,
     private readonly mediaService: DemandeMediaService,
+    private readonly disputesService: DisputesService,
   ) {}
 
   /* Dépôt multimédia — upload réel AVANT création (aucune ligne créée ;
@@ -82,5 +85,20 @@ export class DemandesController {
   @HttpCode(HttpStatus.OK)
   updateStatus(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: UpdateDemandeStatusDto) {
     return this.demandesService.updateStatus(user.id, id, dto);
+  }
+
+  /* Litige post-intervention — ouverture client (mission COMPLETED,
+   * un seul litige par mission, jamais supprimé). Bloque la confirmation
+   * et donc le règlement tant qu'il n'est pas tranché. */
+  @Post(':id/dispute')
+  @HttpCode(HttpStatus.CREATED)
+  openDispute(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: OpenDisputeDto) {
+    return this.disputesService.openDispute(user.id, id, dto);
+  }
+
+  /* Lecture du litige de la mission (client propriétaire, null si aucun). */
+  @Get(':id/dispute')
+  getDispute(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.disputesService.getForParty(user, id);
   }
 }

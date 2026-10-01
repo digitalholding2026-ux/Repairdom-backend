@@ -12,6 +12,7 @@ import { ReviewsModule } from './reviews/reviews.module.js';
 import { TrackingModule } from './tracking/tracking.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { FinancialModule } from './financial/financial.module.js';
+import { DisputesModule } from './disputes/disputes.module.js';
 import { SasPayModule } from './saspay/saspay.module.js';
 import { AiModule } from './ai/ai.module.js';
 
@@ -32,6 +33,7 @@ import { AiModule } from './ai/ai.module.js';
     TrackingModule,
     NotificationsModule,
     FinancialModule,
+    DisputesModule,
     SasPayModule,
     AiModule,
   ],

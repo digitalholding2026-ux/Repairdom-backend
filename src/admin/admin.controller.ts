@@ -24,6 +24,8 @@ import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.
 import { AiAdminService } from '../ai/ai-admin.service.js';
 import { AiAdminAgentService } from '../ai/ai-admin-agent.service.js';
 import { AiAgentChatDto } from './dto/ai-agent-chat.dto.js';
+import { DisputesService } from '../disputes/disputes.service.js';
+import { ReviewDisputeDto } from '../disputes/dto/review-dispute.dto.js';
 import { AiClassificationService } from '../ai/ai-classification.service.js';
 import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
 import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
@@ -41,6 +43,7 @@ export class AdminController {
     private readonly diagnosisMatches: AiDiagnosisMatchService,
     private readonly pricingChecks: AiPricingCheckService,
     private readonly aiAgent: AiAdminAgentService,
+    private readonly disputes: DisputesService,
   ) {}
 
   @Get('kyc')
@@ -235,6 +238,33 @@ export class AdminController {
   @Post('ai-agent/chat')
   chatWithAiAgent(@Body() dto: AiAgentChatDto) {
     return this.aiAgent.chat(dto.message, dto.history ?? []);
+  }
+
+  /* Litiges post-intervention (ADMIN uniquement) : liste paginée,
+   * détail avec mission + parties, décision motivée. RESOLVED libère le
+   * hold (fonds rendus, sans règlement) ; REJECTED rouvre la confirmation.
+   * Historique immuable, jamais supprimé, jamais auto-clôturé. */
+  @Get('disputes')
+  listDisputes(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.disputes.listForAdmin({
+      status: status?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Get('disputes/:id')
+  getDispute(@Param('id') id: string) {
+    return this.disputes.getForAdmin(id);
+  }
+
+  @Patch('disputes/:id/review')
+  reviewDispute(@Param('id') id: string, @CurrentUser() user: RequestUser, @Body() dto: ReviewDisputeDto) {
+    return this.disputes.reviewDispute(user.id, id, dto);
   }
 
   @Get('ai/pricing-checks')

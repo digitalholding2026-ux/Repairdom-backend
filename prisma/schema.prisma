@@ -48,6 +48,10 @@ enum DemandeEventType {
   // statut métier, journal informatif uniquement).
   TECHNICIAN_EN_ROUTE
   TECHNICIAN_ARRIVED
+  // Litige : ouverture par le client / clôture administrative (journal
+  // de la mission, sans changement de statut Demande).
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
 }
 
 // Sprint 8.3 : notifications applicatives (créées uniquement par le backend).
@@ -75,6 +79,10 @@ enum NotificationType {
   // IA-8 : signal de surveillance conversationnelle — notifié aux ADMIN
   // uniquement (jamais au client/technicien, jamais dans le chat).
   CONVERSATION_FLAG
+  // Litige : ouverture notifiée aux ADMIN + technicien assigné ;
+  // décision notifiée au client (+ technicien assigné).
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -230,6 +238,9 @@ model User {
   conversationFlagReviews   AiConversationFlag[] @relation("ConversationFlagReviewer")
   reviewsAuthored     Review[]     @relation("ReviewAuthor")
   reviewsReceived     Review[]     @relation("ReviewTarget")
+  // Litiges : ouverts (client) et tranchés (admin), historique immuable.
+  disputesOpened      DemandeDispute[] @relation("DisputeOpener")
+  disputesDecided     DemandeDispute[] @relation("DisputeDecider")
   pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
   demandeEvents       DemandeEvent[]
   notifications       Notification[]
@@ -400,6 +411,8 @@ model Demande {
   diagnostics Diagnostic[]
   quotes      Quote[]
   reviews     Review[]
+  // Litige post-intervention (au plus un par mission, `demandeId` unique).
+  dispute     DemandeDispute?
   events      DemandeEvent[]
   notifications Notification[]
   dispatchWaves DispatchWave[]
@@ -821,6 +834,31 @@ enum AiConversationFlagStatus {
   DISMISSED
 }
 
+// Contestation / litige post-intervention (parcours litige).
+// Un seul litige par mission, jamais supprimé (historique immuable) :
+// - OPEN : ouvert par le client, confirmation bloquée, règlement suspendu ;
+// - UNDER_REVIEW : pris en charge par l'administration ;
+// - RESOLVED : fondé — hold libéré (fonds rendus au client, sans règlement),
+//   confirmation définitivement bloquée ;
+// - REJECTED : non fondé — le client peut à nouveau confirmer (règlement
+//   normal). Aucun crédit technicien tant qu'un litige OPEN/UNDER_REVIEW
+//   existe (le règlement n'a lieu qu'à CONFIRMED, refusé dans cet état).
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+// Motif de contestation déclaré par le client (libellé affiché côté UI).
+enum DisputeCategory {
+  QUALITY
+  INCOMPLETE
+  PRICING
+  BEHAVIOR
+  OTHER
+}
+
 model Quote {
   id           String      @id @default(dbgenerated("gen_random_uuid()"))
   demandeId    String
@@ -884,6 +922,32 @@ model Review {
 
   @@unique([demandeId, authorId])
   @@index([targetId])
+}
+
+// Contestation / litige post-intervention (un par mission : `demandeId`
+// unique = protection anti double-ouverture au niveau base, en plus des
+// gardes applicatives). Ouvert uniquement par le client propriétaire sur
+// une mission COMPLETED avec technicien assigné. Règlé uniquement par
+// l'administration (jamais auto-clôturé, jamais de règlement par délai).
+model DemandeDispute {
+  id          String         @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId   String         @unique
+  openedById  String
+  category    DisputeCategory
+  description String
+  status      DisputeStatus  @default(OPEN)
+  // Décision administrative (exigée pour RESOLVED/REJECTED).
+  resolution  String?
+  decidedById String?
+  decidedAt   DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  demande  Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  openedBy User    @relation("DisputeOpener", fields: [openedById], references: [id], onDelete: Cascade)
+  decider  User?   @relation("DisputeDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
 }
 
 /* ── Catalogue RepairDom ────────────────────────────────────────── */

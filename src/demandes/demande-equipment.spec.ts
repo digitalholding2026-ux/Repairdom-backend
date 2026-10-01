@@ -55,6 +55,7 @@ function mockPrisma() {
     {} as never,
     dispatch as never,
     { classifyAutreDemande } as never,
+    { isConfirmationBlocked: vi.fn(async () => false) } as never,
   );
   return { service, classifyAutreDemande, inputs };
 }
@@ -141,6 +142,7 @@ describe('DemandesService.create — obligation si Autre (catégorie résolue)',
       {} as never,
       { dispatchWave1: vi.fn(async () => undefined) } as never,
       { classifyAutreDemande: vi.fn(async () => Promise.reject(failure)) } as never,
+      { isConfirmationBlocked: vi.fn(async () => false) } as never,
     );
     const result = await svc.create('c-1', dto({ equipmentType: 'climatiseur' }) as never);
     expect(result.id).toBe('d-1');

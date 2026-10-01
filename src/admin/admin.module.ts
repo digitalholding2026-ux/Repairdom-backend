@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
 import { AiModule } from '../ai/ai.module.js';
 import { TechnicianModule } from '../technician/technician.module.js';
+import { DisputesModule } from '../disputes/disputes.module.js';
 import { AdminController } from './admin.controller.js';
 import { AdminService } from './admin.service.js';
 import { CatalogController } from './catalog.controller.js';
@@ -10,7 +11,7 @@ import { CityPublicController } from './city-public.controller.js';
 import { CatalogService } from './catalog.service.js';
 
 @Module({
-  imports: [AuthModule, AiModule, TechnicianModule],
+  imports: [AuthModule, AiModule, TechnicianModule, DisputesModule],
   controllers: [AdminController, CatalogController, CatalogPublicController, CityPublicController],
   providers: [AdminService, CatalogService],
 })

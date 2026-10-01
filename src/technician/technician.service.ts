@@ -728,9 +728,35 @@ export class TechnicianService {
     // gardé ci-dessous ; les couvertures sont relues DANS la transaction
     // pour éviter toute lecture obsolète (modification de couverture ou
     // désactivation de zone entre la lecture et l'acceptation).
+    // Correctif post-audit — le profil peut aussi changer entre l'affichage
+    // et l'acceptation (disponibilité coupée, compte désactivé, KYC révoqué) :
+    // ces états sont donc relus DANS la transaction et refusés en 403
+    // (rollback), sans contourner les gardes existantes.
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findUnique({ where: { id: demandeId } });
       if (!current) return null;
+
+      const freshProfile = await tx.technicianProfile.findUnique({
+        where: { id: profile.id },
+        select: { isAvailable: true, kycStatus: true },
+      });
+      const account = await tx.user.findUnique({
+        where: { id: userId },
+        select: { isActive: true },
+      });
+      if (!account || account.isActive === false) {
+        throw new ForbiddenException('Votre compte a été désactivé. Contactez Relio.');
+      }
+      if (!freshProfile || freshProfile.isAvailable !== true) {
+        throw new ForbiddenException(
+          'Vous êtes actuellement indisponible : réactivez votre disponibilité pour accepter une mission.',
+        );
+      }
+      if (freshProfile.kycStatus !== 'VERIFIED') {
+        throw new ForbiddenException(
+          'Votre compte technicien doit être vérifié avant de pouvoir accepter une mission.',
+        );
+      }
 
       const coverages = profile.cityId
         ? await tx.technicianZoneCoverage.findMany({

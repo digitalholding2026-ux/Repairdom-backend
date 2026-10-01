@@ -135,10 +135,9 @@ export class AiWarningService {
             'Vous pouvez poursuivre le processus normalement.',
         },
       });
-      this.logger.log(
-        `Avertissement tarifaire ${warning.id} (devis ${check.quoteId}, 48 h` +
-          `${deviationAmount !== null ? `, écart ${deviationAmount}` : ''}).`,
-      );
+      // Log serveur sans montant (le détail chiffré reste dans le
+      // snapshot du contrôle + la notification technicien, jamais ici).
+      this.logger.log(`Avertissement tarifaire ${warning.id} (devis ${check.quoteId}, 48 h).`);
       return warning;
     } catch (error) {
       // Doublon concurrent (P2002) : relire l'existant, sinon tracer.

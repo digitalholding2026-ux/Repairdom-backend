@@ -98,7 +98,9 @@ export class EmailService {
 
   async sendVerificationEmail(to: string, verificationLink: string): Promise<void> {
     if (!this.apiKey) {
-      this.logger.warn(`[email non envoyé] lien de vérification pour ${to} : ${verificationLink}`);
+      // Resend non configuré : le lien (token secret) n'est JAMAIS journalisé.
+      // Le destinataire suffit au diagnostic (compte à vérifier manuellement).
+      this.logger.warn(`[email non envoyé] lien de vérification généré pour ${to} (Resend non configuré).`);
       return;
     }
     try {

@@ -38,7 +38,10 @@ export type DemandeEventType =
   | 'DISPATCH_WAVE'
   // GPS V3 : déplacement temporaire (aucun changement de statut).
   | 'TECHNICIAN_EN_ROUTE'
-  | 'TECHNICIAN_ARRIVED';
+  | 'TECHNICIAN_ARRIVED'
+  // Litige : ouverture / clôture administrative (sans changement de statut).
+  | 'DISPUTE_OPENED'
+  | 'DISPUTE_RESOLVED';
 
 export type NotificationType =
   | 'TECHNICIAN_ACCEPTED'
@@ -51,7 +54,10 @@ export type NotificationType =
   | 'CONFIRMED'
   | 'MISSION_AVAILABLE'
   // GPS V3 : notifiée au client de la mission uniquement.
-  | 'TECHNICIAN_EN_ROUTE';
+  | 'TECHNICIAN_EN_ROUTE'
+  // Litige : ouverture (admin + technicien) / décision (client + technicien).
+  | 'DISPUTE_OPENED'
+  | 'DISPUTE_RESOLVED';
 
 export interface EventInput {
   demandeId: string;
@@ -130,6 +136,8 @@ export function eventLabel(type: string): string {
     DISPATCH_WAVE: 'Vague de dispatch envoyée',
     TECHNICIAN_EN_ROUTE: 'Technicien en route',
     TECHNICIAN_ARRIVED: 'Technicien arrivé',
+    DISPUTE_OPENED: 'Litige ouvert',
+    DISPUTE_RESOLVED: 'Litige clôturé par l’administration',
   };
   return labels[type] ?? type;
 }
@@ -212,6 +220,17 @@ export function buildNotification(
     TECHNICIAN_EN_ROUTE: {
       title: 'Technicien en route',
       message: 'Le technicien est en route vers votre intervention.',
+    },
+    DISPUTE_OPENED: {
+      title: 'Litige ouvert',
+      message:
+        audience === 'TECHNICIAN'
+          ? 'Le client a ouvert un litige sur une mission terminée. Consultez le dossier.'
+          : 'Un litige a été ouvert sur cette mission. L’administration va l’examiner.',
+    },
+    DISPUTE_RESOLVED: {
+      title: 'Litige clôturé',
+      message: 'L’administration a tranché le litige. Consultez la décision sur le dossier.',
     },
   };
   const { title, message } = content[type];

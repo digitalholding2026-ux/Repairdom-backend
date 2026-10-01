@@ -11,6 +11,7 @@ import { SendMessageDto } from './dto/send-message.dto.js';
 import { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import { CreateQuoteDto } from './dto/create-quote.dto.js';
 import { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
+import { DisputesService } from '../disputes/disputes.service.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -19,6 +20,7 @@ export class CollaborationController {
   constructor(
     private readonly collaborationService: CollaborationService,
     private readonly mediaService: DemandeMediaService,
+    private readonly disputesService: DisputesService,
   ) {}
 
   @Get(':demandeId/messages')
@@ -167,5 +169,13 @@ export class CollaborationController {
   @Get(':demandeId/summary')
   summary(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
     return this.collaborationService.summary(user, demandeId);
+  }
+
+  /* Visibilité du litige pour les deux parties (client propriétaire ou
+   * technicien assigné, 404 sinon — jamais de conversion auto, la prose
+   * éventuelle n'existe pas ici : seul le contrat Dispute est renvoyé). */
+  @Get(':demandeId/dispute')
+  getDispute(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
+    return this.disputesService.getForParty(user, demandeId);
   }
 }
