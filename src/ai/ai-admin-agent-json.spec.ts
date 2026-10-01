@@ -22,8 +22,8 @@ afterEach(() => {
 
 const CONFIG_VALUES: Record<string, string> = {
   AI_ENABLED: 'true',
-  OPENROUTER_API_KEY: 'sk-or-test-UNIT',
-  OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+  GROQ_API_KEY: 'gsk-test-UNIT',
+  GROQ_BASE_URL: 'https://api.groq.com/openai/v1',
 };
 
 function realGateway() {
@@ -31,7 +31,7 @@ function realGateway() {
   return new AiGatewayService(config);
 }
 
-/** fetch simulée : corps OpenRouter successifs (plan puis synthèse). */
+/** fetch simulée : corps provider successifs (plan puis synthèse). */
 function stubBodies(bodies: string[], status = 200) {
   let calls = 0;
   vi.stubGlobal(
@@ -39,7 +39,7 @@ function stubBodies(bodies: string[], status = 200) {
     vi.fn(async () => {
       const content = bodies[Math.min(calls, bodies.length - 1)];
       calls += 1;
-      const payload = { choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' };
+      const payload = { choices: [{ message: { content } }], model: 'openai/gpt-oss-120b' };
       return {
         status,
         headers: { get: () => 'application/json' },
@@ -204,7 +204,7 @@ describe('parseJsonDetailed — étape exacte sans contenu', () => {
   });
 });
 
-describe('gateway — extraction contenu OpenRouter', () => {
+describe('gateway — extraction contenu provider', () => {
   it('contenu en parties [{text}] → concaténé (pas inexploitable)', async () => {
     const payload = {
       choices: [{ message: { content: [{ type: 'text', text: '{"a":' }, { type: 'text', text: '1}' }] } }],
@@ -401,7 +401,7 @@ describe('synthesizer — matrice des formats', () => {
         if (calls === 1) {
           const payload = {
             choices: [{ message: { content: PLAN } }],
-            model: 'cohere/north-mini-code:free',
+            model: 'openai/gpt-oss-120b',
           };
           return {
             status: 200,
@@ -514,7 +514,7 @@ describe('logs Plan/Synth — distinguables, sans contenu sensible', () => {
 function choicePayload(content: string | null, finishReason: string | null) {
   return {
     choices: [{ message: { content }, finish_reason: finishReason }],
-    model: 'cohere/north-mini-code:free',
+    model: 'openai/gpt-oss-120b',
   };
 }
 
@@ -554,13 +554,13 @@ describe('IA-11.2 — configuration centralisée des plafonds', () => {
   });
 
   it('surcharges env bornées', () => {
-    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '1200' }).agentPlanMaxTokens).toBe(1200);
-    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '2000' }).agentSynthMaxTokens).toBe(2000);
-    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: 'nawak' }).agentPlanMaxTokens).toBe(800);
-    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '10' }).agentPlanMaxTokens).toBe(200);
-    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '99999' }).agentPlanMaxTokens).toBe(4000);
-    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '10' }).agentSynthMaxTokens).toBe(400);
-    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '99999' }).agentSynthMaxTokens).toBe(8000);
+    expect(configWith({ AI_AGENT_PLAN_MAX_TOKENS: '1200' }).agentPlanMaxTokens).toBe(1200);
+    expect(configWith({ AI_AGENT_SYNTH_MAX_TOKENS: '2000' }).agentSynthMaxTokens).toBe(2000);
+    expect(configWith({ AI_AGENT_PLAN_MAX_TOKENS: 'nawak' }).agentPlanMaxTokens).toBe(800);
+    expect(configWith({ AI_AGENT_PLAN_MAX_TOKENS: '10' }).agentPlanMaxTokens).toBe(200);
+    expect(configWith({ AI_AGENT_PLAN_MAX_TOKENS: '99999' }).agentPlanMaxTokens).toBe(4000);
+    expect(configWith({ AI_AGENT_SYNTH_MAX_TOKENS: '10' }).agentSynthMaxTokens).toBe(400);
+    expect(configWith({ AI_AGENT_SYNTH_MAX_TOKENS: '99999' }).agentSynthMaxTokens).toBe(8000);
   });
 });
 
@@ -605,7 +605,7 @@ describe('IA-11.2 — troncature finish_reason=length (cas production)', () => {
     expect(result.toolCalls).toEqual([]);
     const joined = warns.join('\n');
     expect(joined).toContain('finishReason=length');
-    expect(joined).toContain('failureReason=invalid_openrouter_payload');
+    expect(joined).toContain('failureReason=invalid_provider_payload');
   });
 
   it('synthèse tronquée `{"reply":"…\\` + length → refusée, jamais réparée', async () => {

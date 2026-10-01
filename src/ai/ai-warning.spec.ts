@@ -10,7 +10,7 @@ import {
  * création sur ABOVE_MAX seul, justification 48 h backend, expiration LAZY
  * dérivée (aucun timer), niveaux 0/1/2/3 par comptage (jamais de LLM),
  * idempotence par pricingCheckId, propriété stricte, revue humaine.
- * Aucun appel réseau, aucun appel OpenRouter. */
+ * Aucun appel réseau, aucun appel provider IA. */
 
 function warningService(options: {
   existingWarning?: Record<string, unknown> | null;

@@ -8,7 +8,7 @@ import {
 } from './ai-gateway.service.js';
 import { AiTerminalException, AiUpstreamException } from './ai-errors.js';
 
-/* IA-11.4 — résilience HTTP 429 OpenRouter : 1 retry max par appel, backoff
+/* IA-11.4 — résilience HTTP 429 provider (GroqCloud) : 1 retry max par appel, backoff
  * court (Retry-After borné préféré), AUCUNE boucle, AUCUN retry sur les
  * autres erreurs, fail-open inchangé. Logs = métadonnées seules. */
 
@@ -19,8 +19,8 @@ afterEach(() => {
 
 const CONFIG_VALUES: Record<string, string> = {
   AI_ENABLED: 'true',
-  OPENROUTER_API_KEY: 'sk-or-test-UNIT',
-  OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+  GROQ_API_KEY: 'gsk-test-UNIT',
+  GROQ_BASE_URL: 'https://api.groq.com/openai/v1',
 };
 
 function configWith(values: Record<string, string | undefined> = {}) {
@@ -295,7 +295,7 @@ describe('sécurité — aucun secret/contenu dans les nouveaux logs', () => {
       .catch(() => undefined);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const joined = [...logs, ...warns].join('\n');
-    for (const leak of [promptSentinel, contentSentinel, 'sk-or-test-UNIT', 'Bearer', 'Authorization', 'OPENROUTER_API_KEY']) {
+    for (const leak of [promptSentinel, contentSentinel, 'gsk-test-UNIT', 'Bearer', 'Authorization', 'GROQ_API_KEY']) {
       expect(joined).not.toContain(leak);
     }
     expect(joined).toContain('AI 429 retry');

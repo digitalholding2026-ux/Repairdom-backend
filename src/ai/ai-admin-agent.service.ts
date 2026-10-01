@@ -120,8 +120,8 @@ function describeAgentFailure(error: unknown): {
   if (transport === 'body_read_error') {
     return { parseStage: 'transport', failureReason: 'body_read_error', ...base };
   }
-  if (transport === 'invalid_openrouter_payload') {
-    return { parseStage: 'extraction', failureReason: 'invalid_openrouter_payload', ...base };
+  if (transport === 'invalid_provider_payload') {
+    return { parseStage: 'extraction', failureReason: 'invalid_provider_payload', ...base };
   }
   if (transport === 'upstream_rate_limited') {
     return { parseStage: 'transport', failureReason: 'upstream_rate_limited', ...base };

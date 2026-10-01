@@ -368,7 +368,7 @@ export class CollaborationService {
       include: { sender: { select: { id: true, firstName: true, lastName: true } } },
     });
     // IA-8 — analyse best-effort APRÈS enregistrement (le message est déjà
-    // persisté ; OpenRouter indisponible/timeout/invalide → aucun flag,
+    // persisté ; provider IA indisponible/timeout/invalide → aucun flag,
     // message intact, erreur tracée côté service uniquement).
     this.triggerConversationWatch(message.id);
     return this.toApiMessage(message);

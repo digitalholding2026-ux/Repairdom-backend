@@ -45,14 +45,14 @@ describe('secrets — clé strictement backend, jamais dans le corps ni les logs
       }),
     );
     const gateway = new AiGatewayService(
-      new AiConfig(configService({ AI_ENABLED: 'true', OPENROUTER_API_KEY: 'sk-or-SECRET-XYZ' }) as never),
+      new AiConfig(configService({ AI_ENABLED: 'true', GROQ_API_KEY: 'gsk-SECRET-XYZ' }) as never),
     );
     await gateway.completeJson({ caller: 'GovernanceTest', messages: [{ role: 'user', content: 'bonjour' }] });
     expect(seen).toHaveLength(1);
     const headers = seen[0].init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer sk-or-SECRET-XYZ');
+    expect(headers.Authorization).toBe('Bearer gsk-SECRET-XYZ');
     const body = String(seen[0].init.body);
-    expect(body).not.toContain('sk-or-SECRET-XYZ');
+    expect(body).not.toContain('gsk-SECRET-XYZ');
     expect(JSON.parse(body)).toMatchObject({ model: expect.any(String), messages: expect.any(Array) });
   });
 
@@ -75,24 +75,24 @@ describe('secrets — clé strictement backend, jamais dans le corps ni les logs
       })),
     );
     const gateway = new AiGatewayService(
-      new AiConfig(configService({ AI_ENABLED: 'true', OPENROUTER_API_KEY: 'sk-or-SECRET-XYZ' }) as never),
+      new AiConfig(configService({ AI_ENABLED: 'true', GROQ_API_KEY: 'gsk-SECRET-XYZ' }) as never),
     );
     await gateway.completeJson({
       caller: 'GovernanceTest',
       messages: [{ role: 'user', content: 'contenu sensible du prompt SENTINEL-42' }],
     });
     const output = logs.join('\n');
-    expect(output).not.toContain('sk-or-SECRET-XYZ');
+    expect(output).not.toContain('gsk-SECRET-XYZ');
     expect(output).not.toContain('SENTINEL-42');
   });
 });
 
 describe('modèle — configurable, jamais hardcodé dans les services', () => {
-  it('OPENROUTER_MODEL respecté, défaut sinon', () => {
-    const custom = new AiConfig(configService({ OPENROUTER_MODEL: 'thinkingmachines/inkling-small:free' }) as never);
-    expect(custom.model).toBe('thinkingmachines/inkling-small:free');
+  it('GROQ_MODEL respecté, défaut sinon', () => {
+    const custom = new AiConfig(configService({ GROQ_MODEL: 'openai/gpt-oss-20b' }) as never);
+    expect(custom.model).toBe('openai/gpt-oss-20b');
     const fallback = new AiConfig(configService({}) as never);
-    expect(fallback.model).toBe('openai/gpt-4o-mini');
+    expect(fallback.model).toBe('openai/gpt-oss-120b');
   });
 
   it('aucun identifiant de modèle fournisseur dans les services IA', () => {

@@ -214,7 +214,7 @@ describe('secrets — absents des payloads IA', () => {
     });
     await service.chat('Nouvelles inscriptions ?');
     const serialized = JSON.stringify(gatewayInputs);
-    for (const leak of ['sk-or-', 'Bearer', 'password', 'Authorization', 'OPENROUTER_API_KEY']) {
+    for (const leak of ['gsk-', 'sk-or-', 'Bearer', 'password', 'Authorization', 'GROQ_API_KEY']) {
       expect(serialized).not.toContain(leak);
     }
   });

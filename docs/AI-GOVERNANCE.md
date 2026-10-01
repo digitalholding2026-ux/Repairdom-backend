@@ -10,9 +10,10 @@
 ```text
 Relio (NestJS)
   ↓  (services métier, jamais le frontend)
-AI Gateway (IA-1 : AiGatewayService, seul appelant OpenRouter)
+AI Gateway (IA-1 : AiGatewayService, seul appelant du provider IA)
   ↓  POST {baseUrl}/chat/completions (OpenAI-compatible, HTTPS exigée)
-OpenRouter (modèle configurable via OPENROUTER_MODEL)
+GroqCloud (modèle configurable via GROQ_MODEL, défaut openai/gpt-oss-120b ;
+migration OpenRouter → Groq : même contrat gateway, fail-open inchangé)
   ↓  résultat JSON structuré et validé (jamais de texte libre exploité)
 stockage du signal (tables IA-4 → IA-8, snapshots immuables)
   ↓
@@ -30,7 +31,7 @@ auditability, **no automatic sanctions**.
 
 | Chantier | Objectif | Données transmises au modèle | Résultat | Stockage | Rôle humain | En cas d'échec |
 |---|---|---|---|---|---|---|
-| IA-1 Gateway | Socle d'appel OpenRouter | Messages passés par l'appelant (jamais de collecte propre) | Texte / JSON | Aucun | — (infra) | Exception typée (`AI_DISABLED`, `AI_UPSTREAM`, `AI_TERMINAL`, `AI_INVALID_RESPONSE`), jamais de retry |
+| IA-1 Gateway | Socle d'appel provider IA (GroqCloud) | Messages passés par l'appelant (jamais de collecte propre) | Texte / JSON | Aucun | — (infra) | Exception typée (`AI_DISABLED`, `AI_UPSTREAM`, `AI_TERMINAL`, `AI_INVALID_RESPONSE`), retry unique borné sur 429 seul (IA-11.4) |
 | IA-2 Catalogue/barèmes | Référentiel tarifaire admin | Aucun appel IA | Barème versionné | `Pricing` + `PricingHistory` | Admin saisit les barèmes | N/A (pas d'IA) |
 | IA-3 Diagnostic libre | Diagnostic technicien (texte/audio) | Texte saisi ; audio conservé en bucket privé, **jamais envoyé brut** | Diagnostic métier | `Diagnostic` (+ `audioStoragePath` privé) | Technicien auteur | N/A (pas d'analyse) |
 | IA-4 Classification | Aider le dispatch (« Autre ») | `deviceLabel`, `description` (≤ 1000), `city`, natures de médias (jamais de bytes) | `{domainId?, categories[], confidence, classification}` | `DemandeClassification` (1/demande, `model`, `promptVersion v1`, `reason` borné) | Dispatch aidé, jamais décidé ; donnée client jamais écrasée | Fallback `UNCERTAIN`/`UNCLASSIFIABLE` tracé, création de demande intacte |
@@ -51,20 +52,22 @@ IA-4/IA-5 (champs nommés uniquement).
 
 ## 4. Secrets
 
-- `OPENROUTER_API_KEY` : backend uniquement (`AiConfig.apiKey`), transmise en
-  en-tête `Authorization` sortant, **jamais** dans le corps de requête, les
-  logs (expurgée par `scrubSecrets`), les réponses API, le frontend ou le
-  bundle Next.js (testé : aucune occurrence `OPENROUTER`/`sk-or-` dans `src/`).
-- Modèle : toujours `AiConfig.model` (donc `OPENROUTER_MODEL`, défaut
-  `openai/gpt-4o-mini`) ; **aucun service ne surcharge `model:`** (testé
+- `GROQ_API_KEY` (`gsk-…`) : backend uniquement (`AiConfig.apiKey`,
+  Railway → Variables, jamais committée), transmise en en-tête
+  `Authorization` sortant, **jamais** dans le corps de requête, les logs
+  (expurgée par `scrubSecrets`), les réponses API, le frontend ou le bundle
+  Next.js (testé : aucune occurrence `GROQ`/`gsk-` dans `src/` frontend).
+- Modèle : toujours `AiConfig.model` (donc `GROQ_MODEL`, défaut
+  `openai/gpt-oss-120b`) ; **aucun service ne surcharge `model:`** (testé
   statiquement). Le modèle effectif est persisté par signal (`model`).
 - Aucune nouvelle clé, aucun secret frontend (testé).
 
 ## 5. Logs (§6 vérifié)
 
-Journalisé (ids + technique) : `caller`, `model`, `messages` (compte),
-`status`, `durationMs`, `tokens`, `detail` (motif de refus / statut HTTP /
-nom du modèle), `correlationId` (id demande/message), catégorie, confiance,
+Journalisé (ids + technique) : `provider` (hôte base URL), `caller`,
+`model`, `messages` (compte), `status`, `durationMs`, `tokens`, `detail`
+(motif de refus / statut HTTP / nom du modèle), `correlationId` (id
+demande/message), `attempt`/`delayMs` (retry 429), catégorie, confiance,
 sévérité. Jamais : prompts/contenus, conversations intégrales, PII, clé,
 `Authorization`, tokens.
 
@@ -154,7 +157,7 @@ personnelles » (3 phrases génériques).
 | Sujet | Statut |
 |---|---|
 | Collecte nom/adresse/téléphone/email, usage plateforme, non-revente | EXISTANT |
-| Recours à un prestataire IA (OpenRouter) pour l'analyse | **MANQUANT** |
+| Recours à un prestataire IA (GroqCloud) pour l'analyse | **MANQUANT** |
 | Finalités (sécurité, support, qualité, aide au dispatch) | **MANQUANT** |
 | Catégories de données analysées (diagnostics, messages, tarifs…) | **MANQUANT** |
 | Conservation (durées, suppressions en cascade) | **MANQUANT** |

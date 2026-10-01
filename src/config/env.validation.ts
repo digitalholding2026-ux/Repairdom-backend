@@ -127,7 +127,7 @@ class EnvironmentVariables {
   @IsNotEmpty()
   SASPAY_PAYOUT_RELAY_SECRET?: string;
 
-  // IA-1 — socle AI Gateway (OpenRouter, infrastructure uniquement).
+  // IA-1 — socle AI Gateway (GroqCloud, infrastructure uniquement).
   // Toutes optionnelles : sans elles le gateway refuse proprement
   // (AI_DISABLED) et aucun comportement métier ne change. La clé reste
   // backend uniquement, jamais committée, jamais exposée au frontend.
@@ -138,26 +138,42 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
-  OPENROUTER_API_KEY?: string;
+  GROQ_API_KEY?: string;
 
   @IsOptional()
   @IsString()
   @IsNotEmpty()
-  OPENROUTER_BASE_URL?: string;
+  GROQ_BASE_URL?: string;
 
   @IsOptional()
   @IsString()
   @IsNotEmpty()
-  OPENROUTER_MODEL?: string;
+  GROQ_MODEL?: string;
 
   @IsOptional()
   @IsString()
   @IsNotEmpty()
-  OPENROUTER_FALLBACK_MODEL?: string;
+  GROQ_FALLBACK_MODEL?: string;
 
   @IsOptional()
   @IsNumberString()
-  OPENROUTER_TIMEOUT_MS?: string;
+  GROQ_TIMEOUT_MS?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  AI_AGENT_PLAN_MAX_TOKENS?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  AI_AGENT_SYNTH_MAX_TOKENS?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  AI_429_MAX_RETRIES?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  AI_429_RETRY_DELAY_MS?: string;
 
   // IA-4 — classification des demandes « Autre » (aide au dispatch).
   // Optionnelles : défauts sûrs en code (seuil 0.7, timeout 8 s).
@@ -206,18 +222,18 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
     }
   }
 
-  // OPENROUTER_BASE_URL renseignée : https exigée (jamais de clé en clair
+  // GROQ_BASE_URL renseignée : https exigée (jamais de clé en clair
   // sur HTTP). La clé elle-même n'est jamais affichée dans les erreurs.
-  const rawOpenRouterUrl = (validatedConfig.OPENROUTER_BASE_URL ?? '').trim().replace(/\/+$/, '');
-  if (rawOpenRouterUrl.length > 0) {
+  const rawGroqUrl = (validatedConfig.GROQ_BASE_URL ?? '').trim().replace(/\/+$/, '');
+  if (rawGroqUrl.length > 0) {
     let parsed: URL;
     try {
-      parsed = new URL(rawOpenRouterUrl);
+      parsed = new URL(rawGroqUrl);
     } catch {
-      throw new Error('OPENROUTER_BASE_URL must be a valid URL.');
+      throw new Error('GROQ_BASE_URL must be a valid URL.');
     }
     if (parsed.protocol !== 'https:' || !parsed.hostname) {
-      throw new Error('OPENROUTER_BASE_URL must be a valid https URL.');
+      throw new Error('GROQ_BASE_URL must be a valid https URL.');
     }
   }
 

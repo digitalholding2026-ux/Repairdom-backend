@@ -105,7 +105,7 @@ function gatewayWithFetch(bodies: string[]) {
     vi.fn(async () => {
       const content = bodies[Math.min(calls, bodies.length - 1)];
       calls += 1;
-      const payload = { choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' };
+      const payload = { choices: [{ message: { content } }], model: 'openai/gpt-oss-120b' };
       return {
         status: 200,
         headers: { get: () => 'application/json' },
@@ -120,8 +120,8 @@ function gatewayWithFetch(bodies: string[]) {
         (
           {
             AI_ENABLED: 'true',
-            OPENROUTER_API_KEY: 'sk-or-test-UNIT',
-            OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+            GROQ_API_KEY: 'gsk-test-UNIT',
+            GROQ_BASE_URL: 'https://api.groq.com/openai/v1',
           } as Record<string, string>
         )[key],
     } as never,

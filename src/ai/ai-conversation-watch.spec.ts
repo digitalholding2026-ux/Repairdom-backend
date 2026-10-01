@@ -8,7 +8,7 @@ import {
 
 /* IA-8 — surveillance des conversations (Prisma + Gateway mockés) :
  * signal uniquement, jamais bloquant, jamais une sanction. Le message est
- * toujours conservé ; OpenRouter indisponible/invalide → aucun flag.
+ * toujours conservé ; provider IA indisponible/invalide → aucun flag.
  * Aucun appel réseau. */
 
 const MESSAGE = {
@@ -214,7 +214,7 @@ describe('réponses IA inexploitables → message conservé, aucun flag', () => 
   });
 });
 
-describe('OpenRouter indisponible → message conservé, aucun flag, jamais de throw', () => {
+describe('Provider IA indisponible → message conservé, aucun flag, jamais de throw', () => {
   it('IA désactivée → null sans appel gateway', async () => {
     const { service, gateway, created } = watchService({ enabled: false });
     expect(await service.analyzeMessage('msg-1')).toBeNull();

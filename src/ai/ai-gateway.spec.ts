@@ -9,10 +9,10 @@ import {
 import { AiGatewayService, parseJsonBody } from './ai-gateway.service.js';
 
 /* IA-1 — socle AI Gateway (fetch global stubé) : configuration,
- * succès/erreurs OpenRouter, réponses structurées, sécurité des secrets.
+ * succès/erreurs provider GroqCloud, réponses structurées, sécurité des secrets.
  * Aucun appel réseau réel, aucun comportement métier touché. */
 
-const FAKE_KEY = 'sk-or-test-UNITKEY1234567890';
+const FAKE_KEY = 'gsk-test-UNITKEY1234567890';
 
 function configService(values: Record<string, string | undefined>) {
   return { get: (key: string) => values[key] };
@@ -20,7 +20,7 @@ function configService(values: Record<string, string | undefined>) {
 
 function gateway(values: Record<string, string | undefined> = {}) {
   const config = new AiConfig(
-    configService({ AI_ENABLED: 'true', OPENROUTER_API_KEY: FAKE_KEY, ...values }) as never,
+    configService({ AI_ENABLED: 'true', GROQ_API_KEY: FAKE_KEY, ...values }) as never,
   );
   return new AiGatewayService(config);
 }
@@ -71,11 +71,11 @@ const INPUT = {
   messages: [{ role: 'user' as const, content: 'Bonjour' }],
 };
 
-function openRouterOk(content = 'Réponse de test', usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }) {
+function groqOk(content = 'Réponse de test', usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }) {
   return {
-    id: 'gen-1',
-    model: 'openai/gpt-4o-mini',
-    choices: [{ message: { role: 'assistant', content } }],
+    id: 'chatcmpl-1',
+    model: 'openai/gpt-oss-120b',
+    choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
     usage,
   };
 }
@@ -93,7 +93,7 @@ describe('configuration', () => {
   });
 
   it('clé absente malgré AI_ENABLED=true → refus propre', async () => {
-    const service = gateway({ OPENROUTER_API_KEY: undefined });
+    const service = gateway({ GROQ_API_KEY: undefined });
     await expect(service.complete(INPUT)).rejects.toMatchObject({
       name: 'AiDisabledException',
       retryable: false,
@@ -101,38 +101,38 @@ describe('configuration', () => {
   });
 
   it('URL non-https → refus propre', async () => {
-    const service = gateway({ OPENROUTER_BASE_URL: 'http://evil.test/v1' });
+    const service = gateway({ GROQ_BASE_URL: 'http://evil.test/v1' });
     await expect(service.complete(INPUT)).rejects.toBeInstanceOf(AiDisabledException);
   });
 
   it('défauts sains : modèle, base https, timeout borné, fallback lu', () => {
-    const config = new AiConfig(configService({ AI_ENABLED: 'true', OPENROUTER_API_KEY: FAKE_KEY }) as never);
-    expect(config.model).toBe('openai/gpt-4o-mini');
-    expect(config.validatedBaseUrl()).toBe('https://openrouter.ai/api/v1');
+    const config = new AiConfig(configService({ AI_ENABLED: 'true', GROQ_API_KEY: FAKE_KEY }) as never);
+    expect(config.model).toBe('openai/gpt-oss-120b');
+    expect(config.validatedBaseUrl()).toBe('https://api.groq.com/openai/v1');
     expect(config.timeoutMs).toBe(30_000);
     expect(config.fallbackModel).toBeNull();
     expect(config.isConfigured()).toBe(true);
     const custom = new AiConfig(
       configService({
         AI_ENABLED: 'true',
-        OPENROUTER_API_KEY: FAKE_KEY,
-        OPENROUTER_MODEL: 'anthropic/claude-3-haiku',
-        OPENROUTER_FALLBACK_MODEL: 'openai/gpt-4o-mini',
-        OPENROUTER_TIMEOUT_MS: '5000',
+        GROQ_API_KEY: FAKE_KEY,
+        GROQ_MODEL: 'openai/gpt-oss-20b',
+        GROQ_FALLBACK_MODEL: 'llama-3.3-70b-versatile',
+        GROQ_TIMEOUT_MS: '5000',
       }) as never,
     );
-    expect(custom.model).toBe('anthropic/claude-3-haiku');
-    expect(custom.fallbackModel).toBe('openai/gpt-4o-mini');
+    expect(custom.model).toBe('openai/gpt-oss-20b');
+    expect(custom.fallbackModel).toBe('llama-3.3-70b-versatile');
     expect(custom.timeoutMs).toBe(5000);
   });
 });
 
-describe('OpenRouter', () => {
+describe('GroqCloud', () => {
   it('appel réussi → structure interne propre (result/model/usage/duration)', async () => {
-    stubFetchOnce(200, openRouterOk());
+    stubFetchOnce(200, groqOk());
     const result = await gateway().complete(INPUT);
     expect(result.result).toBe('Réponse de test');
-    expect(result.model).toBe('openai/gpt-4o-mini');
+    expect(result.model).toBe('openai/gpt-oss-120b');
     expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
@@ -183,17 +183,17 @@ describe('OpenRouter', () => {
   });
 
   it('réponse structurée valide → completeJson parsé', async () => {
-    stubFetchOnce(200, openRouterOk('{"statut":"ok","score":2}'));
+    stubFetchOnce(200, groqOk('{"statut":"ok","score":2}'));
     const result = await gateway().completeJson<{ statut: string; score: number }>(INPUT);
     expect(result.result).toEqual({ statut: 'ok', score: 2 });
-    expect(result.model).toBe('openai/gpt-4o-mini');
+    expect(result.model).toBe('openai/gpt-oss-120b');
   });
 
   it('bloc markdown ```json toléré, non-JSON → erreur propre', async () => {
-    stubFetchOnce(200, openRouterOk('```json\n{"a":1}\n```'));
+    stubFetchOnce(200, groqOk('```json\n{"a":1}\n```'));
     const result = await gateway().completeJson<{ a: number }>(INPUT);
     expect(result.result).toEqual({ a: 1 });
-    stubFetchOnce(200, openRouterOk('pas du json'));
+    stubFetchOnce(200, groqOk('pas du json'));
     await expect(gateway().completeJson(INPUT)).rejects.toBeInstanceOf(AiInvalidResponseException);
   });
 });
@@ -216,7 +216,7 @@ describe('sécurité des secrets', () => {
     expect(JSON.stringify(error)).not.toContain(FAKE_KEY);
     expect(String((error as Error).message)).not.toContain(FAKE_KEY);
 
-    stubFetchOnce(200, openRouterOk());
+    stubFetchOnce(200, groqOk());
     const result = await gateway().complete(INPUT);
     expect(JSON.stringify(result)).not.toContain(FAKE_KEY);
   });
@@ -229,7 +229,7 @@ describe('sécurité des secrets', () => {
       return true;
     }) as never);
     try {
-      stubFetchOnce(200, openRouterOk());
+      stubFetchOnce(200, groqOk());
       await gateway().complete({ ...INPUT, correlationId: 'corr-1' });
       stubFetchOnce(500, { error: 'boom' });
       await gateway().complete(INPUT).catch(() => undefined);
@@ -238,7 +238,7 @@ describe('sécurité des secrets', () => {
       void originalWrite;
     }
     expect(chunks.join('')).not.toContain(FAKE_KEY);
-    expect(chunks.join('')).not.toContain('sk-or-test');
+    expect(chunks.join('')).not.toContain('gsk-test');
   });
 
   it('Authorization expurgée même si interpolée par mégarde', async () => {
@@ -249,7 +249,7 @@ describe('sécurité des secrets', () => {
 });
 
 describe('robustesse', () => {
-  it('toute exception OpenRouter devient une AiGatewayException', async () => {
+  it('toute exception provider devient une AiGatewayException', async () => {
     stubFetchThrow(new Error('socket hang up'));
     const error = await gateway().complete(INPUT).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(AiGatewayException);

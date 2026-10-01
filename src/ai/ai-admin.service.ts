@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 /* IA-9 — agrégation du dashboard admin (VISUALISATION uniquement).
  *
  * Ce service ne fait que récupérer/compter/paginer des signaux EXISTANTS
- * (IA-4 → IA-8) : aucune analyse, aucun appel OpenRouter (le dashboard
+ * (IA-4 → IA-8) : aucune analyse, aucun appel provider IA (le dashboard
  * reste accessible même IA indisponible), aucune écriture, aucun score
  * global de risque (les faits individuels restent visibles par onglet).
  * Requêtes parallèles, relations bornées, index existants — pas de N+1. */

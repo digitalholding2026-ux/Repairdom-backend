@@ -776,7 +776,7 @@ enum AiWarningStatus {
 // Un flag par message analysé (idempotence via messageId unique) ; le
 // message original reste la source de vérité (aucune copie intégrale
 // stockée ici). Historique immuable (revue/dismiss s'ajoutent, rien
-// n'est supprimé). Aucun appel OpenRouter hors AiGatewayService.
+// n'est supprimé). Aucun appel provider IA hors AiGatewayService.
 model AiConversationFlag {
   id              String   @id @default(dbgenerated("gen_random_uuid()"))
   demandeId       String

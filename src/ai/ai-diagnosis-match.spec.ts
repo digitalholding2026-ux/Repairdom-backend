@@ -31,7 +31,7 @@ function service(options: {
 } = {}) {
   const env = {
     AI_ENABLED: 'true',
-    OPENROUTER_API_KEY: 'sk-or-test-UNIT',
+    GROQ_API_KEY: 'gsk-test-UNIT',
     AI_CLASSIFICATION_MIN_CONFIDENCE: '0.7',
     ...options.env,
   };

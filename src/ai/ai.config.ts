@@ -1,23 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-/* IA-1 — configuration OpenRouter, lue UNIQUEMENT côté backend.
+/* IA-1 — configuration du provider IA (GroqCloud depuis la migration
+ * OpenRouter → Groq, voir docs/AI-GOVERNANCE.md), lue UNIQUEMENT côté backend.
  * Conventions reprises de `SasPayConfig` : getters typés, secrets jamais
  * exposés, `isConfigured()` pour refuser proprement sans secret.
  *
  * Variables (toutes optionnelles : sans elles le gateway refuse proprement) :
  * - `AI_ENABLED` ("true"/"false", défaut "false") : interrupteur global ;
- * - `OPENROUTER_API_KEY` : clé secrète, backend uniquement, jamais loggée ;
- * - `OPENROUTER_BASE_URL` : défaut officiel `https://openrouter.ai/api/v1` ;
- * - `OPENROUTER_MODEL` : modèle principal (défaut ci-dessous) ;
- * - `OPENROUTER_FALLBACK_MODEL` : modèle de repli FUTUR (lu, non utilisé
- *   en IA-1 — aucun retry automatique) ;
- * - `OPENROUTER_TIMEOUT_MS` : garde-fou par appel (défaut 30 s). */
+ * - `GROQ_API_KEY` : clé secrète (`gsk-…`), backend uniquement, jamais loggée ;
+ * - `GROQ_BASE_URL` : défaut officiel compatible OpenAI ci-dessous ;
+ * - `GROQ_MODEL` : modèle principal (défaut ci-dessous) ;
+ * - `GROQ_FALLBACK_MODEL` : modèle de repli FUTUR (lu, non utilisé —
+ *   aucune bascule automatique) ;
+ * - `GROQ_TIMEOUT_MS` : garde-fou par appel (défaut 30 s). */
 
-export const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
-export const OPENROUTER_DEFAULT_MODEL = 'openai/gpt-4o-mini';
-export const OPENROUTER_DEFAULT_TIMEOUT_MS = 30_000;
-export const OPENROUTER_MAX_TIMEOUT_MS = 120_000;
+export const GROQ_DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
+export const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b';
+export const GROQ_DEFAULT_TIMEOUT_MS = 30_000;
+export const GROQ_MAX_TIMEOUT_MS = 120_000;
 
 @Injectable()
 export class AiConfig {
@@ -28,16 +29,16 @@ export class AiConfig {
     return this.config.get<string>('AI_ENABLED')?.trim().toLowerCase() === 'true';
   }
 
-  /** Clé API secrète — backend uniquement, jamais journalisée. */
+  /** Clé API secrète (`gsk-…`) — backend uniquement, jamais journalisée. */
   get apiKey(): string | null {
-    const raw = this.config.get<string>('OPENROUTER_API_KEY')?.trim();
+    const raw = this.config.get<string>('GROQ_API_KEY')?.trim();
     return raw && raw.length > 0 ? raw : null;
   }
 
-  /** Base API (https exigée, slash final retiré). */
+  /** Base API compatible OpenAI (https exigée, slash final retiré). */
   get baseUrl(): string {
-    const raw = this.config.get<string>('OPENROUTER_BASE_URL')?.trim().replace(/\/+$/, '');
-    return raw && raw.length > 0 ? raw : OPENROUTER_DEFAULT_BASE_URL;
+    const raw = this.config.get<string>('GROQ_BASE_URL')?.trim().replace(/\/+$/, '');
+    return raw && raw.length > 0 ? raw : GROQ_DEFAULT_BASE_URL;
   }
 
   /** URL validée (https uniquement) — null si malformée/non-https. */
@@ -52,21 +53,22 @@ export class AiConfig {
 
   /** Modèle principal (configurable, jamais codé en dur en aval). */
   get model(): string {
-    const raw = this.config.get<string>('OPENROUTER_MODEL')?.trim();
-    return raw && raw.length > 0 ? raw : OPENROUTER_DEFAULT_MODEL;
+    const raw = this.config.get<string>('GROQ_MODEL')?.trim();
+    return raw && raw.length > 0 ? raw : GROQ_DEFAULT_MODEL;
   }
 
-  /** Modèle de repli FUTUR (IA-1 : lu et exposé, aucun basculement auto). */
+  /** Modèle de repli FUTUR (lu et exposé, aucun basculement auto — la
+   *  décision d'activer un fallback reste explicite, jamais automatique). */
   get fallbackModel(): string | null {
-    const raw = this.config.get<string>('OPENROUTER_FALLBACK_MODEL')?.trim();
+    const raw = this.config.get<string>('GROQ_FALLBACK_MODEL')?.trim();
     return raw && raw.length > 0 ? raw : null;
   }
 
   /** Timeout par appel, borné [1 s, 120 s]. */
   get timeoutMs(): number {
-    const raw = Number(this.config.get<string>('OPENROUTER_TIMEOUT_MS'));
-    if (!Number.isFinite(raw)) return OPENROUTER_DEFAULT_TIMEOUT_MS;
-    return Math.min(Math.max(Math.round(raw), 1000), OPENROUTER_MAX_TIMEOUT_MS);
+    const raw = Number(this.config.get<string>('GROQ_TIMEOUT_MS'));
+    if (!Number.isFinite(raw)) return GROQ_DEFAULT_TIMEOUT_MS;
+    return Math.min(Math.max(Math.round(raw), 1000), GROQ_MAX_TIMEOUT_MS);
   }
 
   /* IA-4/IA-5 — seuil de confiance CENTRALISÉ (unique, jamais dispersé) :
@@ -109,7 +111,7 @@ export class AiConfig {
   }
 
   /* IA-11.2 — plafonds de sortie CENTRALISÉS de l'agent admin (plafonds
-   * OpenRouter `max_tokens`, raisonnement du fournisseur inclus) :
+   * `max_tokens` du provider, raisonnement du fournisseur inclus) :
    * - plan : JSON de ~25-80 tokens ; 300 tokens provoquaient
    *   `finish_reason=length` à contenu vide (budget absorbé avant le
    *   contenu) → défaut 800 (marge ×3, pas de coût cible) ;
@@ -117,21 +119,22 @@ export class AiConfig {
    *   tokens) + enveloppe JSON ; 800 tokens coupaient le JSON à ~680
    *   car. (`finish_reason=length`, ~1600 tokens de complétion
    *   comptés) → défaut 1500.
-   * Surcharges d'exploitation (bornées) : `OPENROUTER_AGENT_PLAN_MAX_TOKENS`
-   * et `OPENROUTER_AGENT_SYNTH_MAX_TOKENS`. */
+   * Surcharges d'exploitation (bornées) : `AI_AGENT_PLAN_MAX_TOKENS`
+   * et `AI_AGENT_SYNTH_MAX_TOKENS` (noms indépendants du provider). */
   get agentPlanMaxTokens(): number {
-    const raw = Number(this.config.get<string>('OPENROUTER_AGENT_PLAN_MAX_TOKENS'));
+    const raw = Number(this.config.get<string>('AI_AGENT_PLAN_MAX_TOKENS'));
     if (!Number.isFinite(raw)) return 800;
     return Math.min(Math.max(Math.round(raw), 200), 4000);
   }
 
   get agentSynthMaxTokens(): number {
-    const raw = Number(this.config.get<string>('OPENROUTER_AGENT_SYNTH_MAX_TOKENS'));
+    const raw = Number(this.config.get<string>('AI_AGENT_SYNTH_MAX_TOKENS'));
     if (!Number.isFinite(raw)) return 1500;
     return Math.min(Math.max(Math.round(raw), 400), 8000);
   }
 
-  /* IA-11.4 — résilience HTTP 429 OpenRouter (rate limiting du plan gratuit).
+  /* IA-11.4 — résilience HTTP 429 du provider (quotas : 30 req/min,
+   * 8 000 tokens/min sur le plan GroqCloud utilisé — voir docs/AI-GOVERNANCE.md).
    * UN SEUL retry par appel (`maxRetries` borné [0, 1] : aucune boucle
    * possible, même en cas de mauvaise configuration) + backoff court
    * (défaut 1000 ms, borné [0, 10 s]). Le retry s'applique par appel
@@ -158,8 +161,8 @@ export class AiConfig {
   /** Motif de refus (sans secret), null si appelable. */
   refusalReason(): string | null {
     if (!this.enabled) return 'IA désactivée (AI_ENABLED=false)';
-    if (!this.apiKey) return 'clé API OpenRouter absente';
-    if (!this.validatedBaseUrl()) return 'URL OpenRouter invalide (https requise)';
+    if (!this.apiKey) return 'clé API Groq absente';
+    if (!this.validatedBaseUrl()) return 'URL Groq invalide (https requise)';
     return null;
   }
 }

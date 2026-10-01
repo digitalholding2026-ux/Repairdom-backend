@@ -5,7 +5,7 @@ import { AiGatewayService } from './ai-gateway.service.js';
 import { AiInvalidResponseException, AiUpstreamException } from './ai-errors.js';
 
 /* IA-11.3 — transport HTTP 200 : `request_timeout` vs `body_read_error`
- * (dont avort pendant la lecture, cas prod à ~timeout) vs forme OpenRouter.
+ * (dont avort pendant la lecture, cas prod à ~timeout) vs forme provider.
  * Métadonnées seules en logs, jamais le corps. Modèle et parser inchangés. */
 
 afterEach(() => {
@@ -15,8 +15,8 @@ afterEach(() => {
 
 const CONFIG_VALUES: Record<string, string> = {
   AI_ENABLED: 'true',
-  OPENROUTER_API_KEY: 'sk-or-test-UNIT',
-  OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+  GROQ_API_KEY: 'gsk-test-UNIT',
+  GROQ_BASE_URL: 'https://api.groq.com/openai/v1',
 };
 
 function gateway() {
@@ -192,7 +192,7 @@ describe('E/F. HTTP 429 / 5xx → upstream classé, sans lecture du corps', () =
   });
 });
 
-describe('G. HTTP 200 + payload OpenRouter invalide → invalid_openrouter_payload', () => {
+describe('G. HTTP 200 + payload provider invalide → invalid_provider_payload', () => {
   it.each([
     ['sans choices', { unexpected: true }],
     ['choices vide', { choices: [] }],
@@ -205,9 +205,9 @@ describe('G. HTTP 200 + payload OpenRouter invalide → invalid_openrouter_paylo
       vi.fn(async () => fakeResponse({ status: 200, text: JSON.stringify(payload) })),
     );
     const error = await gateway().complete(INPUT).catch((err: unknown) => err);
-    expect(error).toMatchObject({ message: 'Réponse IA inexploitable.', transportReason: 'invalid_openrouter_payload' });
+    expect(error).toMatchObject({ message: 'Réponse IA inexploitable.', transportReason: 'invalid_provider_payload' });
     const line = warns.join('\n');
-    expect(line).toContain('invalid_openrouter_payload');
+    expect(line).toContain('invalid_provider_payload');
     expect(line).toContain('choicesCount=');
   });
 });
@@ -250,7 +250,7 @@ describe('non-streaming + secrets + timeout centralisé', () => {
 
   it('logs sans corps, sans clé, sans Authorization', async () => {
     const warns = captureWarns();
-    const secret = 'CORPS-SECRET-NE-PAS-LOGGER-sk-or-test-UNIT';
+    const secret = 'CORPS-SECRET-NE-PAS-LOGGER-gsk-test-UNIT';
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => fakeResponse({ status: 200, text: secret })),
@@ -258,7 +258,7 @@ describe('non-streaming + secrets + timeout centralisé', () => {
     await gateway().completeJson(INPUT).catch(() => undefined);
     const joined = warns.join('\n');
     expect(joined).not.toContain(secret);
-    expect(joined).not.toContain('sk-or-test-UNIT');
+    expect(joined).not.toContain('gsk-test-UNIT');
     expect(joined).not.toContain('Authorization');
   });
 

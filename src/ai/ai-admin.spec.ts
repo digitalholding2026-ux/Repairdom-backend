@@ -7,11 +7,11 @@ import { AdminController } from '../admin/admin.controller.js';
 
 /* IA-9 — dashboard admin (visualisation seule) : compteurs factuels,
  * listes paginées/filtrées IA-4/IA-5/IA-6, permissions ADMIN, aucune
- * analyse, aucun appel OpenRouter, aucune écriture métier. Prisma mocké. */
+ * analyse, aucun appel provider IA, aucune écriture métier. Prisma mocké. */
 
 function adminService(prisma: unknown) {
   // AiAdminService n'injecte QUE PrismaService : structurellement incapable
-  // d'appeler OpenRouter (dashboard accessible IA indisponible).
+  // d'appeler le provider IA (dashboard accessible IA indisponible).
   return new AiAdminService(prisma as never);
 }
 
@@ -56,7 +56,7 @@ describe('overview — compteurs factuels par signal', () => {
     expect(typeof overview.generatedAt).toBe('string');
     // Aucune donnée personnelle dans l'overview.
     const serialized = JSON.stringify(overview);
-    for (const leak of ['phone', 'email', 'address', 'password', 'token', 'sk-or-']) {
+    for (const leak of ['phone', 'email', 'address', 'password', 'token', 'sk-or-', 'gsk-']) {
       expect(serialized.toLowerCase()).not.toContain(leak);
     }
   });

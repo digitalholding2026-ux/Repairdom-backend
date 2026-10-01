@@ -2,7 +2,7 @@
  *
  * Conventions calquées sur le rail SasPay : erreur interne propre avec
  * `code` machine + `retryable` (rejouable vs terminal), message générique
- * côté utilisateur. AUCUN secret (clé OpenRouter, Authorization) ne doit
+ * côté utilisateur. AUCUN secret (clé provider, Authorization) ne doit
  * jamais transiter par ces objets — les constructeurs n'acceptent que des
  * fragments sûrs (statut HTTP, code distant expurgé, libellé court). */
 
@@ -14,8 +14,8 @@
  * - body_read_error : statut reçu mais corps illisible (dont avorté
  *   pendant la lecture : `abortReason=timeout`, cas prod HTTP 200 à
  *   ~8000 ms) ;
- * - invalid_openrouter_payload : corps JSON valide mais forme inattendue
- *   (pas de `choices` exploitable). */
+ * - invalid_provider_payload : corps JSON valide mais forme inattendue
+ *   (pas de `choices` exploitable — format OpenAI-compatible). */
 export type AiTransportReason =
   | 'disabled'
   | 'request_timeout'
@@ -24,7 +24,7 @@ export type AiTransportReason =
   | 'upstream_server_error'
   | 'provider_refused'
   | 'body_read_error'
-  | 'invalid_openrouter_payload';
+  | 'invalid_provider_payload';
 
 /** Cause d'avort : `timeout` (signal/timeout expiré) ou `none`. */
 export type AiAbortReason = 'timeout' | 'none';
@@ -89,7 +89,7 @@ export class AiTerminalException extends AiGatewayException {
 
 /** Réponse 200 inexploitable (JSON illisible, contrat inattendu) :
  *  non rejouable à l'identique sans changer la demande.
- *  IA-11.2 — `finishReason` OpenRouter propagé pour le diagnostic
+ *  IA-11.2 — `finishReason` du provider propagé pour le diagnostic
  *  (`length` = troncature par `max_tokens`, jamais réparée). */
 export class AiInvalidResponseException extends AiGatewayException {
   readonly finishReason: string | null;

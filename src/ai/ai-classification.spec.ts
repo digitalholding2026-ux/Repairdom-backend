@@ -21,7 +21,7 @@ function service(options: {
 } = {}) {
   const env = {
     AI_ENABLED: 'true',
-    OPENROUTER_API_KEY: 'sk-or-test-UNIT',
+    GROQ_API_KEY: 'gsk-test-UNIT',
     AI_CLASSIFICATION_MIN_CONFIDENCE: '0.7',
     ...options.env,
   };
@@ -165,7 +165,7 @@ describe('IA désactivée → aucun appel, dispatch inchangé', () => {
   });
 });
 
-describe('OpenRouter indisponible → demande non bloquée', () => {
+describe('Provider IA indisponible → demande non bloquée', () => {
   it.each([
     ['timeout', new AiUpstreamException('timeout')],
     ['500', new AiUpstreamException('boom', 500)],

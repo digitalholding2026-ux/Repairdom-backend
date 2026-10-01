@@ -6,8 +6,8 @@ import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js
 /* IA-6 — surveillance DÉTERMINISTE des tarifs (signal, jamais de blocage).
  *
  * Règles absolues :
- * - AUCUN appel OpenRouter ici (comparaison prix ↔ barème en code pur ;
- *   fonctionne même si OpenRouter est totalement indisponible) ;
+ * - AUCUN appel provider IA ici (comparaison prix ↔ barème en code pur ;
+ *   fonctionne même si le provider est totalement indisponible) ;
  * - l'IA (mapping IA-5) identifie le diagnostic, le CODE compare ;
  * - `null` n'est JAMAIS traité comme 0 (bornes réellement disponibles) ;
  * - snapshot IMMUABLE par devis (création unique, jamais réécrit) ;

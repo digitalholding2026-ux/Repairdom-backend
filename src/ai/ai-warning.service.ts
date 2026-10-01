@@ -16,7 +16,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
  * - expiration LAZY : EXPIRED dérivé (PENDING + dueAt dépassé), sans timer ;
  * - justification 48 h calculée backend (horodatage serveur uniquement) ;
  * - niveaux déterministes 0/1/2/3 (niveau 3 = réexamen humain, pas de
- *   suspension) ; aucun appel OpenRouter (déterministe pur). */
+ *   suspension) ; aucun appel provider IA (déterministe pur). */
 
 export const AI_WARNING_JUSTIFICATION_DUE_HOURS = 48;
 export const AI_WARNING_JUSTIFICATION_MIN_LENGTH = 10;

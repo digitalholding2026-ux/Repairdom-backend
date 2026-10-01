@@ -7,7 +7,8 @@ import {
   AiUpstreamException,
 } from './ai-errors.js';
 
-/* IA-1 — AI Gateway centralisé (SEUL point d'accès à OpenRouter).
+/* IA-1 — AI Gateway centralisé (SEUL point d'accès au provider IA,
+ * GroqCloud depuis la migration OpenRouter → Groq, voir docs/AI-GOVERNANCE.md).
  *
  * Règles absolues :
  * - AUCUNE règle métier ici (générique et réutilisable) ;
@@ -15,9 +16,11 @@ import {
  * - AUCUNE route publique `/ai/...` (usage backend interne uniquement) ;
  * - AUCUN secret dans logs/erreurs (clé expurgée défensivement) ;
  * - AUCUN contenu sensible loggé (ni prompts complets, ni PII) ;
- * - AUCUN retry automatique (l'appelant décide, backoff à sa charge).
+ * - AUCUN retry automatique sauf 429 borné IA-11.4 (l'appelant ne réessaie
+ *   jamais lui-même, backoff à la charge du gateway).
  *
- * Endpoint OpenAI-compatible : POST `{baseUrl}/chat/completions`. */
+ * Endpoint compatible OpenAI : POST `{baseUrl}/chat/completions`
+ * (GroqCloud : base `https://api.groq.com/openai/v1`, clé `gsk-…`). */
 
 export interface AiChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -44,9 +47,11 @@ export interface AiTokenUsage {
   totalTokens?: number;
 }
 
-/* Corps OpenRouter non-streaming (jamais de `stream`) : `max_tokens` et
- * `temperature` optionnels, le reste obligatoire. */
-interface OpenRouterRequestBody {
+/* Corps compatible OpenAI, non-streaming (jamais de `stream`) :
+ * `max_tokens` et `temperature` optionnels, le reste obligatoire.
+ * GroqCloud accepte le même format (pas de `response_format` envoyé :
+ * le JSON strict reste exigé par les prompts + toléré par le parser). */
+interface ProviderRequestBody {
   model: string;
   messages: Array<{ role: string; content: string }>;
   max_tokens?: number;
@@ -59,7 +64,7 @@ export interface AiCompletionResult {
   model: string;
   usage?: AiTokenUsage;
   durationMs: number;
-  /* IA-11.2 — motif d'arrêt OpenRouter (`stop`, `length`, …) : `length`
+  /* IA-11.2 — motif d'arrêt du provider (`stop`, `length`, …) : `length`
    * signale une troncature par `max_tokens` (réponse refusée en aval,
    * jamais réparée). */
   finishReason: string | null;
@@ -71,14 +76,15 @@ export interface AiJsonResult<T = unknown> {
   model: string;
   usage?: AiTokenUsage;
   durationMs: number;
-  /* IA-11.2 — motif d'arrêt OpenRouter (voir `AiCompletionResult`). */
+  /* IA-11.2 — motif d'arrêt du provider (voir `AiCompletionResult`). */
   finishReason: string | null;
 }
 
 /* Expurge défensivement toute trace de secret d'une chaîne loggée
- * (clé `sk-or-…`, header Authorization) — ceinture + bretelles, la clé
- * n'étant de toute façon jamais interpolée dans les logs. */
-const SECRET_VALUE_PATTERN = /sk-or-[A-Za-z0-9_-]+/g;
+ * (clé Groq `gsk-…`, ancien format `sk-or-…`, header Authorization) —
+ * ceinture + bretelles, la clé n'étant de toute façon jamais interpolée
+ * dans les logs. */
+const SECRET_VALUE_PATTERN = /(?:gsk-|sk-or-)[A-Za-z0-9_-]+/g;
 const AUTH_HEADER_PATTERN = /authorization\s*:\s*[^\s,}]+/gi;
 
 function scrubSecrets(value: string): string {
@@ -162,18 +168,29 @@ function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…[TRONQUE]` : text;
 }
 
+/* Hôte du provider pour les logs (ex. `api.groq.com`) : jamais la clé,
+ * jamais le chemin. `unknown` si l'URL est malformée (refusé en amont). */
+function providerHost(baseUrl: string | null): string {
+  if (!baseUrl) return 'unknown';
+  try {
+    return new URL(baseUrl).hostname || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 @Injectable()
 export class AiGatewayService {
   private readonly logger = new Logger(AiGatewayService.name);
 
   constructor(private readonly config: AiConfig) {}
 
-  /* Complétion texte via OpenRouter (erreur interne propre sinon).
+  /* Complétion texte via le provider IA (erreur interne propre sinon).
    * IA-11.3 — séquence instrumentée, mode NON-streaming (aucun `stream`
-   * envoyé : OpenRouter répond en JSON complet, jamais en flux) :
+   * envoyé : le provider répond en JSON complet, jamais en flux) :
    *   fetch (signal timeout conservé) → statut HTTP (en-têtes) → lecture
    *   du corps en texte (métadonnées seules : longueur, MIME) → parse →
-   *   forme OpenRouter → contenu. Chaque étape a sa classification
+   *   forme compatible OpenAI → contenu. Chaque étape a sa classification
    *   (`request_timeout` vs `body_read_error` vs statuts vs forme),
    *   sans JAMAIS logger le corps, les prompts ou des secrets.
    * IA-11.4 — retry contrôlé UNIQUEMENT sur HTTP 429 (`upstream_rate_limited`,
@@ -193,9 +210,9 @@ export class AiGatewayService {
     const baseUrl = this.config.validatedBaseUrl();
     if (!baseUrl) {
       // Garde-fou (refusalReason couvre déjà ce cas).
-      throw new AiDisabledException('Appel IA impossible : URL OpenRouter invalide (https requise).');
+      throw new AiDisabledException('Appel IA impossible : URL Groq invalide (https requise).');
     }
-    const body: OpenRouterRequestBody = {
+    const body: ProviderRequestBody = {
       model: input.model?.trim() || this.config.model,
       messages: input.messages.map((message) => ({ role: message.role, content: message.content })),
       ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
@@ -232,7 +249,7 @@ export class AiGatewayService {
    * lève immédiatement (aucun retry). */
   private async attemptComplete(
     input: AiCompletionInput,
-    body: OpenRouterRequestBody,
+    body: ProviderRequestBody,
     baseUrl: string,
     startedAt: number,
   ): Promise<
@@ -363,11 +380,11 @@ export class AiGatewayService {
         input,
         'invalid',
         durationMs,
-        `HTTP ${response.status} invalid_openrouter_payload choicesCount=${choices?.length ?? 0} ` +
+        `HTTP ${response.status} invalid_provider_payload choicesCount=${choices?.length ?? 0} ` +
           `messagePresent=${messageRecord !== null} contentType=${contentType} ` +
           `bodyLength=${rawBody.length} finishReason=${finishReason ?? 'unknown'}`,
       );
-      throw new AiInvalidResponseException('Réponse IA inexploitable.', finishReason, 'invalid_openrouter_payload');
+      throw new AiInvalidResponseException('Réponse IA inexploitable.', finishReason, 'invalid_provider_payload');
     }
     const usageRecord = asRecord(data.usage) ?? undefined;
     const result: AiCompletionResult = {
@@ -422,7 +439,8 @@ export class AiGatewayService {
     return { ...completion, result: detailed.value as T };
   }
 
-  /* Log technique borné : appelant, modèle, durée, statut, tokens.
+  /* Log technique borné : provider (hôte base URL, jamais la clé),
+   * appelant, modèle, durée, statut, tokens.
    * Jamais : prompts/contenus, PII, clé, Authorization. */
   private logCall(
     input: AiCompletionInput,
@@ -432,7 +450,8 @@ export class AiGatewayService {
     totalTokens?: number,
   ): void {
     const line =
-      `AI caller=${input.caller} model=${input.model?.trim() || this.config.model} ` +
+      `AI provider=${providerHost(this.config.validatedBaseUrl())} caller=${input.caller} ` +
+      `model=${input.model?.trim() || this.config.model} ` +
       `messages=${input.messages.length} status=${status} durationMs=${durationMs} ` +
       `${totalTokens !== undefined ? `tokens=${totalTokens} ` : ''}` +
       `detail=${truncate(detail, 160)}` +
