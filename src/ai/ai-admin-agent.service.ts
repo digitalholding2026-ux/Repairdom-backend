@@ -27,7 +27,9 @@ import { AiAdminService } from './ai-admin.service.js';
  * Relio fournit les chiffres. L'IA synthétise. L'humain décide. */
 
 export const AI_AGENT_PROMPT_VERSION = 1;
-export const AI_AGENT_MAX_TOKENS = 800;
+/* IA-11.2 — plafonds de sortie via `AiConfig` (`agentPlanMaxTokens` = 800,
+ * `agentSynthMaxTokens` = 1500) : l'ancienne constante dispersée est
+ * supprimée au profit de la configuration centralisée. */
 /** Fuseau métier (Afrique/Centre, UTC+1 fixe sans DST — bornes « jour »). */
 export const AI_AGENT_TIMEZONE = 'Africa/Douala';
 export const AI_AGENT_TIMEZONE_OFFSET_MS = 3_600_000;
@@ -85,6 +87,7 @@ function describeAgentFailure(error: unknown): {
   parseStage: 'transport' | 'extraction' | 'json_parse' | 'unknown';
   failureReason: string;
   httpStatus: number | null;
+  finishReason: string | null;
 } {
   const record = asRecord(error);
   const message = error instanceof Error ? error.message : '';
@@ -97,26 +100,29 @@ function describeAgentFailure(error: unknown): {
           message === 'Réponse IA non-JSON.'
         ? 200
         : null;
+  /* IA-11.2 — motif d'arrêt propagé par le gateway (`length` = troncature
+   * par `max_tokens`, libellé sûr et borné, jamais du contenu). */
+  const finishReason = typeof record?.finishReason === 'string' ? (record.finishReason as string) : null;
   if (message === 'Réponse IA illisible.') {
-    return { parseStage: 'transport', failureReason: 'unreadable_body', httpStatus };
+    return { parseStage: 'transport', failureReason: 'unreadable_body', httpStatus, finishReason };
   }
   if (message === 'Réponse IA inexploitable.') {
-    return { parseStage: 'extraction', failureReason: 'empty_or_missing_content', httpStatus };
+    return { parseStage: 'extraction', failureReason: 'empty_or_missing_content', httpStatus, finishReason };
   }
   if (message === 'Réponse IA non-JSON.') {
-    return { parseStage: 'json_parse', failureReason: 'non_json_content', httpStatus };
+    return { parseStage: 'json_parse', failureReason: 'non_json_content', httpStatus, finishReason };
   }
   if (code === 'AI_UPSTREAM' || /temporairement indisponible/i.test(message)) {
     const reason = /timeout/i.test(message) ? 'timeout' : 'upstream_unavailable';
-    return { parseStage: 'transport', failureReason: reason, httpStatus };
+    return { parseStage: 'transport', failureReason: reason, httpStatus, finishReason };
   }
   if (code === 'AI_TERMINAL' || /refusée par le fournisseur/i.test(message)) {
-    return { parseStage: 'transport', failureReason: 'provider_refused', httpStatus };
+    return { parseStage: 'transport', failureReason: 'provider_refused', httpStatus, finishReason };
   }
   if (code === 'AI_DISABLED' || /désactivé|non configuré/i.test(message)) {
-    return { parseStage: 'transport', failureReason: 'disabled', httpStatus };
+    return { parseStage: 'transport', failureReason: 'disabled', httpStatus, finishReason };
   }
-  return { parseStage: 'unknown', failureReason: 'unexpected_error', httpStatus };
+  return { parseStage: 'unknown', failureReason: 'unexpected_error', httpStatus, finishReason };
 }
 
 /** Début de journée métier (Douala) décalée de `offsetDays` (0 = aujourd'hui). */
@@ -262,7 +268,9 @@ export class AiAdminAgentService {
           { role: 'system', content: this.plannerPrompt() },
           { role: 'user', content: `${historyBlock}Question : ${question}` },
         ],
-        maxTokens: 300,
+        /* IA-11.2 — plafond centralisé (défaut 800) : 300 tokens
+         * provoquait `finish_reason=length` à contenu vide. */
+        maxTokens: this.aiConfig.agentPlanMaxTokens,
         timeoutMs: this.aiConfig.chatTimeoutMs,
         correlationId: `ai-agent-plan-${Date.now()}`,
       });
@@ -270,7 +278,8 @@ export class AiAdminAgentService {
       const failure = describeAgentFailure(error);
       this.logger.warn(
         `Agent IA plan failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
-          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'}`,
+          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'} ` +
+          `finishReason=${failure.finishReason ?? 'unknown'}`,
       );
       throw error;
     }
@@ -300,22 +309,16 @@ export class AiAdminAgentService {
     return { tool: record.tool as AgentTool, args: asRecord(record.args) ?? {} };
   }
 
+  /* IA-11.2 — prompt compact (moins de tokens d'entrée, sortie < 200
+   * caractères) : contenu fonctionnel inchangé (7 outils, périodes,
+   * cas null, interdiction d'action). */
   private plannerPrompt(): string {
     return [
-      'Tu es le planificateur de l’Agent IA du back-office Relio (aide aux administrateurs).',
-      'Tu réponds UNIQUEMENT en JSON strict, sans texte autour : {"tool": "get_technicians", "args": {"period": "today"}}.',
-      'Outils disponibles (données réelles, lecture seule) :',
-      '- get_overview : compteurs IA-4→IA-8 (classifications, mappings, contrôles, avertissements, flags) — args {}.',
-      '- get_technicians : disponibilité, missions, déplacements, KYC — args {}.',
-      '- get_demandes : demandes par statut + Autre/classifiées — args {"period": "today|yesterday|last7d|last30d"}.',
-      '- get_missions : missions actives/terminées/en attente de validation — args {"period": ...}.',
-      '- get_users : inscriptions par rôle — args {"period": ...}.',
-      '- get_reviews : avis clients récents à note basse (jamais appelés "plaintes") — args {"limit": 1..10}.',
-      '- get_recent_demandes : dernières demandes — args {"limit": 1..10}.',
-      'Période : today (défaut si pertinent), yesterday, last7d, last30d.',
-      'Question de capacité ou de présentation ("tu surveilles ?", "que sais-tu faire ?") → {"tool": null, "args": {}}.',
-      'Question incompréhensible → {"tool": null, "args": {}}.',
-      'Tu ne proposes JAMAIS d’action (suspendre, modifier, payer…) : ce n’est pas ton rôle.',
+      'Planificateur Agent IA back-office Relio (admin, lecture seule).',
+      'Réponse : UNIQUEMENT un JSON de moins de 200 caractères, sans texte ni justification : {"tool":"get_technicians","args":{"period":"today"}}.',
+      'Outils → args minimaux : get_overview (compteurs IA-4→IA-8, {}), get_technicians (dispo/missions/KYC, {}), get_demandes (statuts, {"period"}), get_missions (actives/terminées, {"period"}), get_users (inscriptions, {"period"}), get_reviews (avis note basse, jamais "plaintes", {"limit":1..10}), get_recent_demandes (dernières, {"limit":1..10}).',
+      'Période : today (défaut), yesterday, last7d, last30d. Capacité/présentation ou incompréhensible → {"tool":null,"args":{}}.',
+      'JAMAIS d’action (suspendre, modifier, payer…) : pas ton rôle.',
     ].join('\n');
   }
 
@@ -504,7 +507,9 @@ export class AiAdminAgentService {
           { role: 'system', content: this.synthesisPrompt(now) },
           { role: 'user', content: `Question : ${question}\n${dataBlock}` },
         ],
-        maxTokens: AI_AGENT_MAX_TOKENS,
+        /* IA-11.2 — plafond centralisé (défaut 1500) : 800 tokens
+         * coupaient le JSON à ~680 car. (`finish_reason=length`). */
+        maxTokens: this.aiConfig.agentSynthMaxTokens,
         timeoutMs: this.aiConfig.chatTimeoutMs,
         correlationId: `ai-agent-synth-${Date.now()}`,
       });
@@ -512,7 +517,8 @@ export class AiAdminAgentService {
       const failure = describeAgentFailure(error);
       this.logger.warn(
         `Agent IA synth failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
-          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'}`,
+          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'} ` +
+          `finishReason=${failure.finishReason ?? 'unknown'}`,
       );
       throw error;
     }
@@ -536,18 +542,15 @@ export class AiAdminAgentService {
     };
   }
 
+  /* IA-11.2 — prompt compact (sortie : une à deux phrases dans
+   * `{"reply": …}`, jamais de recalcul ni de répétition des données) :
+   * règles de sécurité intégralement conservées. */
   private synthesisPrompt(now: Date): string {
     return [
-      'Tu es l’Agent IA du back-office Relio. Tu aides exclusivement les administrateurs.',
-      'Tu réponds UNIQUEMENT en JSON strict : {"reply": "texte de la réponse"}.',
-      'Règles absolues :',
-      '- toute statistique provient des données vérifiées ci-dessus ; sans données, dis que tu ne disposes pas de donnée structurée (n’invente jamais) ;',
-      '- distingue donnée observée, calcul et interprétation ; estimation interdite sauf mention explicite ;',
-      '- signaux IA-7/IA-8 = signaux à revue humaine, jamais des accusations ni des scores ; pas de classement de techniciens ;',
-      '- avis à note basse = des avis, jamais des "plaintes" ;',
-      '- si la question demande une action (suspendre, modifier, payer, envoyer…), refuse et renvoie vers les outils admin ;',
-      '- réponse concise, en français, sans jargon inutile.',
-      `Contexte temporel serveur : ${now.toISOString()} (fuseau métier ${AI_AGENT_TIMEZONE}).`,
+      'Agent IA back-office Relio (administrateurs exclusivement).',
+      'Réponse : UNIQUEMENT {"reply":"une à deux phrases, en français"}. Ne répète pas les données, ne recalcule rien.',
+      'Règles : statistiques = données vérifiées ci-dessus uniquement, sinon "pas de donnée structurée" (jamais d’invention) ; observé/calcul/interprétation distingués, estimation interdite ; signaux IA-7/IA-8 = revue humaine, ni accusations ni scores, pas de classement ; avis note basse = des avis, jamais des "plaintes" ; demande d’action → refus + renvoi outils admin.',
+      `Contexte serveur : ${now.toISOString()} (fuseau ${AI_AGENT_TIMEZONE}).`,
     ].join('\n');
   }
 }

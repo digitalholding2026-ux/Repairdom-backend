@@ -49,10 +49,14 @@ export class AiTerminalException extends AiGatewayException {
 }
 
 /** Réponse 200 inexploitable (JSON illisible, contrat inattendu) :
- *  non rejouable à l'identique sans changer la demande. */
+ *  non rejouable à l'identique sans changer la demande.
+ *  IA-11.2 — `finishReason` OpenRouter propagé pour le diagnostic
+ *  (`length` = troncature par `max_tokens`, jamais réparée). */
 export class AiInvalidResponseException extends AiGatewayException {
-  constructor(message: string) {
+  readonly finishReason: string | null;
+  constructor(message: string, finishReason: string | null = null) {
     super(message, 'AI_INVALID_RESPONSE', false, 200);
     this.name = 'AiInvalidResponseException';
+    this.finishReason = finishReason;
   }
 }

@@ -139,6 +139,8 @@ function agentService(gateway: AiGatewayService) {
     refusalReason: () => null,
     model: 'm',
     chatTimeoutMs: 8000,
+    agentPlanMaxTokens: 800,
+    agentSynthMaxTokens: 1500,
   };
   const overview = { getOverview: vi.fn(async () => ({ warnings: { pending: 2 } })) };
   return new AiAdminAgentService(prisma as never, aiConfig as never, gateway as never, overview as never);

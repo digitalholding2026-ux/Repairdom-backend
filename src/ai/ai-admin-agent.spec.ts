@@ -67,6 +67,8 @@ function agentService(options: {
     refusalReason: () => (options.enabled === false ? 'IA désactivée' : null),
     model: 'm',
     chatTimeoutMs: 8000,
+    agentPlanMaxTokens: 800,
+    agentSynthMaxTokens: 1500,
   };
   const overview = { getOverview: vi.fn(async () => options.overview ?? { warnings: { pending: 2 } }) };
   const service = new AiAdminAgentService(prisma as never, aiConfig as never, gateway as never, overview as never);

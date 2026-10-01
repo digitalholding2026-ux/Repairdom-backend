@@ -50,6 +50,10 @@ export interface AiCompletionResult {
   model: string;
   usage?: AiTokenUsage;
   durationMs: number;
+  /* IA-11.2 — motif d'arrêt OpenRouter (`stop`, `length`, …) : `length`
+   * signale une troncature par `max_tokens` (réponse refusée en aval,
+   * jamais réparée). */
+  finishReason: string | null;
 }
 
 export interface AiJsonResult<T = unknown> {
@@ -58,6 +62,8 @@ export interface AiJsonResult<T = unknown> {
   model: string;
   usage?: AiTokenUsage;
   durationMs: number;
+  /* IA-11.2 — motif d'arrêt OpenRouter (voir `AiCompletionResult`). */
+  finishReason: string | null;
 }
 
 /* Expurge défensivement toute trace de secret d'une chaîne loggée
@@ -190,12 +196,13 @@ export class AiGatewayService {
           `messagePresent=${messageRecord !== null} contentType=${contentType} ` +
           `finishReason=${finishReason ?? 'unknown'}`,
       );
-      throw new AiInvalidResponseException('Réponse IA inexploitable.');
+      throw new AiInvalidResponseException('Réponse IA inexploitable.', finishReason);
     }
     const usageRecord = asRecord(data.usage) ?? undefined;
     const result: AiCompletionResult = {
       result: content,
       model: asNonEmptyString(data.model) ?? body.model,
+      finishReason,
       ...(usageRecord
         ? {
             usage: {
@@ -229,6 +236,7 @@ export class AiGatewayService {
         scrubSecrets(
           `AI caller=${input.caller} status=invalid parseStage=${detailed.parseStage} ` +
             `failureReason=${detailed.failureReason} durationMs=${completion.durationMs} ` +
+            `finishReason=${completion.finishReason ?? 'unknown'} ` +
             `responseLength=${diagnosis.responseLength} ` +
             `firstChar=${diagnosis.firstNonWhitespaceChar ?? 'none'} ` +
             `lastChar=${diagnosis.lastNonWhitespaceChar ?? 'none'} ` +
@@ -238,7 +246,7 @@ export class AiGatewayService {
             `jsonParseSucceeded=${diagnosis.jsonParseSucceeded}`,
         ),
       );
-      throw new AiInvalidResponseException('Réponse IA non-JSON.');
+      throw new AiInvalidResponseException('Réponse IA non-JSON.', completion.finishReason);
     }
     return { ...completion, result: detailed.value as T };
   }

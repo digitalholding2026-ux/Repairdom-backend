@@ -103,6 +103,29 @@ export class AiConfig {
     return Math.min(Math.max(Math.round(raw), 1000), 30_000);
   }
 
+  /* IA-11.2 — plafonds de sortie CENTRALISÉS de l'agent admin (plafonds
+   * OpenRouter `max_tokens`, raisonnement du fournisseur inclus) :
+   * - plan : JSON de ~25-80 tokens ; 300 tokens provoquaient
+   *   `finish_reason=length` à contenu vide (budget absorbé avant le
+   *   contenu) → défaut 800 (marge ×3, pas de coût cible) ;
+   * - synthèse : réponse courte (`reply` bornée à 4000 car. ≈ 1000
+   *   tokens) + enveloppe JSON ; 800 tokens coupaient le JSON à ~680
+   *   car. (`finish_reason=length`, ~1600 tokens de complétion
+   *   comptés) → défaut 1500.
+   * Surcharges d'exploitation (bornées) : `OPENROUTER_AGENT_PLAN_MAX_TOKENS`
+   * et `OPENROUTER_AGENT_SYNTH_MAX_TOKENS`. */
+  get agentPlanMaxTokens(): number {
+    const raw = Number(this.config.get<string>('OPENROUTER_AGENT_PLAN_MAX_TOKENS'));
+    if (!Number.isFinite(raw)) return 800;
+    return Math.min(Math.max(Math.round(raw), 200), 4000);
+  }
+
+  get agentSynthMaxTokens(): number {
+    const raw = Number(this.config.get<string>('OPENROUTER_AGENT_SYNTH_MAX_TOKENS'));
+    if (!Number.isFinite(raw)) return 1500;
+    return Math.min(Math.max(Math.round(raw), 400), 8000);
+  }
+
   /** Vrai si un appel peut être tenté (activé + clé + URL https). */
   isConfigured(): boolean {
     return this.enabled && this.apiKey !== null && this.validatedBaseUrl() !== null;

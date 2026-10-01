@@ -4,6 +4,7 @@ import { AiConfig } from './ai.config.js';
 import { AiGatewayService, parseJsonDetailed } from './ai-gateway.service.js';
 import {
   AI_AGENT_FAILURE_MESSAGE,
+  AI_AGENT_MAX_REPLY_CHARS,
   AI_AGENT_MISUNDERSTOOD_MESSAGE,
   AiAdminAgentService,
 } from './ai-admin-agent.service.js';
@@ -87,6 +88,8 @@ function agentService(gateway: AiGatewayService) {
     refusalReason: () => null,
     model: 'm',
     chatTimeoutMs: 8000,
+    agentPlanMaxTokens: 800,
+    agentSynthMaxTokens: 1500,
   };
   const overview = { getOverview: vi.fn(async () => ({ warnings: { pending: 2 } })) };
   return new AiAdminAgentService(prisma as never, aiConfig as never, gateway as never, overview as never);
@@ -483,5 +486,149 @@ describe('logs Plan/Synth — distinguables, sans contenu sensible', () => {
     const line = warns.find((entry) => entry.includes('synth failed')) ?? '';
     expect(line).toContain('parseStage=schema_validation');
     expect(line).toContain('failureReason=missing_reply');
+  });
+});
+
+/* IA-11.2 — anti-troncature : plafonds `max_tokens` (plan 800 / synthèse
+ * 1500), prompts compacts, `finish_reason=length` explicite. Le JSON
+ * tronqué n'est JAMAIS réparé : échec propre, rien d'inventé. */
+
+function choicePayload(content: string | null, finishReason: string | null) {
+  return {
+    choices: [{ message: { content }, finish_reason: finishReason }],
+    model: 'cohere/north-mini-code:free',
+  };
+}
+
+/** fetch simulée à pas explicites + capture des corps envoyés. */
+function stubSteps(steps: Array<{ status: number; payload: unknown }>, sentBodies: string[] = []) {
+  let calls = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+      if (typeof init?.body === 'string') sentBodies.push(init.body);
+      const step = steps[Math.min(calls, steps.length - 1)];
+      calls += 1;
+      return { status: step.status, json: async () => step.payload };
+    }),
+  );
+}
+
+function configWith(values: Record<string, string | undefined>) {
+  return new AiConfig({ get: (key: string) => values[key] } as never);
+}
+
+describe('IA-11.2 — configuration centralisée des plafonds', () => {
+  it('défauts : plan 800, synthèse 1500', () => {
+    const config = configWith({});
+    expect(config.agentPlanMaxTokens).toBe(800);
+    expect(config.agentSynthMaxTokens).toBe(1500);
+  });
+
+  it('surcharges env bornées', () => {
+    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '1200' }).agentPlanMaxTokens).toBe(1200);
+    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '2000' }).agentSynthMaxTokens).toBe(2000);
+    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: 'nawak' }).agentPlanMaxTokens).toBe(800);
+    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '10' }).agentPlanMaxTokens).toBe(200);
+    expect(configWith({ OPENROUTER_AGENT_PLAN_MAX_TOKENS: '99999' }).agentPlanMaxTokens).toBe(4000);
+    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '10' }).agentSynthMaxTokens).toBe(400);
+    expect(configWith({ OPENROUTER_AGENT_SYNTH_MAX_TOKENS: '99999' }).agentSynthMaxTokens).toBe(8000);
+  });
+});
+
+describe('IA-11.2 — câblage max_tokens + prompts compacts', () => {
+  it('plan → max_tokens 800, synthèse → max_tokens 1500, sans autre paramètre', async () => {
+    const sent: string[] = [];
+    stubSteps(
+      [
+        { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+        { status: 200, payload: choicePayload(SYNTH_OK, 'stop') },
+      ],
+      sent,
+    );
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_technicians', ok: true }]);
+    expect(sent).toHaveLength(2);
+    const planBody = JSON.parse(sent[0]) as Record<string, unknown>;
+    const synthBody = JSON.parse(sent[1]) as Record<string, unknown>;
+    expect(planBody.max_tokens).toBe(800);
+    expect(synthBody.max_tokens).toBe(1500);
+    for (const body of [planBody, synthBody]) {
+      expect(body).not.toHaveProperty('temperature');
+      expect(body).not.toHaveProperty('max_completion_tokens');
+      expect(body).not.toHaveProperty('reasoning');
+    }
+    const planSystem = (planBody.messages as Array<{ content: string }>)[0].content;
+    const synthSystem = (synthBody.messages as Array<{ content: string }>)[0].content;
+    expect(planSystem).toMatch(/moins de 200 caractères/);
+    expect(planSystem).toContain('get_recent_demandes');
+    expect(synthSystem).toMatch(/une à deux phrases/);
+    expect(synthSystem).toContain('{"reply"');
+  });
+});
+
+describe('IA-11.2 — troncature finish_reason=length (cas production)', () => {
+  it('planner vide + length → échec propre, rien d’inventé, cause loggée', async () => {
+    const { warns } = captureLogs();
+    stubSteps([{ status: 200, payload: choicePayload('', 'length') }]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.reply).not.toMatch(/\d+ technicien/);
+    expect(result.toolCalls).toEqual([]);
+    const joined = warns.join('\n');
+    expect(joined).toContain('finishReason=length');
+    expect(joined).toContain('failureReason=empty_or_missing_content');
+  });
+
+  it('synthèse tronquée `{"reply":"…\\` + length → refusée, jamais réparée', async () => {
+    const { warns } = captureLogs();
+    const truncated = '{"reply":"Il y a 1 technicien disponible et 2 missions en cou\\';
+    stubSteps([
+      { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+      { status: 200, payload: choicePayload(truncated, 'length') },
+    ]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.reply).not.toContain('1 technicien');
+    const joined = warns.join('\n');
+    expect(joined).toContain('parseStage=extraction');
+    expect(joined).toContain('failureReason=truncated_structure');
+    expect(joined).toContain('finishReason=length');
+  });
+
+  it('réponse complète juste sous la limite (stop) → succès, finishReason propagé', async () => {
+    stubSteps([
+      { status: 200, payload: choicePayload('{"tool":"get_overview","args":{}}', 'stop') },
+      { status: 200, payload: choicePayload('{"reply":"2 avertissements ouverts."}', 'stop') },
+    ]);
+    const gateway = realGateway();
+    const result = await agentService(gateway).chat('Surveillance IA ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_overview', ok: true }]);
+    expect(result.reply).toBe('2 avertissements ouverts.');
+    const direct = await gateway.completeJson<{ reply: string }>({
+      caller: 'LengthCheck',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(direct.finishReason).toBe('stop');
+  });
+});
+
+describe('IA-11.2 — synthèse courte, contrats inchangés', () => {
+  it.each([
+    ['compteurs multiples', '{"tool":"get_overview","args":{}}', '{"reply":"2 avertissements ouverts, 1 signal à revoir."}'],
+    ['liste de demandes', '{"tool":"get_recent_demandes","args":{"limit":5}}', '{"reply":"3 demandes récentes, dont 1 en cours."}'],
+    ['surveillance IA', '{"tool":"get_overview","args":{}}', '{"reply":"Surveillance nominale : 2 signaux à revoir."}'],
+    ['sans données', '{"tool":null,"args":{}}', '{"reply":"Je ne dispose pas de donnée structurée."}'],
+  ])('%s → reply exacte, courte', async (_label, plan, synth) => {
+    stubBodies([plan, synth]);
+    const result = await agentService(realGateway()).chat('Question ?');
+    expect(result.reply.length).toBeLessThanOrEqual(200);
+  });
+
+  it('reply longue → bornée à AI_AGENT_MAX_REPLY_CHARS, jamais d’invention', async () => {
+    const longReply = `{"reply":"${'x'.repeat(5000)}"}`;
+    stubBodies(['{"tool":"get_technicians","args":{}}', longReply]);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toHaveLength(AI_AGENT_MAX_REPLY_CHARS);
   });
 });
