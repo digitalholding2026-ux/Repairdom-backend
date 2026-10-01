@@ -44,6 +44,15 @@ export interface AiTokenUsage {
   totalTokens?: number;
 }
 
+/* Corps OpenRouter non-streaming (jamais de `stream`) : `max_tokens` et
+ * `temperature` optionnels, le reste obligatoire. */
+interface OpenRouterRequestBody {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  max_tokens?: number;
+  temperature?: number;
+}
+
 export interface AiCompletionResult {
   /** Texte brut du premier choix (jamais null ici : sinon erreur). */
   result: string;
@@ -98,6 +107,39 @@ function isTimeoutError(error: unknown, signal: AbortSignal): boolean {
   return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
+/* IA-11.4 — plafond du délai issu de `Retry-After` (jamais d'attente
+ * longue : le retry 429 reste un court backoff, pas une file d'attente). */
+export const MAX_429_RETRY_AFTER_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/* IA-11.4 — délai avant retry 429 : `Retry-After` du fournisseur (secondes
+ * ou date HTTP) lorsqu'il est exploitable et borné, sinon le backoff
+ * configuré. Pur et testable unitairement (aucun réseau, aucune attente). */
+export function resolveRetryDelayMs(retryAfterHeader: string | null, defaultDelayMs: number): number {
+  if (retryAfterHeader) {
+    const raw = retryAfterHeader.trim();
+    if (raw) {
+      const seconds = Number(raw);
+      if (!Number.isNaN(seconds)) {
+        // Forme numérique : négatif ou infini = invalide → défaut (un
+        // `Date.parse` aveugle interpréterait "-2" comme une année).
+        if (seconds < 0 || !Number.isFinite(seconds)) return defaultDelayMs;
+        return Math.min(Math.floor(seconds * 1000), MAX_429_RETRY_AFTER_MS);
+      }
+      const at = Date.parse(raw);
+      if (!Number.isNaN(at)) {
+        return Math.min(Math.max(at - Date.now(), 0), MAX_429_RETRY_AFTER_MS);
+      }
+    }
+  }
+  return defaultDelayMs;
+}
+
 /* Contenu OpenAI-style en parties [{type:'text', text:'…'}] ou ['…'] :
  * concaténation pure (aucune réparation, aucun contenu inventé). */
 function joinTextParts(raw: unknown): string | null {
@@ -133,7 +175,14 @@ export class AiGatewayService {
    *   du corps en texte (métadonnées seules : longueur, MIME) → parse →
    *   forme OpenRouter → contenu. Chaque étape a sa classification
    *   (`request_timeout` vs `body_read_error` vs statuts vs forme),
-   *   sans JAMAIS logger le corps, les prompts ou des secrets. */
+   *   sans JAMAIS logger le corps, les prompts ou des secrets.
+   * IA-11.4 — retry contrôlé UNIQUEMENT sur HTTP 429 (`upstream_rate_limited`,
+   *   typique du plan gratuit) : 1 retry max par appel (boucle `for` bornée
+   *   par `rateLimitMaxRetries` ∈ [0, 1], donc ≤ 2 tentatives au total,
+   *   AUCUNE boucle), backoff court (`rateLimitRetryDelayMs`, `Retry-After`
+   *   borné préféré). Chaque appel (planner OU synthesizer) rejoue au plus
+   *   sa propre tentative : jamais de relance de la chaîne complète, jamais
+   *   de retry sur 4xx autres / timeout / corps illisible / métier. */
   async complete(input: AiCompletionInput): Promise<AiCompletionResult> {
     const startedAt = Date.now();
     const refusal = this.config.refusalReason();
@@ -146,12 +195,50 @@ export class AiGatewayService {
       // Garde-fou (refusalReason couvre déjà ce cas).
       throw new AiDisabledException('Appel IA impossible : URL OpenRouter invalide (https requise).');
     }
-    const body = {
+    const body: OpenRouterRequestBody = {
       model: input.model?.trim() || this.config.model,
       messages: input.messages.map((message) => ({ role: message.role, content: message.content })),
       ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
       ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     };
+    const maxRetries = this.config.rateLimitMaxRetries;
+    const baseDelayMs = this.config.rateLimitRetryDelayMs;
+    const correlation = input.correlationId ? ` correlation=${truncate(input.correlationId, 64)}` : '';
+    // Boucle bornée : `attempt` ne peut jamais dépasser `maxRetries + 1`
+    // (≤ 2). Toute autre erreur quitte par `throw` dans `attemptComplete`.
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      const outcome = await this.attemptComplete(input, body, baseUrl, startedAt);
+      if (outcome.ok) return outcome.value;
+      if (attempt > maxRetries) {
+        this.logger.warn(scrubSecrets(`AI 429 exhausted caller=${input.caller} attempts=${attempt}${correlation}`));
+        throw new AiUpstreamException('Service IA temporairement indisponible.', 429, 'upstream_rate_limited');
+      }
+      const delayMs = resolveRetryDelayMs(outcome.retryAfterHeader, baseDelayMs);
+      this.logger.warn(
+        scrubSecrets(
+          `AI 429 retry caller=${input.caller} attempt=${attempt + 1} delayMs=${delayMs} ` +
+            `delaySource=${outcome.retryAfterHeader ? 'retry-after' : 'default'}${correlation}`,
+        ),
+      );
+      await sleep(delayMs);
+    }
+    // Inatteignable (la boucle retourne ou lève toujours) — garde-fou typé.
+    throw new AiUpstreamException('Service IA temporairement indisponible.', 429, 'upstream_rate_limited');
+  }
+
+  /* Une seule tentative réseau (signal timeout frais par tentative : chaque
+   * essai dispose de son budget complet). Retourne le résultat OU, pour le
+   * seul cas rejouable (HTTP 429), l'en-tête `Retry-After` ; tout le reste
+   * lève immédiatement (aucun retry). */
+  private async attemptComplete(
+    input: AiCompletionInput,
+    body: OpenRouterRequestBody,
+    baseUrl: string,
+    startedAt: number,
+  ): Promise<
+    | { readonly ok: true; readonly value: AiCompletionResult }
+    | { readonly ok: false; readonly retryAfterHeader: string | null }
+  > {
     // Signal conservé en référence : distingue l'avort par timeout
     // (pendant fetch OU pendant la lecture du corps) des autres erreurs.
     const timeoutSignal = AbortSignal.timeout(Math.min(input.timeoutMs ?? this.config.timeoutMs, 120_000));
@@ -191,7 +278,8 @@ export class AiGatewayService {
     if (response.status === 429) {
       const durationMs = Date.now() - startedAt;
       this.logCall(input, 'upstream', durationMs, `HTTP 429 upstream_rate_limited elapsedMs=${durationMs}`);
-      throw new AiUpstreamException('Service IA temporairement indisponible.', 429, 'upstream_rate_limited');
+      // Seul cas rejouable : la boucle `complete()` décide (retry borné).
+      return { ok: false, retryAfterHeader: response.headers?.get('retry-after') ?? null };
     }
     if (response.status >= 500) {
       const durationMs = Date.now() - startedAt;
@@ -304,7 +392,7 @@ export class AiGatewayService {
       durationMs,
     };
     this.logCall(input, 'ok', durationMs, result.model, result.usage?.totalTokens);
-    return result;
+    return { ok: true, value: result };
   }
 
   /** Complétion + parse JSON (encapsulation ```/prose tolérée, syntaxe jamais réparée).

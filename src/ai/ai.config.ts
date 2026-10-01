@@ -131,6 +131,25 @@ export class AiConfig {
     return Math.min(Math.max(Math.round(raw), 400), 8000);
   }
 
+  /* IA-11.4 — résilience HTTP 429 OpenRouter (rate limiting du plan gratuit).
+   * UN SEUL retry par appel (`maxRetries` borné [0, 1] : aucune boucle
+   * possible, même en cas de mauvaise configuration) + backoff court
+   * (défaut 1000 ms, borné [0, 10 s]). Le retry s'applique par appel
+   * (planner OU synthesizer, jamais toute la chaîne) et UNIQUEMENT au
+   * 429 : 4xx autres, timeouts, corps illisibles et erreurs métier ne sont
+   * jamais rejoués. `0` = retry désactivé (repli opérateur). */
+  get rateLimitMaxRetries(): number {
+    const raw = Number(this.config.get<string>('AI_429_MAX_RETRIES'));
+    if (!Number.isFinite(raw)) return 1;
+    return Math.min(Math.max(Math.round(raw), 0), 1);
+  }
+
+  get rateLimitRetryDelayMs(): number {
+    const raw = Number(this.config.get<string>('AI_429_RETRY_DELAY_MS'));
+    if (!Number.isFinite(raw)) return 1000;
+    return Math.min(Math.max(Math.round(raw), 0), 10_000);
+  }
+
   /** Vrai si un appel peut être tenté (activé + clé + URL https). */
   isConfigured(): boolean {
     return this.enabled && this.apiKey !== null && this.validatedBaseUrl() !== null;

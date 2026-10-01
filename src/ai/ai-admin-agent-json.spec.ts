@@ -519,22 +519,27 @@ function choicePayload(content: string | null, finishReason: string | null) {
 }
 
 /** fetch simulée à pas explicites + capture des corps envoyés. */
-function stubSteps(steps: Array<{ status: number; payload: unknown }>, sentBodies: string[] = []) {
+function stubSteps(
+  steps: Array<{ status: number; payload: unknown; retryAfter?: string }>,
+  sentBodies: string[] = [],
+) {
   let calls = 0;
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
-      if (typeof init?.body === 'string') sentBodies.push(init.body);
-      const step = steps[Math.min(calls, steps.length - 1)];
-      calls += 1;
-      return {
-        status: step.status,
-        headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify(step.payload),
-        json: async () => step.payload,
-      };
-    }),
-  );
+  const fetchMock = vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+    if (typeof init?.body === 'string') sentBodies.push(init.body);
+    const step = steps[Math.min(calls, steps.length - 1)];
+    calls += 1;
+    return {
+      status: step.status,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'retry-after' ? (step.retryAfter ?? null) : 'application/json',
+      },
+      text: async () => JSON.stringify(step.payload),
+      json: async () => step.payload,
+    };
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return { fetchMock, callCount: () => fetchMock.mock.calls.length };
 }
 
 function configWith(values: Record<string, string | undefined>) {
@@ -717,5 +722,110 @@ describe('IA-11.3 — questions production bout en bout', () => {
     const result = await agentService(realGateway()).chat('Question admin ?');
     expect(result.toolCalls).toEqual([{ tool, ok: true }]);
     expect(result.reply).toBe('Réponse factuelle courte.');
+  });
+});
+
+/* IA-11.4 — retry 429 par appel : le retry du Planner ne rejoue ni
+ * l'exécuteur ni la synthèse, celui du Synth ne rappelle pas le Planner.
+ * L'exécuteur backend tourne exactement une fois par question. */
+
+function agentServiceWithPrisma(gateway: AiGatewayService) {
+  const prisma = {
+    technicianProfile: {
+      count: vi.fn(async () => 20),
+      groupBy: vi.fn(async () => [{ kycStatus: 'VERIFIED', _count: { _all: 15 } }]),
+    },
+    demande: {
+      count: vi.fn(async () => 3),
+      groupBy: vi.fn(async () => [{ status: 'IN_PROGRESS', _count: { _all: 3 } }]),
+      findMany: vi.fn(async () => []),
+    },
+    demandeClassification: { count: vi.fn(async () => 0) },
+    user: {
+      count: vi.fn(async () => 0),
+      groupBy: vi.fn(async () => []),
+    },
+    review: { findMany: vi.fn(async () => []) },
+  };
+  const aiConfig = {
+    isConfigured: () => true,
+    refusalReason: () => null,
+    model: 'm',
+    chatTimeoutMs: 8000,
+    agentPlanMaxTokens: 800,
+    agentSynthMaxTokens: 1500,
+  };
+  const overview = { getOverview: vi.fn(async () => ({})) };
+  const service = new AiAdminAgentService(prisma as never, aiConfig as never, gateway as never, overview as never);
+  return { service, prisma };
+}
+
+describe('IA-11.4 — Cas 3 : retry Planner sans relance du workflow', () => {
+  it('plan 429 → retry → OK : exécuteur ×1, synthèse ×1, plan envoyé ×2', async () => {
+    const { warns } = captureLogs();
+    const sent: string[] = [];
+    const { callCount } = stubSteps(
+      [
+        { status: 429, payload: { error: 'rate limited' }, retryAfter: '0' },
+        { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+        { status: 200, payload: choicePayload('{"reply":"20 techniciens au total."}', 'stop') },
+      ],
+      sent,
+    );
+    const { service, prisma } = agentServiceWithPrisma(realGateway());
+    const result = await service.chat('Techniciens disponibles ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_technicians', ok: true }]);
+    expect(result.reply).toBe('20 techniciens au total.');
+    expect(callCount()).toBe(3);
+    const planSends = sent.filter((body) => !JSON.parse(body).messages[0].content.includes('{"reply"'));
+    const synthSends = sent.filter((body) => JSON.parse(body).messages[0].content.includes('{"reply"'));
+    expect(planSends).toHaveLength(2);
+    expect(planSends[0]).toBe(planSends[1]);
+    expect(synthSends).toHaveLength(1);
+    expect(prisma.technicianProfile.count).toHaveBeenCalledTimes(2);
+    expect(prisma.demande.findMany).toHaveBeenCalledTimes(1);
+    expect(warns.join('\n')).toContain('AI 429 retry');
+  });
+});
+
+describe('IA-11.4 — Cas 7 : retry Synth uniquement, Planner non rappelé', () => {
+  it('synth 429 → retry → OK : plan ×1, exécuteur ×1', async () => {
+    const sent: string[] = [];
+    const { callCount } = stubSteps(
+      [
+        { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+        { status: 429, payload: { error: 'rate limited' }, retryAfter: '0' },
+        { status: 200, payload: choicePayload('{"reply":"20 techniciens au total."}', 'stop') },
+      ],
+      sent,
+    );
+    const { service, prisma } = agentServiceWithPrisma(realGateway());
+    const result = await service.chat('Techniciens disponibles ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_technicians', ok: true }]);
+    expect(result.reply).toBe('20 techniciens au total.');
+    expect(callCount()).toBe(3);
+    const planSends = sent.filter((body) => !JSON.parse(body).messages[0].content.includes('{"reply"'));
+    expect(planSends).toHaveLength(1);
+    expect(prisma.technicianProfile.count).toHaveBeenCalledTimes(2);
+    expect(prisma.demande.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('synth 429 → 429 : échec propre, plan ×1, exécuteur ×1', async () => {
+    const sent: string[] = [];
+    const { callCount } = stubSteps(
+      [
+        { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+        { status: 429, payload: { error: 'rate limited' }, retryAfter: '0' },
+        { status: 429, payload: { error: 'rate limited' } },
+      ],
+      sent,
+    );
+    const { service, prisma } = agentServiceWithPrisma(realGateway());
+    const result = await service.chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.toolCalls).toEqual([]);
+    expect(callCount()).toBe(3);
+    expect(sent.filter((body) => !JSON.parse(body).messages[0].content.includes('{"reply"'))).toHaveLength(1);
+    expect(prisma.technicianProfile.count).toHaveBeenCalledTimes(2);
   });
 });
