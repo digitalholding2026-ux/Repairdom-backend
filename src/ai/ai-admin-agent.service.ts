@@ -76,6 +76,49 @@ function truncate(text: string, maxLength: number): string {
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 }
 
+/* IA-11 diagnostic : qualifie un échec d'appel gateway en étape exacte,
+ * SANS contenu (messages d'erreur du gateway = libellés génériques sûrs).
+ * - transport : corps HTTP illisible / réseau / timeout / 4xx-5xx ;
+ * - extraction : HTTP 200 sans contenu textuel exploitable ;
+ * - json_parse : HTTP 200 textuel mais JSON irrécupérable. */
+function describeAgentFailure(error: unknown): {
+  parseStage: 'transport' | 'extraction' | 'json_parse' | 'unknown';
+  failureReason: string;
+  httpStatus: number | null;
+} {
+  const record = asRecord(error);
+  const message = error instanceof Error ? error.message : '';
+  const code = typeof record?.code === 'string' ? record.code : null;
+  const httpStatus =
+    typeof record?.httpStatus === 'number' && Number.isFinite(record.httpStatus)
+      ? (record.httpStatus as number)
+      : message === 'Réponse IA illisible.' ||
+          message === 'Réponse IA inexploitable.' ||
+          message === 'Réponse IA non-JSON.'
+        ? 200
+        : null;
+  if (message === 'Réponse IA illisible.') {
+    return { parseStage: 'transport', failureReason: 'unreadable_body', httpStatus };
+  }
+  if (message === 'Réponse IA inexploitable.') {
+    return { parseStage: 'extraction', failureReason: 'empty_or_missing_content', httpStatus };
+  }
+  if (message === 'Réponse IA non-JSON.') {
+    return { parseStage: 'json_parse', failureReason: 'non_json_content', httpStatus };
+  }
+  if (code === 'AI_UPSTREAM' || /temporairement indisponible/i.test(message)) {
+    const reason = /timeout/i.test(message) ? 'timeout' : 'upstream_unavailable';
+    return { parseStage: 'transport', failureReason: reason, httpStatus };
+  }
+  if (code === 'AI_TERMINAL' || /refusée par le fournisseur/i.test(message)) {
+    return { parseStage: 'transport', failureReason: 'provider_refused', httpStatus };
+  }
+  if (code === 'AI_DISABLED' || /désactivé|non configuré/i.test(message)) {
+    return { parseStage: 'transport', failureReason: 'disabled', httpStatus };
+  }
+  return { parseStage: 'unknown', failureReason: 'unexpected_error', httpStatus };
+}
+
 /** Début de journée métier (Douala) décalée de `offsetDays` (0 = aujourd'hui). */
 export function doualaDayStart(now: Date, offsetDays = 0): Date {
   const shifted = new Date(now.getTime() + AI_AGENT_TIMEZONE_OFFSET_MS);
@@ -198,7 +241,10 @@ export class AiAdminAgentService {
   }
 
   /* Planificateur : question → {tool|null, args} (JSON strict, whitelist
-   * validée côté backend — le modèle ne choisit jamais de SQL). */
+   * validée côté backend — le modèle ne choisit jamais de SQL).
+   * Logs : `Agent IA plan ok|failed …` avec étape exacte
+   * (transport/extraction/json_parse/schema_validation), sans JAMAIS
+   * journaliser question, historique, données outils ou contenu IA. */
   private async plan(
     question: string,
     history: AiAgentHistoryItem[],
@@ -207,24 +253,50 @@ export class AiAdminAgentService {
       history.length > 0
         ? `Contexte récent :\n${history.map((h) => `${h.role === 'user' ? 'Admin' : 'Agent'} : ${h.content}`).join('\n')}\n`
         : '';
-    const completion = await this.gateway.completeJson<unknown>({
-      caller: 'AiAdminAgentPlan',
-      messages: [
-        { role: 'system', content: this.plannerPrompt() },
-        { role: 'user', content: `${historyBlock}Question : ${question}` },
-      ],
-      maxTokens: 300,
-      timeoutMs: this.aiConfig.chatTimeoutMs,
-      correlationId: `ai-agent-plan-${Date.now()}`,
-    });
+    const startedAt = Date.now();
+    let completion: { result: unknown };
+    try {
+      completion = await this.gateway.completeJson<unknown>({
+        caller: 'AiAdminAgentPlan',
+        messages: [
+          { role: 'system', content: this.plannerPrompt() },
+          { role: 'user', content: `${historyBlock}Question : ${question}` },
+        ],
+        maxTokens: 300,
+        timeoutMs: this.aiConfig.chatTimeoutMs,
+        correlationId: `ai-agent-plan-${Date.now()}`,
+      });
+    } catch (error) {
+      const failure = describeAgentFailure(error);
+      this.logger.warn(
+        `Agent IA plan failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
+          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'}`,
+      );
+      throw error;
+    }
+    const durationMs = Date.now() - startedAt;
     const record = asRecord(completion.result);
-    if (!record) return null;
+    if (!record) {
+      this.logger.warn(
+        `Agent IA plan failed parseStage=schema_validation failureReason=non_object ` +
+          `durationMs=${durationMs} httpStatus=200 ` +
+          `resultType=${Array.isArray(completion.result) ? 'array' : typeof completion.result}`,
+      );
+      return null;
+    }
     if (record.tool === null || record.tool === undefined || record.tool === 'none') {
+      this.logger.log(`Agent IA plan ok tool=none durationMs=${durationMs}`);
       return { tool: null, args: {} };
     }
     if (typeof record.tool !== 'string' || !(AGENT_TOOLS as readonly string[]).includes(record.tool)) {
+      this.logger.warn(
+        `Agent IA plan failed parseStage=schema_validation failureReason=unknown_tool ` +
+          `durationMs=${durationMs} httpStatus=200 toolPresent=${typeof record.tool === 'string'} ` +
+          `toolValueLength=${typeof record.tool === 'string' ? record.tool.length : 0}`,
+      );
       return null;
     }
+    this.logger.log(`Agent IA plan ok tool=${record.tool} durationMs=${durationMs}`);
     return { tool: record.tool as AgentTool, args: asRecord(record.args) ?? {} };
   }
 
@@ -423,19 +495,40 @@ export class AiAdminAgentService {
       tool && toolData !== null
         ? `Données vérifiées du tool ${tool} (seule source de chiffres) :\n${JSON.stringify(toolData).slice(0, 4000)}`
         : 'Aucune donnée chiffrée disponible pour cette question.';
-    const completion = await this.gateway.completeJson<unknown>({
-      caller: 'AiAdminAgentSynth',
-      messages: [
-        { role: 'system', content: this.synthesisPrompt(now) },
-        { role: 'user', content: `Question : ${question}\n${dataBlock}` },
-      ],
-      maxTokens: AI_AGENT_MAX_TOKENS,
-      timeoutMs: this.aiConfig.chatTimeoutMs,
-      correlationId: `ai-agent-synth-${Date.now()}`,
-    });
+    const startedAt = Date.now();
+    let completion: { result: unknown; model: string };
+    try {
+      completion = await this.gateway.completeJson<unknown>({
+        caller: 'AiAdminAgentSynth',
+        messages: [
+          { role: 'system', content: this.synthesisPrompt(now) },
+          { role: 'user', content: `Question : ${question}\n${dataBlock}` },
+        ],
+        maxTokens: AI_AGENT_MAX_TOKENS,
+        timeoutMs: this.aiConfig.chatTimeoutMs,
+        correlationId: `ai-agent-synth-${Date.now()}`,
+      });
+    } catch (error) {
+      const failure = describeAgentFailure(error);
+      this.logger.warn(
+        `Agent IA synth failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
+          `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'}`,
+      );
+      throw error;
+    }
+    const durationMs = Date.now() - startedAt;
     const record = asRecord(completion.result);
     const reply = typeof record?.reply === 'string' ? record.reply.trim() : null;
-    if (!reply) return null;
+    if (!reply) {
+      this.logger.warn(
+        `Agent IA synth failed parseStage=schema_validation failureReason=missing_reply ` +
+          `durationMs=${durationMs} httpStatus=200 ` +
+          `resultType=${Array.isArray(completion.result) ? 'array' : typeof completion.result} ` +
+          `replyPresent=${typeof record?.reply === 'string'}`,
+      );
+      return null;
+    }
+    this.logger.log(`Agent IA synth ok replyLength=${reply.length} durationMs=${durationMs}`);
     return {
       reply: truncate(reply, AI_AGENT_MAX_REPLY_CHARS),
       toolCalls: tool ? [{ tool, ok: toolData !== null }] : [],

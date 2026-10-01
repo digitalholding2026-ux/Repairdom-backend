@@ -84,6 +84,24 @@ function asFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/* Contenu OpenAI-style en parties [{type:'text', text:'…'}] ou ['…'] :
+ * concaténation pure (aucune réparation, aucun contenu inventé). */
+function joinTextParts(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return null;
+  const chunks: string[] = [];
+  for (const part of raw) {
+    if (typeof part === 'string' && part.trim()) {
+      chunks.push(part);
+      continue;
+    }
+    const record = asRecord(part);
+    const text = asNonEmptyString(record?.text);
+    if (text) chunks.push(text);
+  }
+  const joined = chunks.join('').trim();
+  return joined ? joined : null;
+}
+
 function truncate(text: string, maxLength: number): string {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…[TRONQUE]` : text;
 }
@@ -150,9 +168,28 @@ export class AiGatewayService {
     const record = asRecord(payload);
     const data = asRecord(record?.data) ?? record ?? {};
     const choices = Array.isArray(data.choices) ? data.choices : null;
-    const content = asNonEmptyString(asRecord(choices?.[0])?.message ? asRecord(asRecord(choices?.[0])?.message)?.content : null);
+    const firstChoice = asRecord(choices?.[0]);
+    const messageRecord = asRecord(firstChoice?.message);
+    const rawContent: unknown = messageRecord ? messageRecord.content : null;
+    // Certains fournisseurs/modeles renvoient le texte en parties
+    // `[{type:'text', text:'…'}]` : concaténation pure, jamais de réparation.
+    const content = asNonEmptyString(rawContent) ?? joinTextParts(rawContent);
+    const finishReason = asNonEmptyString(firstChoice?.finish_reason) ?? null;
     if (!content) {
-      this.logCall(input, 'invalid', durationMs, `HTTP ${response.status}`);
+      const contentType =
+        rawContent === null || rawContent === undefined
+          ? 'missing'
+          : Array.isArray(rawContent)
+            ? 'array'
+            : typeof rawContent;
+      this.logCall(
+        input,
+        'invalid',
+        durationMs,
+        `HTTP ${response.status} extraction_failed choicesCount=${choices?.length ?? 0} ` +
+          `messagePresent=${messageRecord !== null} contentType=${contentType} ` +
+          `finishReason=${finishReason ?? 'unknown'}`,
+      );
       throw new AiInvalidResponseException('Réponse IA inexploitable.');
     }
     const usageRecord = asRecord(data.usage) ?? undefined;
@@ -180,14 +217,30 @@ export class AiGatewayService {
     return result;
   }
 
-  /** Complétion + parse JSON (encapsulation ```/prose tolérée, syntaxe jamais réparée). */
+  /** Complétion + parse JSON (encapsulation ```/prose tolérée, syntaxe jamais réparée).
+   *  Échec → log de diagnostic SANS contenu (métadonnées seules), puis
+   *  erreur propre inchangée (aucun impact contrat/frontend). */
   async completeJson<T = unknown>(input: AiCompletionInput): Promise<AiJsonResult<T>> {
     const completion = await this.complete(input);
-    const parsed = parseJsonBody(completion.result);
-    if (parsed === undefined) {
+    const detailed = parseJsonDetailed(completion.result);
+    if (!detailed.ok) {
+      const diagnosis = detailed.diagnosis;
+      this.logger.warn(
+        scrubSecrets(
+          `AI caller=${input.caller} status=invalid parseStage=${detailed.parseStage} ` +
+            `failureReason=${detailed.failureReason} durationMs=${completion.durationMs} ` +
+            `responseLength=${diagnosis.responseLength} ` +
+            `firstChar=${diagnosis.firstNonWhitespaceChar ?? 'none'} ` +
+            `lastChar=${diagnosis.lastNonWhitespaceChar ?? 'none'} ` +
+            `hasMarkdownFence=${diagnosis.hasMarkdownFence} ` +
+            `extractionAttempted=${diagnosis.jsonExtractionAttempted} ` +
+            `extractionSucceeded=${diagnosis.jsonExtractionSucceeded} ` +
+            `jsonParseSucceeded=${diagnosis.jsonParseSucceeded}`,
+        ),
+      );
       throw new AiInvalidResponseException('Réponse IA non-JSON.');
     }
-    return { ...completion, result: parsed as T };
+    return { ...completion, result: detailed.value as T };
   }
 
   /* Log technique borné : appelant, modèle, durée, statut, tokens.
@@ -277,20 +330,110 @@ function containsValidJsonStructure(text: string): boolean {
   return false;
 }
 
-/** Parse JSON tolérant à l'encapsulation (fence, prose). `undefined` si
- *  le corps ne contient aucune structure JSON valide et non ambiguë. */
-export function parseJsonBody(text: string): unknown | undefined {
+/* IA-11 diagnostic sécurisé — métadonnées techniques SANS contenu.
+ *  Jamais : texte de la réponse, prompts, PII, clés, données métier. */
+export interface AiJsonContentDiagnosis {
+  responseLength: number;
+  firstNonWhitespaceChar: string | null;
+  lastNonWhitespaceChar: string | null;
+  hasMarkdownFence: boolean;
+  jsonExtractionAttempted: boolean;
+  jsonExtractionSucceeded: boolean;
+  jsonParseSucceeded: boolean;
+}
+
+export type AiJsonParseStage = 'extraction' | 'json_parse';
+
+export type AiJsonParseFailureReason =
+  | 'empty_response'
+  | 'oversize'
+  | 'no_json_structure'
+  | 'truncated_structure'
+  | 'unexpected_token'
+  | 'ambiguous_multiple_json';
+
+export type AiJsonParseDetailedResult =
+  | { ok: true; value: unknown; diagnosis: AiJsonContentDiagnosis }
+  | {
+      ok: false;
+      parseStage: AiJsonParseStage;
+      failureReason: AiJsonParseFailureReason;
+      diagnosis: AiJsonContentDiagnosis;
+    };
+
+function firstNonWhitespaceCharOf(text: string): string | null {
+  for (const ch of text) {
+    if (ch.trim()) return ch;
+  }
+  return null;
+}
+
+function lastNonWhitespaceCharOf(text: string): string | null {
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i].trim()) return text[i];
+  }
+  return null;
+}
+
+/** Parse JSON détaillé : même acceptation que `parseJsonBody`, avec en
+ *  plus l'étape exacte d'échec (`extraction` vs `json_parse`) et des
+ *  métadonnées sans contenu. Aucune réparation sémantique. */
+export function parseJsonDetailed(text: string): AiJsonParseDetailedResult {
   const trimmed = text.trim();
-  if (!trimmed) return undefined;
+  const base = {
+    responseLength: text.length,
+    firstNonWhitespaceChar: firstNonWhitespaceCharOf(trimmed),
+    lastNonWhitespaceChar: lastNonWhitespaceCharOf(trimmed),
+    hasMarkdownFence: trimmed.includes('```'),
+  };
+  const fail = (
+    parseStage: AiJsonParseStage,
+    failureReason: AiJsonParseFailureReason,
+    extra: Partial<AiJsonContentDiagnosis> = {},
+  ): AiJsonParseDetailedResult => ({
+    ok: false,
+    parseStage,
+    failureReason,
+    diagnosis: {
+      ...base,
+      jsonExtractionAttempted: false,
+      jsonExtractionSucceeded: false,
+      jsonParseSucceeded: false,
+      ...extra,
+    },
+  });
+  if (!trimmed) return fail('extraction', 'empty_response');
   // 1. JSON pur.
   const direct = tryParseJson(trimmed);
-  if (direct.ok) return direct.value;
-  if (trimmed.length > JSON_SCAN_LIMIT) return undefined;
+  if (direct.ok) {
+    return {
+      ok: true,
+      value: direct.value,
+      diagnosis: {
+        ...base,
+        jsonExtractionAttempted: true,
+        jsonExtractionSucceeded: true,
+        jsonParseSucceeded: true,
+      },
+    };
+  }
+  if (trimmed.length > JSON_SCAN_LIMIT) return fail('extraction', 'oversize');
   // 2. Premier bloc fenced.
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
   if (fence) {
     const inner = tryParseJson(fence[1].trim());
-    if (inner.ok) return inner.value;
+    if (inner.ok) {
+      return {
+        ok: true,
+        value: inner.value,
+        diagnosis: {
+          ...base,
+          jsonExtractionAttempted: true,
+          jsonExtractionSucceeded: true,
+          jsonParseSucceeded: true,
+        },
+      };
+    }
   }
   // 3. Première structure équilibrée (reste sans seconde structure valide).
   let start = -1;
@@ -300,11 +443,39 @@ export function parseJsonBody(text: string): unknown | undefined {
       break;
     }
   }
-  if (start < 0) return undefined;
+  if (start < 0) {
+    return fail('extraction', 'no_json_structure', {
+      jsonExtractionAttempted: base.hasMarkdownFence,
+    });
+  }
   const scanned = scanBalancedStructure(trimmed, start);
-  if (!scanned) return undefined;
+  if (!scanned) return fail('extraction', 'truncated_structure', { jsonExtractionAttempted: true });
   const parsed = tryParseJson(scanned.candidate);
-  if (!parsed.ok) return undefined;
-  if (containsValidJsonStructure(scanned.rest)) return undefined;
-  return parsed.value;
+  if (!parsed.ok) {
+    return fail('json_parse', 'unexpected_token', { jsonExtractionAttempted: true });
+  }
+  if (containsValidJsonStructure(scanned.rest)) {
+    return fail('json_parse', 'ambiguous_multiple_json', {
+      jsonExtractionAttempted: true,
+      jsonExtractionSucceeded: true,
+      jsonParseSucceeded: true,
+    });
+  }
+  return {
+    ok: true,
+    value: parsed.value,
+    diagnosis: {
+      ...base,
+      jsonExtractionAttempted: true,
+      jsonExtractionSucceeded: true,
+      jsonParseSucceeded: true,
+    },
+  };
+}
+
+/** Parse JSON tolérant à l'encapsulation (fence, prose). `undefined` si
+ *  le corps ne contient aucune structure JSON valide et non ambiguë. */
+export function parseJsonBody(text: string): unknown | undefined {
+  const detailed = parseJsonDetailed(text);
+  return detailed.ok ? detailed.value : undefined;
 }

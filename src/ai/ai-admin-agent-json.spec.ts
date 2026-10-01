@@ -1,0 +1,487 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { AiConfig } from './ai.config.js';
+import { AiGatewayService, parseJsonDetailed } from './ai-gateway.service.js';
+import {
+  AI_AGENT_FAILURE_MESSAGE,
+  AI_AGENT_MISUNDERSTOOD_MESSAGE,
+  AiAdminAgentService,
+} from './ai-admin-agent.service.js';
+
+/* IA-11 diagnostic — réponses JSON intermittentes (HTTP 200 invalide).
+ * Cible : distinction extraction / json_parse / schema_validation via le
+ * vrai gateway (fetch simulée) + agent réel, sans contenu sensible en logs.
+ * Aucune réparation sémantique : extraction → parse → validation, échec
+ * propre sinon. Modèle, architecture et règles métier inchangés. */
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+const CONFIG_VALUES: Record<string, string> = {
+  AI_ENABLED: 'true',
+  OPENROUTER_API_KEY: 'sk-or-test-UNIT',
+  OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+};
+
+function realGateway() {
+  const config = new AiConfig({ get: (key: string) => CONFIG_VALUES[key] } as never);
+  return new AiGatewayService(config);
+}
+
+/** fetch simulée : corps OpenRouter successifs (plan puis synthèse). */
+function stubBodies(bodies: string[], status = 200) {
+  let calls = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      const content = bodies[Math.min(calls, bodies.length - 1)];
+      calls += 1;
+      return {
+        status,
+        json: async () => ({ choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' }),
+      };
+    }),
+  );
+}
+
+function stubStatus(status: number, payload: unknown) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ status, json: async () => payload })),
+  );
+}
+
+function stubTimeout() {
+  const timeout = new Error('The operation was aborted due to timeout');
+  timeout.name = 'TimeoutError';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw timeout;
+    }),
+  );
+}
+
+function agentService(gateway: AiGatewayService) {
+  const prisma = {
+    technicianProfile: {
+      count: vi.fn(async () => 20),
+      groupBy: vi.fn(async () => [{ kycStatus: 'VERIFIED', _count: { _all: 15 } }]),
+    },
+    demande: {
+      count: vi.fn(async () => 3),
+      groupBy: vi.fn(async () => [{ status: 'IN_PROGRESS', _count: { _all: 3 } }]),
+      findMany: vi.fn(async () => []),
+    },
+    demandeClassification: { count: vi.fn(async () => 1) },
+    user: {
+      count: vi.fn(async () => 5),
+      groupBy: vi.fn(async () => [{ role: 'TECHNICIAN', _count: { _all: 5 } }]),
+    },
+    review: { findMany: vi.fn(async () => []) },
+  };
+  const aiConfig = {
+    isConfigured: () => true,
+    refusalReason: () => null,
+    model: 'm',
+    chatTimeoutMs: 8000,
+  };
+  const overview = { getOverview: vi.fn(async () => ({ warnings: { pending: 2 } })) };
+  return new AiAdminAgentService(prisma as never, aiConfig as never, gateway as never, overview as never);
+}
+
+function captureLogs() {
+  const logs: string[] = [];
+  const warns: string[] = [];
+  vi.spyOn(Logger.prototype, 'log').mockImplementation(((message: unknown) => {
+    logs.push(String(message));
+  }) as never);
+  vi.spyOn(Logger.prototype, 'warn').mockImplementation(((message: unknown) => {
+    warns.push(String(message));
+  }) as never);
+  return { logs, warns };
+}
+
+const SYNTH_OK = '{"reply":"2 techniciens disponibles."}';
+
+describe('parseJsonDetailed — étape exacte sans contenu', () => {
+  it('vide → extraction/empty_response', () => {
+    const result = parseJsonDetailed('   ');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('extraction');
+      expect(result.failureReason).toBe('empty_response');
+    }
+  });
+
+  it('texte sans structure → extraction/no_json_structure', () => {
+    const result = parseJsonDetailed('désolé, je ne sais pas');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('extraction');
+      expect(result.failureReason).toBe('no_json_structure');
+    }
+  });
+
+  it('JSON tronqué → extraction/truncated_structure', () => {
+    const result = parseJsonDetailed('Voici : {"tool":"get_overview"');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('extraction');
+      expect(result.failureReason).toBe('truncated_structure');
+    }
+  });
+
+  it('syntaxe invalide → json_parse/unexpected_token', () => {
+    const result = parseJsonDetailed('{"a":1,}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('json_parse');
+      expect(result.failureReason).toBe('unexpected_token');
+    }
+  });
+
+  it('deux objets → json_parse/ambiguous_multiple_json (jamais arbitré)', () => {
+    const result = parseJsonDetailed('{"a":1} {"b":2}');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('json_parse');
+      expect(result.failureReason).toBe('ambiguous_multiple_json');
+    }
+  });
+
+  it('surdimensionné non pur → extraction/oversize', () => {
+    const result = parseJsonDetailed(`préambule ${'x'.repeat(40_000)} {"a":1}`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.parseStage).toBe('extraction');
+      expect(result.failureReason).toBe('oversize');
+    }
+  });
+
+  it.each([
+    ['pur', '{"tool":"get_technicians","period":"today"}'],
+    ['markdown', '```json\n{"tool":"get_technicians","period":"today"}\n```'],
+    ['texte avant', 'Here is the result:\n{"tool":"get_technicians","period":"today"}'],
+    ['texte après', '{"tool":"get_technicians","period":"today"}\nHope this helps.'],
+    ['avant + bloc + après', 'Résultat :\n```json\n{"tool":"get_technicians"}\n```\nFin.'],
+    ['accolades en chaîne', '{"reason":"Le texte contient {des accolades}."}'],
+    ['échappements', '{"answer":"tableau [1,2] et \\"guillemets\\""}'],
+    ['tableau', '[1, 2, 3]'],
+  ])('ok : %s', (_label, text) => {
+    const result = parseJsonDetailed(text);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnosis.jsonExtractionSucceeded).toBe(true);
+      expect(result.diagnosis.jsonParseSucceeded).toBe(true);
+      expect(result.diagnosis.responseLength).toBe(text.length);
+    }
+  });
+
+  it('diagnostic sans contenu : bornes + fence, jamais le texte', () => {
+    const secret = '```json\n{"tool":"get_overview","args":{}}\n```';
+    const result = parseJsonDetailed(secret);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diagnosis.firstNonWhitespaceChar).toBe('`');
+      expect(result.diagnosis.lastNonWhitespaceChar).toBe('`');
+      expect(result.diagnosis.hasMarkdownFence).toBe(true);
+      expect(JSON.stringify(result.diagnosis)).not.toContain('get_overview');
+    }
+  });
+});
+
+describe('gateway — extraction contenu OpenRouter', () => {
+  it('contenu en parties [{text}] → concaténé (pas inexploitable)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: [{ type: 'text', text: '{"a":' }, { type: 'text', text: '1}' }] } }],
+          model: 'm',
+        }),
+      })),
+    );
+    const result = await realGateway().completeJson<{ a: number }>({
+      caller: 'DiagTest',
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(result.result).toEqual({ a: 1 });
+  });
+
+  it('200 sans choix → inexploitable (extraction)', async () => {
+    stubStatus(200, { choices: [] });
+    await expect(realGateway().complete({ caller: 'DiagTest', messages: [{ role: 'user', content: 'x' }] })).rejects
+      .toMatchObject({ message: 'Réponse IA inexploitable.' });
+  });
+
+  it('corps HTTP illisible → illisible (transport)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token');
+        },
+      })),
+    );
+    await expect(realGateway().complete({ caller: 'DiagTest', messages: [{ role: 'user', content: 'x' }] })).rejects
+      .toMatchObject({ message: 'Réponse IA illisible.' });
+  });
+
+  it('429 → upstream rejouable, 500 → upstream, timeout → upstream', async () => {
+    stubStatus(429, { error: 'rate limited' });
+    await expect(
+      realGateway().complete({ caller: 'DiagTest', messages: [{ role: 'user', content: 'x' }] }),
+    ).rejects.toMatchObject({ name: 'AiUpstreamException' });
+    stubStatus(500, { error: 'boom' });
+    await expect(
+      realGateway().complete({ caller: 'DiagTest', messages: [{ role: 'user', content: 'x' }] }),
+    ).rejects.toMatchObject({ name: 'AiUpstreamException' });
+    stubTimeout();
+    await expect(
+      realGateway().complete({ caller: 'DiagTest', messages: [{ role: 'user', content: 'x' }] }),
+    ).rejects.toMatchObject({ name: 'AiUpstreamException' });
+  });
+
+  it('échec completeJson → log métadonnées sans contenu', async () => {
+    const { warns } = captureLogs();
+    stubBodies(['pas du json du tout']);
+    await expect(
+      realGateway().completeJson({ caller: 'DiagStage', messages: [{ role: 'user', content: 'x' }] }),
+    ).rejects.toMatchObject({ message: 'Réponse IA non-JSON.' });
+    const line = warns.join('\n');
+    expect(line).toContain('parseStage=extraction');
+    expect(line).toContain('failureReason=no_json_structure');
+    expect(line).toContain('responseLength=');
+    expect(line).not.toContain('pas du json du tout');
+  });
+});
+
+describe('planner — matrice des formats (bout en bout)', () => {
+  it.each([
+    ['pur', '{"tool":"get_technicians","args":{}}'],
+    ['markdown', '```json\n{"tool":"get_technicians","args":{}}\n```'],
+    ['texte + JSON', 'Here is the result:\n{"tool":"get_technicians","args":{}}'],
+    ['JSON + texte', '{"tool":"get_technicians","args":{}}\nHope this helps.'],
+    ['avant + bloc + après', 'Résultat :\n```json\n{"tool":"get_technicians","args":{}}\n```\nFin.'],
+  ])('%s → tool exécuté, synthèse avec vrais chiffres', async (_label, plan) => {
+    stubBodies([plan, SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_technicians', ok: true }]);
+    expect(result.reply).toContain('2 techniciens');
+  });
+
+  it('réponse vide → échec propre, aucun tool', async () => {
+    stubBodies(['   ', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it('JSON syntaxiquement invalide → échec propre, rien d’inventé', async () => {
+    stubBodies(['{"tool":"get_technicians",', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.reply).not.toMatch(/\d+ technicien/);
+  });
+
+  it('JSON valide mais schéma invalide → incompréhension ou échec, jamais validé', async () => {
+    // {"foo":"bar"} : pas de clé tool → plan "none" ; la synthèse sans
+    // données échoue proprement (corps sans reply) : aucun tool validé.
+    stubBodies(['```json\n{"foo":"bar"}\n```', '{"foo":"bar"}']);
+    const result = await agentService(realGateway()).chat('blabla');
+    expect([AI_AGENT_FAILURE_MESSAGE, AI_AGENT_MISUNDERSTOOD_MESSAGE]).toContain(result.reply);
+    expect(result.toolCalls).toEqual([]);
+    // Variante : tool non-chaîne → incompréhension directe, sans synthèse.
+    stubBodies(['{"tool":123,"args":{}}', SYNTH_OK]);
+    const direct = await agentService(realGateway()).chat('blabla ???');
+    expect(direct.reply).toBe(AI_AGENT_MISUNDERSTOOD_MESSAGE);
+    expect(direct.toolCalls).toEqual([]);
+  });
+
+  it('mauvais tool → incompréhension, aucun tool exécuté', async () => {
+    stubBodies(['{"tool":"drop_database","args":{}}', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('blabla ???');
+    expect(result.reply).toBe(AI_AGENT_MISUNDERSTOOD_MESSAGE);
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it('période invalide → today (valeur sûre), tool exécuté', async () => {
+    stubBodies(['{"tool":"get_demandes","args":{"period":"forever"}}', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Demandes ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_demandes', ok: true }]);
+  });
+
+  it.each([
+    ['429', 429],
+    ['500', 500],
+  ])('HTTP %s côté plan → échec propre', async (_label, status) => {
+    stubStatus(status, { error: 'boom' });
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it('timeout côté plan → échec propre', async () => {
+    stubTimeout();
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+  });
+});
+
+describe('synthesizer — matrice des formats', () => {
+  const PLAN = '{"tool":"get_technicians","args":{}}';
+
+  it.each([
+    ['pur', '{"reply":"1 technicien disponible."}'],
+    ['markdown', '```json\n{"reply":"1 technicien disponible."}\n```'],
+    ['prose + JSON', 'Voici la synthèse : {"reply":"1 technicien disponible."}'],
+    ['accolades en chaîne', '{"reply":"Le motif contient {des accolades}."}'],
+  ])('%s → reply extraite', async (_label, synth) => {
+    stubBodies([PLAN, synth]);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.toolCalls).toEqual([{ tool: 'get_technicians', ok: true }]);
+    expect(result.reply.length).toBeGreaterThan(0);
+  });
+
+  it('accolades en chaîne → extraction non tronquée (équilibrée)', async () => {
+    stubBodies([PLAN, '{"reply":"Le motif contient {des accolades}."}']);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe('Le motif contient {des accolades}.');
+  });
+
+  it('synthèse non-JSON → échec propre (HTTP 200 + non-JSON)', async () => {
+    stubBodies([PLAN, 'Je ne peux pas répondre en JSON, désolé']);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+  });
+
+  it('synthèse JSON sans reply → échec propre (parse OK, schéma KO)', async () => {
+    stubBodies([PLAN, '{"foo":"bar"}']);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+  });
+
+  it('synthèse reply vide → échec propre', async () => {
+    stubBodies([PLAN, '{"reply":"   "}']);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+  });
+
+  it('timeout côté synthèse → échec propre, tool déjà exécuté', async () => {
+    let calls = 0;
+    const timeout = new Error('The operation was aborted due to timeout');
+    timeout.name = 'TimeoutError';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            status: 200,
+            json: async () => ({
+              choices: [{ message: { content: PLAN } }],
+              model: 'cohere/north-mini-code:free',
+            }),
+          };
+        }
+        throw timeout;
+      }),
+    );
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    // Contrat actuel : toute exception → message propre + toolCalls [].
+    expect(result.toolCalls).toEqual([]);
+  });
+});
+
+describe('IA-11 complet — chiffres backend uniquement', () => {
+  it.each([
+    ['techniciens disponibles', '{"tool":"get_technicians","args":{}}'],
+    ['activité aujourd’hui', '{"tool":"get_demandes","args":{"period":"today"}}'],
+    ['nouvelles inscriptions', '{"tool":"get_users","args":{"period":"today"}}'],
+    ['missions en cours', '{"tool":"get_missions","args":{"period":"today"}}'],
+    ['techniciens en route', '{"tool":"get_technicians","args":{}}'],
+    ['surveillance IA', '{"tool":"get_overview","args":{}}'],
+    ['demandes récentes', '{"tool":"get_recent_demandes","args":{"limit":5}}'],
+  ])('%s → tool exécuté, réponse factuelle', async (_label, plan) => {
+    stubBodies([plan, SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Question admin ?');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].ok).toBe(true);
+    expect(result.reply).toBe('2 techniciens disponibles.');
+  });
+
+  it('question inconnue (tool null) → réponse sans chiffre inventé', async () => {
+    stubBodies(['{"tool":null,"args":{}}', '{"reply":"Je peux décrire mes capacités : posez une question chiffrée."}']);
+    const result = await agentService(realGateway()).chat('Bonjour, que sais-tu faire ?');
+    expect(result.toolCalls).toEqual([]);
+    expect(result.reply).toContain('capacités');
+  });
+
+  it('question multi-sujets → un seul tool, synthèse bornée aux données', async () => {
+    stubBodies(['{"tool":"get_overview","args":{}}', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Surveillance IA et techniciens disponibles ?');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.reply).toBe('2 techniciens disponibles.');
+  });
+});
+
+describe('logs Plan/Synth — distinguables, sans contenu sensible', () => {
+  it('succès → "plan ok" + "synth ok" avec durées, sans question ni chiffres', async () => {
+    const { logs } = captureLogs();
+    stubBodies(['{"tool":"get_technicians","args":{}}', SYNTH_OK]);
+    const question = 'QuestionSecreteZ9Q techniciens disponibles ?';
+    await agentService(realGateway()).chat(question);
+    const planOk = logs.find((line) => line.includes('plan ok'));
+    const synthOk = logs.find((line) => line.includes('synth ok'));
+    expect(planOk).toContain('tool=get_technicians');
+    expect(planOk).toContain('durationMs=');
+    expect(synthOk).toContain('replyLength=');
+    expect(logs.join('\n')).not.toContain('QuestionSecreteZ9Q');
+  });
+
+  it('plan non-JSON → plan failed json_parse + échec propre', async () => {
+    const { warns } = captureLogs();
+    stubBodies(['réponse en prose sans JSON', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    const line = warns.find((entry) => entry.includes('plan failed'));
+    expect(line).toContain('parseStage=json_parse');
+    expect(line).toContain('failureReason=non_json_content');
+    expect(line).toContain('httpStatus=200');
+  });
+
+  it('plan 200 vide → plan failed extraction (inexploitable)', async () => {
+    const { warns } = captureLogs();
+    stubStatus(200, { choices: [] });
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(warns.join('\n')).toContain('parseStage=extraction');
+  });
+
+  it('plan schéma invalide → schema_validation/unknown_tool sans valeur brute', async () => {
+    const { warns } = captureLogs();
+    stubBodies(['{"tool":"outil_pirate_xyz","args":{}}', SYNTH_OK]);
+    const result = await agentService(realGateway()).chat('blabla');
+    expect(result.reply).toBe(AI_AGENT_MISUNDERSTOOD_MESSAGE);
+    const line = warns.find((entry) => entry.includes('plan failed')) ?? '';
+    expect(line).toContain('parseStage=schema_validation');
+    expect(line).toContain('failureReason=unknown_tool');
+    expect(line).not.toContain('outil_pirate_xyz');
+  });
+
+  it('synthèse schéma invalide → synth failed schema_validation/missing_reply', async () => {
+    const { warns } = captureLogs();
+    stubBodies(['{"tool":"get_technicians","args":{}}', '{"noreply":1}']);
+    const result = await agentService(realGateway()).chat('Techniciens ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    const line = warns.find((entry) => entry.includes('synth failed')) ?? '';
+    expect(line).toContain('parseStage=schema_validation');
+    expect(line).toContain('failureReason=missing_reply');
+  });
+});
