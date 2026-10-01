@@ -90,6 +90,14 @@ function asFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/* IA-11.3 — vrai si l'échec vient de l'expiration du timeout : signal
+ * avorté (fetch OU lecture du corps en cours), ou erreur nommée
+ * `TimeoutError`/`AbortError` (DOM : avort pendant `response.text()`). */
+function isTimeoutError(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted) return true;
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+
 /* Contenu OpenAI-style en parties [{type:'text', text:'…'}] ou ['…'] :
  * concaténation pure (aucune réparation, aucun contenu inventé). */
 function joinTextParts(raw: unknown): string | null {
@@ -118,7 +126,14 @@ export class AiGatewayService {
 
   constructor(private readonly config: AiConfig) {}
 
-  /** Complétion texte via OpenRouter (erreur interne propre sinon). */
+  /* Complétion texte via OpenRouter (erreur interne propre sinon).
+   * IA-11.3 — séquence instrumentée, mode NON-streaming (aucun `stream`
+   * envoyé : OpenRouter répond en JSON complet, jamais en flux) :
+   *   fetch (signal timeout conservé) → statut HTTP (en-têtes) → lecture
+   *   du corps en texte (métadonnées seules : longueur, MIME) → parse →
+   *   forme OpenRouter → contenu. Chaque étape a sa classification
+   *   (`request_timeout` vs `body_read_error` vs statuts vs forme),
+   *   sans JAMAIS logger le corps, les prompts ou des secrets. */
   async complete(input: AiCompletionInput): Promise<AiCompletionResult> {
     const startedAt = Date.now();
     const refusal = this.config.refusalReason();
@@ -137,6 +152,9 @@ export class AiGatewayService {
       ...(input.maxTokens !== undefined ? { max_tokens: input.maxTokens } : {}),
       ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     };
+    // Signal conservé en référence : distingue l'avort par timeout
+    // (pendant fetch OU pendant la lecture du corps) des autres erreurs.
+    const timeoutSignal = AbortSignal.timeout(Math.min(input.timeoutMs ?? this.config.timeoutMs, 120_000));
     let response: Response;
     try {
       response = await fetch(`${baseUrl}/chat/completions`, {
@@ -147,29 +165,94 @@ export class AiGatewayService {
           Authorization: `Bearer ${this.config.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(Math.min(input.timeoutMs ?? this.config.timeoutMs, 120_000)),
+        signal: timeoutSignal,
       });
     } catch (error) {
       const durationMs = Date.now() - startedAt;
-      const reason = error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'réseau';
-      this.logCall(input, 'upstream', durationMs, reason);
-      throw new AiUpstreamException(`Service IA temporairement indisponible (${reason}).`);
+      const timedOut = isTimeoutError(error, timeoutSignal);
+      const reason = timedOut ? 'timeout' : 'réseau';
+      this.logCall(
+        input,
+        'upstream',
+        durationMs,
+        `${timedOut ? 'request_timeout' : 'request_network_error'} elapsedMs=${durationMs} ` +
+          `abortReason=${timedOut ? 'timeout' : 'none'}`,
+      );
+      throw new AiUpstreamException(
+        `Service IA temporairement indisponible (${reason}).`,
+        null,
+        timedOut ? 'request_timeout' : 'request_network_error',
+        timedOut ? 'timeout' : 'none',
+      );
+    }
+    const headersAt = Date.now();
+    // Statut d'abord (en-têtes déjà reçus) : inutile de lire le corps
+    // d'une erreur sous contrainte de timeout.
+    if (response.status === 429) {
+      const durationMs = Date.now() - startedAt;
+      this.logCall(input, 'upstream', durationMs, `HTTP 429 upstream_rate_limited elapsedMs=${durationMs}`);
+      throw new AiUpstreamException('Service IA temporairement indisponible.', 429, 'upstream_rate_limited');
+    }
+    if (response.status >= 500) {
+      const durationMs = Date.now() - startedAt;
+      this.logCall(
+        input,
+        'upstream',
+        durationMs,
+        `HTTP ${response.status} upstream_server_error elapsedMs=${durationMs}`,
+      );
+      throw new AiUpstreamException(
+        'Service IA temporairement indisponible.',
+        response.status,
+        'upstream_server_error',
+      );
+    }
+    if (response.status >= 400) {
+      const durationMs = Date.now() - startedAt;
+      this.logCall(input, 'terminal', durationMs, `HTTP ${response.status} provider_refused`);
+      throw new AiTerminalException('Requête IA refusée par le fournisseur.', response.status, 'provider_refused');
+    }
+    // Corps lu en texte : seule la LONGUEUR et le MIME sont exploités
+    // (jamais le contenu). `bodyLength=0` = corps vide ; lecture avortée
+    // avec `abortReason=timeout` = cas prod HTTP 200 à ~timeout.
+    const mimeType = truncate(response.headers?.get('content-type') ?? 'unknown', 80);
+    let rawBody = '';
+    let bodyReadCompleted = false;
+    try {
+      rawBody = await response.text();
+      bodyReadCompleted = true;
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const timedOut = isTimeoutError(error, timeoutSignal);
+      this.logCall(
+        input,
+        'invalid',
+        durationMs,
+          `HTTP ${response.status} body_read_error bodyReadStarted=true bodyReadCompleted=${bodyReadCompleted} ` +
+          `bodyLength=unknown contentType=${mimeType} abortReason=${timedOut ? 'timeout' : 'none'} ` +
+          `bodyReadMs=${Date.now() - headersAt} elapsedMs=${durationMs}`,
+      );
+      throw new AiInvalidResponseException(
+        'Réponse IA illisible.',
+        null,
+        'body_read_error',
+        timedOut ? 'timeout' : 'none',
+      );
     }
     const durationMs = Date.now() - startedAt;
     let payload: unknown;
     try {
-      payload = await response.json();
+      payload = JSON.parse(rawBody) as unknown;
     } catch {
-      this.logCall(input, 'invalid', durationMs, `HTTP ${response.status}`);
-      throw new AiInvalidResponseException('Réponse IA illisible.');
-    }
-    if (response.status === 429 || response.status >= 500) {
-      this.logCall(input, 'upstream', durationMs, `HTTP ${response.status}`);
-      throw new AiUpstreamException('Service IA temporairement indisponible.', response.status);
-    }
-    if (response.status >= 400) {
-      this.logCall(input, 'terminal', durationMs, `HTTP ${response.status}`);
-      throw new AiTerminalException('Requête IA refusée par le fournisseur.', response.status);
+      this.logCall(
+        input,
+        'invalid',
+        durationMs,
+          `HTTP ${response.status} body_read_error bodyReadStarted=true bodyReadCompleted=${bodyReadCompleted} ` +
+          `bodyLength=${rawBody.length} contentType=${mimeType} abortReason=none ` +
+          `bodyReadMs=${Date.now() - headersAt} elapsedMs=${durationMs}`,
+      );
+      throw new AiInvalidResponseException('Réponse IA illisible.', null, 'body_read_error', 'none');
     }
     const record = asRecord(payload);
     const data = asRecord(record?.data) ?? record ?? {};
@@ -192,11 +275,11 @@ export class AiGatewayService {
         input,
         'invalid',
         durationMs,
-        `HTTP ${response.status} extraction_failed choicesCount=${choices?.length ?? 0} ` +
+        `HTTP ${response.status} invalid_openrouter_payload choicesCount=${choices?.length ?? 0} ` +
           `messagePresent=${messageRecord !== null} contentType=${contentType} ` +
-          `finishReason=${finishReason ?? 'unknown'}`,
+          `bodyLength=${rawBody.length} finishReason=${finishReason ?? 'unknown'}`,
       );
-      throw new AiInvalidResponseException('Réponse IA inexploitable.', finishReason);
+      throw new AiInvalidResponseException('Réponse IA inexploitable.', finishReason, 'invalid_openrouter_payload');
     }
     const usageRecord = asRecord(data.usage) ?? undefined;
     const result: AiCompletionResult = {

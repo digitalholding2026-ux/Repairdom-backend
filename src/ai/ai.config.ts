@@ -95,11 +95,16 @@ export class AiConfig {
     return Math.min(Math.max(raw, 0), 1);
   }
 
-  /* IA-8 — timeout court CENTRALISÉ de l'analyse (défaut 8 s, borné
-   * [1 s, 30 s]) : le chat ne bloque jamais sur l'IA. */
+  /* IA-8 — timeout court CENTRALISÉ de l'analyse, borné [1 s, 30 s].
+   * IA-11.3 — défaut 8 s → 12 s : les échecs prod `unreadable_body`
+   * clusterisaient exactement à la borne (durées agent 8001/8002/8004 ms
+   * pour un timeout de 8000 ms = en-têtes HTTP 200 reçus puis lecture du
+   * corps avortée par le signal). +50 % de marge pour absorber les pics
+   * du fournisseur, sans dégrader l'interactivité (pire cas ≈ 2×12 s
+   * plan+synthèse, fail-safe conservé). Surcharge : `AI_CHAT_TIMEOUT_MS`. */
   get chatTimeoutMs(): number {
     const raw = Number(this.config.get<string>('AI_CHAT_TIMEOUT_MS'));
-    if (!Number.isFinite(raw)) return 8_000;
+    if (!Number.isFinite(raw)) return 12_000;
     return Math.min(Math.max(Math.round(raw), 1000), 30_000);
   }
 

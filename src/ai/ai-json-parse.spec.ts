@@ -105,9 +105,12 @@ function gatewayWithFetch(bodies: string[]) {
     vi.fn(async () => {
       const content = bodies[Math.min(calls, bodies.length - 1)];
       calls += 1;
+      const payload = { choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' };
       return {
         status: 200,
-        json: async () => ({ choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' }),
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify(payload),
+        json: async () => payload,
       };
     }),
   );

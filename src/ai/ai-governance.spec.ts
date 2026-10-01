@@ -38,6 +38,8 @@ describe('secrets — clé strictement backend, jamais dans le corps ni les logs
         seen.push({ url, init });
         return {
           status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }], model: 'm' }),
           json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }], model: 'm' }),
         };
       }),
@@ -66,6 +68,9 @@ describe('secrets — clé strictement backend, jamais dans le corps ni les logs
       'fetch',
       vi.fn(async () => ({
         status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }], model: 'm' }),
         json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }], model: 'm' }),
       })),
     );

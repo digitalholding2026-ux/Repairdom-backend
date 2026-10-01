@@ -88,6 +88,7 @@ function describeAgentFailure(error: unknown): {
   failureReason: string;
   httpStatus: number | null;
   finishReason: string | null;
+  abortReason: string | null;
 } {
   const record = asRecord(error);
   const message = error instanceof Error ? error.message : '';
@@ -101,28 +102,59 @@ function describeAgentFailure(error: unknown): {
         ? 200
         : null;
   /* IA-11.2 — motif d'arrêt propagé par le gateway (`length` = troncature
-   * par `max_tokens`, libellé sûr et borné, jamais du contenu). */
+   * par `max_tokens`, libellé sûr et borné, jamais du contenu).
+   * IA-11.3 — classification transport + cause d'avort propagées de même
+   * (chaînes fermées, jamais du contenu). */
   const finishReason = typeof record?.finishReason === 'string' ? (record.finishReason as string) : null;
+  const transport = typeof record?.transportReason === 'string' ? (record.transportReason as string) : null;
+  const abortReason = typeof record?.abortReason === 'string' ? (record.abortReason as string) : null;
+  const base = { httpStatus, finishReason, abortReason };
+  // Classification gateway (IA-11.3) prioritaire ; repli sur les libellés
+  // pour les gateways mockés des tests historiques.
+  if (transport === 'request_timeout') {
+    return { parseStage: 'transport', failureReason: 'request_timeout', ...base };
+  }
+  if (transport === 'request_network_error') {
+    return { parseStage: 'transport', failureReason: 'request_network_error', ...base };
+  }
+  if (transport === 'body_read_error') {
+    return { parseStage: 'transport', failureReason: 'body_read_error', ...base };
+  }
+  if (transport === 'invalid_openrouter_payload') {
+    return { parseStage: 'extraction', failureReason: 'invalid_openrouter_payload', ...base };
+  }
+  if (transport === 'upstream_rate_limited') {
+    return { parseStage: 'transport', failureReason: 'upstream_rate_limited', ...base };
+  }
+  if (transport === 'upstream_server_error') {
+    return { parseStage: 'transport', failureReason: 'upstream_server_error', ...base };
+  }
+  if (transport === 'provider_refused') {
+    return { parseStage: 'transport', failureReason: 'provider_refused', ...base };
+  }
+  if (transport === 'disabled') {
+    return { parseStage: 'transport', failureReason: 'disabled', ...base };
+  }
   if (message === 'Réponse IA illisible.') {
-    return { parseStage: 'transport', failureReason: 'unreadable_body', httpStatus, finishReason };
+    return { parseStage: 'transport', failureReason: 'unreadable_body', ...base };
   }
   if (message === 'Réponse IA inexploitable.') {
-    return { parseStage: 'extraction', failureReason: 'empty_or_missing_content', httpStatus, finishReason };
+    return { parseStage: 'extraction', failureReason: 'empty_or_missing_content', ...base };
   }
   if (message === 'Réponse IA non-JSON.') {
-    return { parseStage: 'json_parse', failureReason: 'non_json_content', httpStatus, finishReason };
+    return { parseStage: 'json_parse', failureReason: 'non_json_content', ...base };
   }
   if (code === 'AI_UPSTREAM' || /temporairement indisponible/i.test(message)) {
     const reason = /timeout/i.test(message) ? 'timeout' : 'upstream_unavailable';
-    return { parseStage: 'transport', failureReason: reason, httpStatus, finishReason };
+    return { parseStage: 'transport', failureReason: reason, ...base };
   }
   if (code === 'AI_TERMINAL' || /refusée par le fournisseur/i.test(message)) {
-    return { parseStage: 'transport', failureReason: 'provider_refused', httpStatus, finishReason };
+    return { parseStage: 'transport', failureReason: 'provider_refused', ...base };
   }
   if (code === 'AI_DISABLED' || /désactivé|non configuré/i.test(message)) {
-    return { parseStage: 'transport', failureReason: 'disabled', httpStatus, finishReason };
+    return { parseStage: 'transport', failureReason: 'disabled', ...base };
   }
-  return { parseStage: 'unknown', failureReason: 'unexpected_error', httpStatus, finishReason };
+  return { parseStage: 'unknown', failureReason: 'unexpected_error', ...base };
 }
 
 /** Début de journée métier (Douala) décalée de `offsetDays` (0 = aujourd'hui). */
@@ -279,7 +311,7 @@ export class AiAdminAgentService {
       this.logger.warn(
         `Agent IA plan failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
           `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'} ` +
-          `finishReason=${failure.finishReason ?? 'unknown'}`,
+          `finishReason=${failure.finishReason ?? 'unknown'} abortReason=${failure.abortReason ?? 'unknown'}`,
       );
       throw error;
     }
@@ -518,7 +550,7 @@ export class AiAdminAgentService {
       this.logger.warn(
         `Agent IA synth failed parseStage=${failure.parseStage} failureReason=${failure.failureReason} ` +
           `durationMs=${Date.now() - startedAt} httpStatus=${failure.httpStatus ?? 'unknown'} ` +
-          `finishReason=${failure.finishReason ?? 'unknown'}`,
+          `finishReason=${failure.finishReason ?? 'unknown'} abortReason=${failure.abortReason ?? 'unknown'}`,
       );
       throw error;
     }
@@ -543,13 +575,17 @@ export class AiAdminAgentService {
   }
 
   /* IA-11.2 — prompt compact (sortie : une à deux phrases dans
-   * `{"reply": …}`, jamais de recalcul ni de répétition des données) :
-   * règles de sécurité intégralement conservées. */
+   * `{"reply": …}`, jamais de recalcul ni de répétition des données).
+   * IA-11.3 — contrat JSON durci en tête (le modèle sortait parfois de la
+   * prose brute malgré `finish_reason=stop`) : JSON seul, sans markdown,
+   * sans prose hors JSON, sans explication. Règles métier et de sécurité
+   * intégralement conservées ; AUCUN fallback sémantique (la prose reste
+   * refusée en `non_json_content`, jamais convertie en `{"reply":…}`). */
   private synthesisPrompt(now: Date): string {
     return [
-      'Agent IA back-office Relio (administrateurs exclusivement).',
-      'Réponse : UNIQUEMENT {"reply":"une à deux phrases, en français"}. Ne répète pas les données, ne recalcule rien.',
-      'Règles : statistiques = données vérifiées ci-dessus uniquement, sinon "pas de donnée structurée" (jamais d’invention) ; observé/calcul/interprétation distingués, estimation interdite ; signaux IA-7/IA-8 = revue humaine, ni accusations ni scores, pas de classement ; avis note basse = des avis, jamais des "plaintes" ; demande d’action → refus + renvoi outils admin.',
+      'Tu réponds UNIQUEMENT en JSON strict et valide : {"reply":"..."}. Aucun markdown, aucune prose hors JSON, aucune explication.',
+      'Agent IA back-office Relio (administrateurs exclusivement). "reply" = une à deux phrases, en français, à partir des données vérifiées ci-dessus uniquement. Ne répète pas les données brutes, ne recalcule rien.',
+      'Règles : sans données → "pas de donnée structurée" (jamais d’invention) ; observé/calcul/interprétation distingués, estimation interdite ; signaux IA-7/IA-8 = revue humaine, ni accusations ni scores, pas de classement ; avis note basse = des avis, jamais des "plaintes" ; demande d’action → refus + renvoi outils admin.',
       `Contexte serveur : ${now.toISOString()} (fuseau ${AI_AGENT_TIMEZONE}).`,
     ].join('\n');
   }

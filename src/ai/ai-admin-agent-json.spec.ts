@@ -39,9 +39,12 @@ function stubBodies(bodies: string[], status = 200) {
     vi.fn(async () => {
       const content = bodies[Math.min(calls, bodies.length - 1)];
       calls += 1;
+      const payload = { choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' };
       return {
         status,
-        json: async () => ({ choices: [{ message: { content } }], model: 'cohere/north-mini-code:free' }),
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify(payload),
+        json: async () => payload,
       };
     }),
   );
@@ -50,7 +53,12 @@ function stubBodies(bodies: string[], status = 200) {
 function stubStatus(status: number, payload: unknown) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => ({ status, json: async () => payload })),
+    vi.fn(async () => ({
+      status,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify(payload),
+      json: async () => payload,
+    })),
   );
 }
 
@@ -198,14 +206,17 @@ describe('parseJsonDetailed — étape exacte sans contenu', () => {
 
 describe('gateway — extraction contenu OpenRouter', () => {
   it('contenu en parties [{text}] → concaténé (pas inexploitable)', async () => {
+    const payload = {
+      choices: [{ message: { content: [{ type: 'text', text: '{"a":' }, { type: 'text', text: '1}' }] } }],
+      model: 'm',
+    };
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
         status: 200,
-        json: async () => ({
-          choices: [{ message: { content: [{ type: 'text', text: '{"a":' }, { type: 'text', text: '1}' }] } }],
-          model: 'm',
-        }),
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify(payload),
+        json: async () => payload,
       })),
     );
     const result = await realGateway().completeJson<{ a: number }>({
@@ -226,6 +237,10 @@ describe('gateway — extraction contenu OpenRouter', () => {
       'fetch',
       vi.fn(async () => ({
         status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () => {
+          throw new SyntaxError('Unexpected end of input');
+        },
         json: async () => {
           throw new SyntaxError('Unexpected token');
         },
@@ -384,12 +399,15 @@ describe('synthesizer — matrice des formats', () => {
       vi.fn(async () => {
         calls += 1;
         if (calls === 1) {
+          const payload = {
+            choices: [{ message: { content: PLAN } }],
+            model: 'cohere/north-mini-code:free',
+          };
           return {
             status: 200,
-            json: async () => ({
-              choices: [{ message: { content: PLAN } }],
-              model: 'cohere/north-mini-code:free',
-            }),
+            headers: { get: () => 'application/json' },
+            text: async () => JSON.stringify(payload),
+            json: async () => payload,
           };
         }
         throw timeout;
@@ -509,7 +527,12 @@ function stubSteps(steps: Array<{ status: number; payload: unknown }>, sentBodie
       if (typeof init?.body === 'string') sentBodies.push(init.body);
       const step = steps[Math.min(calls, steps.length - 1)];
       calls += 1;
-      return { status: step.status, json: async () => step.payload };
+      return {
+        status: step.status,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify(step.payload),
+        json: async () => step.payload,
+      };
     }),
   );
 }
@@ -577,7 +600,7 @@ describe('IA-11.2 — troncature finish_reason=length (cas production)', () => {
     expect(result.toolCalls).toEqual([]);
     const joined = warns.join('\n');
     expect(joined).toContain('finishReason=length');
-    expect(joined).toContain('failureReason=empty_or_missing_content');
+    expect(joined).toContain('failureReason=invalid_openrouter_payload');
   });
 
   it('synthèse tronquée `{"reply":"…\\` + length → refusée, jamais réparée', async () => {
@@ -630,5 +653,69 @@ describe('IA-11.2 — synthèse courte, contrats inchangés', () => {
     stubBodies(['{"tool":"get_technicians","args":{}}', longReply]);
     const result = await agentService(realGateway()).chat('Techniciens ?');
     expect(result.reply).toHaveLength(AI_AGENT_MAX_REPLY_CHARS);
+  });
+});
+
+/* IA-11.3 — problème B : synthèse prose brute + finish_reason=stop
+ * (réponse complète mais hors contrat). AUCUNE conversion auto en
+ * {"reply":…} : échec contrôlé, cause loggée. */
+
+describe('IA-11.3 — synthèse non-JSON malgré finish_reason=stop', () => {
+  it('prose 60 car. + stop → non_json_content, jamais convertie', async () => {
+    const { warns } = captureLogs();
+    const prose = 'Analyse des techniciens disponibles sur la plateforme.';
+    expect(prose).toHaveLength(54);
+    stubSteps([
+      { status: 200, payload: choicePayload('{"tool":"get_technicians","args":{}}', 'stop') },
+      { status: 200, payload: choicePayload(prose, 'stop') },
+    ]);
+    const result = await agentService(realGateway()).chat('Techniciens disponibles ?');
+    expect(result.reply).toBe(AI_AGENT_FAILURE_MESSAGE);
+    expect(result.reply).not.toContain('technicien disponible');
+    const joined = warns.join('\n');
+    expect(joined).toContain('failureReason=no_json_structure');
+    expect(joined).toContain('failureReason=non_json_content');
+    expect(joined).toContain('finishReason=stop');
+  });
+
+  it('prompt synthèse : JSON seul exigé en tête, règles conservées', async () => {
+    const sent: string[] = [];
+    stubSteps(
+      [
+        { status: 200, payload: choicePayload('{"tool":null,"args":{}}', 'stop') },
+        { status: 200, payload: choicePayload('{"reply":"ok."}', 'stop') },
+      ],
+      sent,
+    );
+    await agentService(realGateway()).chat('Que sais-tu faire ?');
+    const synthBody = JSON.parse(sent[1]) as { messages: Array<{ content: string }> };
+    const system = synthBody.messages[0].content;
+    expect(system.startsWith('Tu réponds UNIQUEMENT en JSON')).toBe(true);
+    expect(system).toMatch(/aucun markdown.*prose hors JSON/i);
+    expect(system).toContain('{"reply"');
+    expect(system).toContain('une à deux phrases');
+    expect(system).toContain('jamais d’invention');
+    expect(system).toContain('Africa/Douala');
+  });
+});
+
+describe('IA-11.3 — questions production bout en bout', () => {
+  it.each([
+    ['Techniciens disponibles ?', '{"tool":"get_technicians","args":{}}', 'get_technicians'],
+    ['Client disponible sur la plateforme ?', '{"tool":"get_users","args":{"period":"today"}}', 'get_users'],
+    ['Activité aujourd’hui ?', '{"tool":"get_demandes","args":{"period":"today"}}', 'get_demandes'],
+    ['Nouvelles inscriptions ?', '{"tool":"get_users","args":{"period":"today"}}', 'get_users'],
+    ['Missions en cours ?', '{"tool":"get_missions","args":{"period":"today"}}', 'get_missions'],
+    ['Techniciens en route ?', '{"tool":"get_technicians","args":{}}', 'get_technicians'],
+    ['Surveillance IA ?', '{"tool":"get_overview","args":{}}', 'get_overview'],
+    ['Demandes récentes ?', '{"tool":"get_recent_demandes","args":{"limit":5}}', 'get_recent_demandes'],
+  ])('%s → plan valide + outil + synthèse', async (_question, plan, tool) => {
+    stubSteps([
+      { status: 200, payload: choicePayload(plan, 'stop') },
+      { status: 200, payload: choicePayload('{"reply":"Réponse factuelle courte."}', 'stop') },
+    ]);
+    const result = await agentService(realGateway()).chat('Question admin ?');
+    expect(result.toolCalls).toEqual([{ tool, ok: true }]);
+    expect(result.reply).toBe('Réponse factuelle courte.');
   });
 });

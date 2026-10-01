@@ -30,6 +30,8 @@ function stubFetchOnce(status: number, payload: unknown) {
     'fetch',
     vi.fn(async () => ({
       status,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify(payload),
       json: async () => payload,
     })),
   );
@@ -49,6 +51,10 @@ function stubFetchInvalidJson(status = 200) {
     'fetch',
     vi.fn(async () => ({
       status,
+      headers: { get: () => 'application/json' },
+      text: async () => {
+        throw new SyntaxError('Unexpected token');
+      },
       json: async () => {
         throw new SyntaxError('Unexpected token');
       },
