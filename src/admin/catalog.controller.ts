@@ -135,6 +135,11 @@ export class CatalogController {
     return this.catalog.listProblems(domainId, brandId, modelId);
   }
 
+  @Get('problems/:id/scale')
+  getProblemScale(@Param('id') id: string) {
+    return this.catalog.getProblemScale(id);
+  }
+
   @Get('problems/:id')
   getProblem(@Param('id') id: string) {
     return this.catalog.getProblem(id);

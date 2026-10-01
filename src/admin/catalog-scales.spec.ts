@@ -209,7 +209,14 @@ describe('validation des triplets (assertPricingValid via create/update)', () =>
     const histories: unknown[] = [];
     return {
       histories,
-      catalogIntervention: { findUnique: vi.fn(async () => ({ id: 'i-1' })) },
+      catalogIntervention: {
+        // Scope modèle (MODÈLE + CATÉGORIE) : l'intervention appartient à
+        // une catégorie rattachée à un modèle précis.
+        findUnique: vi.fn(async () => ({
+          id: 'i-1',
+          diagnostic: { id: 'dg-1', problem: { id: 'pb-1', name: 'Afficheur', modelId: 'm-1' } },
+        })),
+      },
       pricing: {
         findUnique: vi.fn(async () => null),
         create: vi.fn(async ({ data }: { data: unknown }) => ({ id: 'p-1', ...data })),

@@ -68,6 +68,8 @@ function checkService(options: {
   existing?: Record<string, unknown> | null;
   match?: Record<string, unknown> | null;
   diagnostic?: Record<string, unknown> | null;
+  demande?: Record<string, unknown> | null;
+  scoped?: Record<string, unknown> | null;
   pricings?: Array<Record<string, unknown>>;
   pending?: Array<{ id: string }>;
 } = {}) {
@@ -88,6 +90,14 @@ function checkService(options: {
     diagnosticCatalogMatch: { findUnique: vi.fn(async () => options.match ?? null) },
     catalogDiagnostic: {
       findUnique: vi.fn(async () => options.diagnostic ?? null),
+    },
+    problem: {
+      findFirst: vi.fn(async () => options.scoped ?? null),
+    },
+    // Mission sans modèle par défaut (parcours historique) ; les tests
+    // exact-modèle passent explicitement `{ modelId }`.
+    demande: {
+      findUnique: vi.fn(async () => options.demande ?? { modelId: null }),
     },
   };
   return {
@@ -260,6 +270,7 @@ describe('evaluatePendingQuotesForMatch — mapping tardif', () => {
       catalogDiagnostic: {
         findUnique: vi.fn(async () => activeScale()),
       },
+      demande: { findUnique: vi.fn(async () => ({ modelId: null })) },
     };
     const service = new AiPricingCheckService(
       prisma as never,
@@ -271,5 +282,97 @@ describe('evaluatePendingQuotesForMatch — mapping tardif', () => {
       where: { diagnosticId: 'dg-1', source: 'MANUAL', status: 'PENDING', pricingCheck: { is: null } },
       select: { id: true },
     });
+  });
+});
+
+describe('barème exact-modèle (MODÈLE + CATÉGORIE)', () => {
+  const MATCHED_CD = { classification: 'MATCHED', catalogDiagnosticId: 'cd-xr' };
+
+  // Diagnostic matché = Afficheur d'un AUTRE modèle (iPhone XR, max 45 000).
+  const matchedOtherModel = () => ({
+    problem: { slug: 'afficheur', domainId: 'd-1' },
+  });
+
+  // Catégorie Afficheur SOUS LE MODÈLE DE LA MISSION (iPhone 11) : max 50 000.
+  const scopedModel11 = () => ({
+    id: 'pb-11',
+    isActive: true,
+    diagnostics: [
+      {
+        interventions: [
+          { pricing: { id: 'p-11', minPrice: 25000, referencePrice: 35000, maxPrice: 50000, isActive: true } },
+        ],
+      },
+    ],
+  });
+
+  it('mission iPhone 11, devis 55 000 → ABOVE_MAX contre le max 50 000 du modèle 11', async () => {
+    const { service, prisma, upserted } = checkService({
+      quote: { ...QUOTE, amount: 55000 },
+      match: MATCHED_CD,
+      demande: { modelId: 'm-11' },
+      diagnostic: matchedOtherModel(),
+      scoped: scopedModel11(),
+    });
+    const row = await service.evaluateManualQuote('q-1');
+    expect(row).toMatchObject({ result: 'ABOVE_MAX', deviationAmount: 5000 });
+    // Snapshot = barème du modèle 11, jamais celui du XR.
+    expect(upserted).toHaveLength(1);
+    expect(upserted[0]).toMatchObject({
+      minAtCheck: 25000,
+      referenceAtCheck: 35000,
+      maxAtCheck: 50000,
+      pricingIds: ['p-11'],
+    });
+    // Résolution scopée : même slug + même domaine + modèle mission.
+    expect(prisma.problem.findFirst).toHaveBeenCalledWith({
+      where: { domainId: 'd-1', slug: 'afficheur', modelId: 'm-11' },
+      select: expect.anything(),
+    });
+  });
+
+  it('aucun barème de l’autre modèle n’est réutilisé : sans équivalent exact → NO_BAREME', async () => {
+    const { service } = checkService({
+      quote: { ...QUOTE, amount: 55000 },
+      match: MATCHED_CD,
+      demande: { modelId: 'm-11' },
+      // Le diagnostic matché (XR) porte un barème valide, mais il appartient
+      // à un autre modèle : il ne doit JAMAIS servir à cette mission.
+      diagnostic: {
+        ...matchedOtherModel(),
+        id: 'cd-xr',
+        isActive: true,
+        interventions: [
+          { id: 'i-xr', pricing: { id: 'p-xr', minPrice: 20000, referencePrice: 30000, maxPrice: 45000, isActive: true } },
+        ],
+      },
+      scoped: null,
+    });
+    const row = await service.evaluateManualQuote('q-1');
+    expect(row).toMatchObject({ result: 'NO_BAREME', reason: 'NO_MODEL_SCALE' });
+  });
+
+  it('mission sans modèle → parcours historique (barème du diagnostic matché)', async () => {
+    const { service, prisma } = checkService({
+      quote: { ...QUOTE, amount: 50000 },
+      match: MATCHED,
+      demande: { modelId: null },
+      diagnostic: activeScale(),
+    });
+    const row = await service.evaluateManualQuote('q-1');
+    expect(row).toMatchObject({ result: 'NORMAL', maxAtCheck: 80000 });
+    expect(prisma.problem.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('catégorie du modèle inactive → UNCERTAIN (jamais de comparaison invalide)', async () => {
+    const { service } = checkService({
+      quote: { ...QUOTE, amount: 55000 },
+      match: MATCHED_CD,
+      demande: { modelId: 'm-11' },
+      diagnostic: matchedOtherModel(),
+      scoped: { ...scopedModel11(), isActive: false },
+    });
+    const row = await service.evaluateManualQuote('q-1');
+    expect(row).toMatchObject({ result: 'UNCERTAIN', reason: 'INACTIVE_SCALE' });
   });
 });

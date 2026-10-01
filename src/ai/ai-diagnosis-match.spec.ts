@@ -250,6 +250,93 @@ describe('permissions : acteur non autorisé → 404', () => {
   });
 });
 
+describe('contexte modèle : le mapping identifie catégorie + modèle', () => {
+  const DIAG_MODEL = {
+    ...DIAGNOSTIC,
+    demande: { ...DIAGNOSTIC.demande, brandId: 'b-ios', modelId: 'm-11' },
+  };
+  const MODEL_CANDIDATES = [
+    {
+      id: 'cd-gen',
+      name: 'Afficheur générique',
+      problem: {
+        name: 'Afficheur',
+        slug: 'afficheur',
+        domainId: 'dom-tel',
+        modelId: null,
+        brandId: null,
+        domain: { name: 'Smartphone' },
+        brand: null,
+        model: null,
+      },
+    },
+    {
+      id: 'cd-tecno',
+      name: 'Afficheur Tecno',
+      problem: {
+        name: 'Afficheur',
+        slug: 'afficheur',
+        domainId: 'dom-tel',
+        modelId: 'm-tecno',
+        brandId: 'b-android',
+        domain: { name: 'Smartphone' },
+        brand: { name: 'Android' },
+        model: { name: 'Tecno Spark' },
+      },
+    },
+    {
+      id: 'cd-11',
+      name: 'Afficheur iPhone 11',
+      problem: {
+        name: 'Afficheur',
+        slug: 'afficheur',
+        domainId: 'dom-tel',
+        modelId: 'm-11',
+        brandId: 'b-ios',
+        domain: { name: 'Smartphone' },
+        brand: { name: 'iOS' },
+        model: { name: 'iPhone 11' },
+      },
+    },
+  ];
+
+  it('candidat du modèle mission en premier, libellé « modèle : iPhone 11 »', async () => {
+    let system = '';
+    const gateway = {
+      completeJson: vi.fn(async ({ messages }: { messages: Array<{ content: string }> }) => {
+        system = messages[0].content;
+        return {
+          result: { catalogDiagnosticId: 'cd-11', confidence: 0.9, classification: 'MATCHED', reason: 'Ok.' },
+          model: 'm',
+          durationMs: 1,
+        };
+      }),
+    };
+    const upsert = vi.fn(async ({ create }: { create: unknown }) => create);
+    const svc = service({
+      gateway,
+      prisma: {
+        diagnostic: { findFirst: vi.fn(async () => DIAG_MODEL) },
+        diagnosticCatalogMatch: { findUnique: vi.fn(async () => null), upsert },
+        catalogDiagnostic: {
+          findMany: vi.fn(async () => MODEL_CANDIDATES),
+          findUnique: vi.fn(async () => ({ id: 'cd-11', isActive: true })),
+        },
+      },
+    });
+    const outcome = await svc.mapFreeDiagnostic(ACTOR, 'd-1', 'dg-1');
+    expect(outcome).toMatchObject({ classification: 'MATCHED', catalogDiagnosticId: 'cd-11' });
+    const lines = system.split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toHaveLength(3);
+    // Le diagnostic du modèle de la mission passe en premier, avec son modèle.
+    expect(lines[0]).toContain('cd-11');
+    expect(lines[0]).toContain('modèle : iPhone 11');
+    // Le générique reste proposable, explicitement « tous modèles ».
+    expect(system).toContain('tous modèles');
+    expect(system).toContain('cd-tecno');
+  });
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });

@@ -11,7 +11,11 @@ import { clampLimit, clampPage, pageCount, parseSince } from './ai-list-query.js
  * - l'IA (mapping IA-5) identifie le diagnostic, le CODE compare ;
  * - `null` n'est JAMAIS traité comme 0 (bornes réellement disponibles) ;
  * - snapshot IMMUABLE par devis (création unique, jamais réécrit) ;
- * - devis, montants, statuts et workflows intacts (aucun blocage).
+ * - devis, montants, statuts et workflows intacts (aucun blocage) ;
+ * - BARÈME EXACT-MODÈLE : quand la mission porte un modèle, seul le barème
+ *   de la catégorie (même slug) SOUS CE MODÈLE est utilisé — jamais celui
+ *   d'un autre modèle (NO_MODEL_SCALE sinon) ; sans modèle mission,
+ *   parcours historique (barème du diagnostic matché).
  *
  * Résultats : NORMAL | ABOVE_MAX | BELOW_MIN | UNCERTAIN | NO_BAREME. */
 
@@ -91,6 +95,18 @@ export class AiPricingCheckService {
     if (!match || match.classification !== 'MATCHED' || !match.catalogDiagnosticId) {
       return this.persist(quote, quote.diagnosticId, null, { result: 'NO_BAREME', reason: 'NO_MATCH' });
     }
+    // Barème exact-modèle : quand la mission porte un modèle, seul le barème
+    // de la catégorie (même slug, même domaine) SOUS CE MODÈLE compte —
+    // jamais celui du diagnostic matché s'il appartient à un autre modèle,
+    // jamais un barème « global » hors modèle. Sans modèle mission : parcours
+    // historique ci-dessous (données antérieures au scope modèle).
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: quote.demandeId },
+      select: { modelId: true },
+    });
+    if (demande?.modelId) {
+      return this.evaluateAgainstModelScope(quote, match.catalogDiagnosticId, demande.modelId);
+    }
     const catalogDiagnostic = await this.prisma.catalogDiagnostic.findUnique({
       where: { id: match.catalogDiagnosticId },
       select: {
@@ -117,6 +133,24 @@ export class AiPricingCheckService {
         reason: 'NO_PRICING',
       });
     }
+    return this.persistScaleCheck(quote, quote.diagnosticId, match.catalogDiagnosticId, pricings);
+  }
+
+  /* Agrégation unique des pricings actifs en barème (min des mins, max des
+   * maxs, référence unique ou null si divergente — cf.
+   * CatalogService.getProblemScale) puis contrôle immuable. `null` n'est
+   * jamais 0 ; un barème entièrement vide → NO_BAREME. */
+  private persistScaleCheck(
+    quote: { id: string; demandeId: string; amount: number; diagnosticId: string | null },
+    diagnosticId: string | null,
+    catalogDiagnosticId: string | null,
+    pricings: Array<{
+      id: string;
+      minPrice: number | null;
+      referencePrice: number | null;
+      maxPrice: number | null;
+    }>,
+  ) {
     const mins = pricings.map((p) => p.minPrice).filter((v): v is number => v !== null);
     const maxs = pricings.map((p) => p.maxPrice).filter((v): v is number => v !== null);
     const refs = pricings.map((p) => p.referencePrice).filter((v): v is number => v !== null);
@@ -126,19 +160,79 @@ export class AiPricingCheckService {
       max: maxs.length > 0 ? Math.max(...maxs) : null,
     };
     if (scale.min === null && scale.reference === null && scale.max === null) {
-      return this.persist(quote, quote.diagnosticId, match.catalogDiagnosticId, {
+      return this.persist(quote, diagnosticId, catalogDiagnosticId, {
         result: 'NO_BAREME',
         reason: 'NO_BOUNDS',
         pricingIds: pricings.map((p) => p.id),
       });
     }
     const comparison = comparePriceToScale(quote.amount, scale);
-    return this.persist(quote, quote.diagnosticId, match.catalogDiagnosticId, {
+    return this.persist(quote, diagnosticId, catalogDiagnosticId, {
       result: comparison.result,
       pricingIds: pricings.map((p) => p.id),
       partial: { ...scale },
       deviation: comparison,
     });
+  }
+
+  /* Barème exact-modèle (MODÈLE + CATÉGORIE) : résout le problème de même
+   * slug / même domaine SOUS LE MODÈLE DE LA MISSION et contrôle contre son
+   * barème actif. Aucun report inter-modèles : sans équivalent exact →
+   * NO_BAREME / NO_MODEL_SCALE (signal, jamais de blocage). Le snapshot
+   * persisté (min/ref/max + pricingIds sources) reste immuable : une
+   * modification ultérieure du catalogue ne réécrit jamais cette ligne. */
+  private async evaluateAgainstModelScope(
+    quote: { id: string; demandeId: string; amount: number; diagnosticId: string | null },
+    catalogDiagnosticId: string,
+    modelId: string,
+  ) {
+    const matched = await this.prisma.catalogDiagnostic.findUnique({
+      where: { id: catalogDiagnosticId },
+      select: { problem: { select: { slug: true, domainId: true } } },
+    });
+    if (!matched?.problem) {
+      return this.persist(quote, quote.diagnosticId, catalogDiagnosticId, {
+        result: 'NO_BAREME',
+        reason: 'NO_MATCH',
+      });
+    }
+    const scoped = await this.prisma.problem.findFirst({
+      where: { domainId: matched.problem.domainId, slug: matched.problem.slug, modelId },
+      select: {
+        id: true,
+        isActive: true,
+        diagnostics: {
+          where: { isActive: true },
+          select: {
+            interventions: { where: { isActive: true }, select: { pricing: true } },
+          },
+        },
+      },
+    });
+    if (!scoped) {
+      return this.persist(quote, quote.diagnosticId, catalogDiagnosticId, {
+        result: 'NO_BAREME',
+        reason: 'NO_MODEL_SCALE',
+      });
+    }
+    if (!scoped.isActive) {
+      return this.persist(quote, quote.diagnosticId, catalogDiagnosticId, {
+        result: 'UNCERTAIN',
+        reason: 'INACTIVE_SCALE',
+      });
+    }
+    const pricings = scoped.diagnostics
+      .flatMap((diagnostic) => diagnostic.interventions.map((intervention) => intervention.pricing))
+      .filter(
+        (pricing): pricing is NonNullable<typeof pricing> => pricing !== null && pricing.isActive,
+      );
+    if (pricings.length === 0) {
+      return this.persist(quote, quote.diagnosticId, catalogDiagnosticId, {
+        result: 'NO_BAREME',
+        reason: 'NO_PRICING',
+      });
+    }
+    return this.persistScaleCheck(quote, quote.diagnosticId, catalogDiagnosticId, pricings);
   }
 
   /* Mapping IA-5 arrivé APRÈS le devis : contrôle les devis MANUAL PENDING

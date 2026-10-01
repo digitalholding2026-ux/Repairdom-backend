@@ -47,6 +47,7 @@ interface MatchCandidate {
   id: string;
   name: string;
   problemName: string;
+  modelName: string | null;
   domainId: string;
   domainName: string;
 }
@@ -79,7 +80,17 @@ export class AiDiagnosisMatchService {
         notes: true,
         audioStoragePath: true,
         technicianId: true,
-        demande: { select: { id: true, clientId: true, technicianId: true, domainId: true, category: true } },
+        demande: {
+          select: {
+            id: true,
+            clientId: true,
+            technicianId: true,
+            domainId: true,
+            brandId: true,
+            modelId: true,
+            category: true,
+          },
+        },
       },
     });
     if (!diagnostic) throw new NotFoundException('Diagnostic introuvable.');
@@ -97,7 +108,10 @@ export class AiDiagnosisMatchService {
       return this.persistFallback(diagnostic.id, 'AI_DISABLED');
     }
 
-    const candidates = await this.loadCandidates(diagnostic.demande.domainId);
+    const candidates = await this.loadCandidates(diagnostic.demande.domainId, {
+      brandId: diagnostic.demande.brandId ?? null,
+      modelId: diagnostic.demande.modelId ?? null,
+    });
     if (candidates.length === 0) {
       return this.persistFallback(diagnostic.id, 'NO_CANDIDATE');
     }
@@ -127,8 +141,16 @@ export class AiDiagnosisMatchService {
 
   /* Candidats réels : diagnostics ACTIFS, restreints au domaine de la
    * demande quand il est connu (relations existantes, bornés à 40, sans
-   * moteur de recherche parallèle). */
-  private async loadCandidates(domainId: string | null): Promise<MatchCandidate[]> {
+   * moteur de recherche parallèle). Contexte modèle : les diagnostics dont
+   * la catégorie est scopée AU MODÈLE DE LA MISSION passent en premier et
+   * portent le nom du modèle dans leur libellé — le mapping identifie ainsi
+   * « Afficheur + iPhone 11 », pas un « Afficheur » global (IA-6 résout
+   * ensuite le barème exact-modèle). Sans modèle mission : ordre historique,
+   * libellé « tous modèles ». */
+  private async loadCandidates(
+    domainId: string | null,
+    mission?: { brandId: string | null; modelId: string | null },
+  ): Promise<MatchCandidate[]> {
     const rows = await this.prisma.catalogDiagnostic.findMany({
       where: {
         isActive: true,
@@ -139,20 +161,45 @@ export class AiDiagnosisMatchService {
       select: {
         id: true,
         name: true,
-        problem: { select: { name: true, domainId: true, domain: { select: { name: true } } } },
+        problem: {
+          select: {
+            name: true,
+            domainId: true,
+            slug: true,
+            modelId: true,
+            brandId: true,
+            domain: { select: { name: true } },
+            brand: { select: { name: true } },
+            model: { select: { name: true } },
+          },
+        },
       },
     });
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      problemName: row.problem.name,
-      domainId: row.problem.domainId,
-      domainName: row.problem.domain.name,
-    }));
+    const rank = (row: (typeof rows)[number]): number => {
+      const problemModelId = row.problem?.modelId ?? null;
+      const problemBrandId = row.problem?.brandId ?? null;
+      if (mission?.modelId && problemModelId === mission.modelId) return 0;
+      if (mission?.brandId && problemBrandId === mission.brandId && problemModelId === null) return 1;
+      if (problemModelId === null && problemBrandId === null) return 2;
+      return 3;
+    };
+    return [...rows]
+      .sort((a, b) => rank(a) - rank(b))
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        problemName: row.problem.name,
+        modelName: row.problem?.model?.name ?? row.problem?.brand?.name ?? null,
+        domainId: row.problem.domainId,
+        domainName: row.problem.domain.name,
+      }));
   }
 
   private systemPrompt(candidates: MatchCandidate[]): string {
-    const lines = candidates.map((c) => `- ${c.id} : ${c.name} (problème : ${c.problemName}, domaine : ${c.domainName})`);
+    const lines = candidates.map(
+      (c) =>
+        `- ${c.id} : ${c.name} (catégorie : ${c.problemName}, modèle : ${c.modelName ?? 'tous modèles'}, domaine : ${c.domainName})`,
+    );
     return [
       'Tu associes un diagnostic libre de technicien à un diagnostic du catalogue Relio.',
       'Réponds UNIQUEMENT en JSON strict, sans texte autour, avec ce schéma exact :',

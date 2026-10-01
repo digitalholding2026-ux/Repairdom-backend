@@ -579,6 +579,79 @@ export class CatalogService {
     return this.toDiagnosticScale(diagnostic);
   }
 
+  /* Barème d'une CATÉGORIE pour un modèle précis (MODÈLE + CATÉGORIE) :
+   * agrégation des pricings ACTIFS des interventions ACTIVES des diagnostics
+   * ACTIFS du problème, même sémantique que toDiagnosticScale (min des mins,
+   * max des maxs, référence unique ou null si divergente). Référence du
+   * tableau « tarifs du modèle » côté Admin et du contrôle IA-6 exact-modèle.
+   * Un problème hors modèle (modelId null) reste consultable mais ne porte
+   * aucun nouveau tarif (voir createPricing). */
+  async getProblemScale(id: string) {
+    const problem = await this.prisma.problem.findUnique({
+      where: { id },
+      include: {
+        domain: true,
+        brand: true,
+        model: true,
+        diagnostics: {
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          include: {
+            interventions: {
+              orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+              include: { pricing: true },
+            },
+          },
+        },
+      },
+    });
+    if (!problem) throw new NotFoundException('Catégorie introuvable.');
+    const priced: Array<{ id: string; minPrice: number | null; referencePrice: number | null; maxPrice: number | null }> = [];
+    let totalInterventions = 0;
+    let pricedDiagnostics = 0;
+    const diagnostics = problem.diagnostics.map((diagnostic) => {
+      const active = diagnostic.interventions.filter(
+        (intervention) => intervention.isActive && intervention.pricing?.isActive,
+      );
+      if (diagnostic.isActive && active.length > 0) pricedDiagnostics += 1;
+      totalInterventions += diagnostic.interventions.length;
+      for (const intervention of active) {
+        if (diagnostic.isActive && intervention.pricing) priced.push(intervention.pricing);
+      }
+      return {
+        id: diagnostic.id,
+        name: diagnostic.name,
+        slug: diagnostic.slug,
+        isActive: diagnostic.isActive,
+        pricedInterventions: active.length,
+        totalInterventions: diagnostic.interventions.length,
+      };
+    });
+    const mins = priced.map((p) => p.minPrice).filter((v): v is number => v !== null);
+    const maxs = priced.map((p) => p.maxPrice).filter((v): v is number => v !== null);
+    const refs = [...new Set(priced.map((p) => p.referencePrice).filter((v): v is number => v !== null))];
+    return {
+      id: problem.id,
+      name: problem.name,
+      slug: problem.slug,
+      isActive: problem.isActive,
+      domain: { id: problem.domain.id, name: problem.domain.name, slug: problem.domain.slug },
+      brand: problem.brand ? { id: problem.brand.id, name: problem.brand.name } : null,
+      model: problem.model ? { id: problem.model.id, name: problem.model.name } : null,
+      scale: {
+        min: mins.length > 0 ? Math.min(...mins) : null,
+        reference: refs.length === 1 ? refs[0] : null,
+        max: maxs.length > 0 ? Math.max(...maxs) : null,
+        currency: 'XAF',
+        pricedInterventions: priced.length,
+        totalInterventions,
+        pricedDiagnostics,
+        totalDiagnostics: problem.diagnostics.length,
+      },
+      hasActiveScale: problem.isActive && priced.length > 0,
+      diagnostics,
+    };
+  }
+
   /* IA-2 — liste paginée des barèmes (plusieurs centaines de diagnostics) :
    * recherche insensible à la casse (diagnostic/intervention), filtre
    * domaine, filtre statut (actif/inactif/avec barème/sans barème).
@@ -656,7 +729,9 @@ export class CatalogService {
     const diagnostic = await this.prisma.catalogDiagnostic.findUnique({
       where: { id },
       include: {
-        problem: { include: { domain: true } },
+        // Contexte modèle exposé (bannière Admin « ce barème concerne… ») :
+        // brand + model ajoutés sans casser les lecteurs existants.
+        problem: { include: { domain: true, brand: true, model: true } },
         interventions: {
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
           include: { pricing: true },
@@ -837,8 +912,22 @@ export class CatalogService {
   async createPricing(dto: CreatePricingDto, adminId: string) {
     const intervention = await this.prisma.catalogIntervention.findUnique({
       where: { id: dto.interventionId },
+      include: {
+        diagnostic: { select: { id: true, problem: { select: { id: true, name: true, modelId: true } } } },
+      },
     });
     if (!intervention) throw new NotFoundException('Intervention introuvable.');
+    // Tarification scopée au modèle : un nouveau tarif n'est créé que sous
+    // une catégorie rattachée à un modèle précis (MODÈLE + CATÉGORIE).
+    // Un barème « global » sans modèle est ambigu dès que la catégorie est
+    // partagée entre modèles (ex. Afficheur sur iPhone 11 / XR / 12) et
+    // fausserait le contrôle IA-6. Les tarifs historiques hors modèle restent
+    // lisibles (getPricing, historique) mais aucun nouveau ne peut naître.
+    if (!intervention.diagnostic?.problem?.modelId) {
+      throw new BadRequestException(
+        `La catégorie « ${intervention.diagnostic?.problem?.name ?? 'inconnue'} » n'est rattachée à aucun modèle précis : créez d'abord la catégorie sous le modèle concerné, puis son tarif.`,
+      );
+    }
     const existing = await this.prisma.pricing.findUnique({
       where: { interventionId: dto.interventionId },
     });
