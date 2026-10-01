@@ -213,6 +213,11 @@ export class UpdateProblemDto {
 
 /* ── CatalogDiagnostic ────────────────────────────────────────── */
 
+/* Catalogue simplifié : l'Admin ne saisit plus que nom/slug/description.
+ * Les champs techniques ci-dessous restent ACCEPTÉS (compatibilité fiche
+ * catalogue lue par le technicien + IA-5) mais ne sont plus proposés dans
+ * l'interface Admin. Ne pas les supprimer du schéma sans audit des flux
+ * collaboration/technicien. */
 export class CreateDiagnosticDto {
   @IsString()
   problemId: string;
@@ -298,6 +303,10 @@ export class UpdateDiagnosticDto {
 
 /* ── CatalogIntervention ──────────────────────────────────────── */
 
+/* Catalogue simplifié : l'Admin ne saisit plus que nom/slug/description.
+ * difficulty / estimatedTime / needsParts / partsNote restent ACCEPTÉS
+ * (affichage technicien via collaboration.service) mais masqués de
+ * l'interface Admin. */
 export class CreateInterventionDto {
   @IsString()
   diagnosticId: string;
@@ -381,6 +390,11 @@ export class UpdateInterventionDto {
 
 /* ── Pricing ──────────────────────────────────────────────────── */
 
+/* Catalogue simplifié : l'Admin ne saisit que minPrice / referencePrice /
+ * maxPrice (validés par CatalogService.assertPricingValid, seule autorité).
+ * travelFee / serviceFee / currency / priceMode restent ACCEPTÉS
+ * (snapshots Quote.initialTravelFee/initialServiceFee) mais masqués de
+ * l'interface Admin. */
 export class CreatePricingDto {
   @IsString()
   interventionId: string;

@@ -24,6 +24,26 @@ import type {
 
 @Injectable()
 export class CatalogService {
+  /* CHANTIER CATALOGUE SIMPLIFIÉ — correspondance métier (aucun renommage
+   * technique, aucun breaking change) :
+   *   Catalogue      = ServiceDomain      (ex. Smartphone)
+   *   Spécification  = DeviceBrand        (ex. iOS / Android, valeurs libres)
+   *   Modèle         = DeviceModel        (ex. iPhone 11, actif/inactif)
+   *   Catégorie      = Problem            (panne/intervention par modèle)
+   *   Fiche catalogue = CatalogDiagnostic  (ancre IA-5, conservée telle quelle)
+   *   Tarification   = CatalogIntervention + Pricing (min / référence / max)
+   *
+   * Champs techniques CONSERVÉS en base (aucune migration destructive) car
+   * encore lus par d'autres flux :
+   *   - difficulty / estimatedTime / needsParts / partsNote → affichés au
+   *     technicien (collaboration.service, selectCatalogDiagnostic) ;
+   *   - travelFee → snapshoté dans Quote.initialTravelFee ;
+   *   - serviceFee → snapshoté dans Quote.initialServiceFee (interne) ;
+   *   - currency / priceMode → compatibilité des snapshots.
+   * L'interface Admin simplifiée ne les saisit/affiche plus ; le backend les
+   * accepte toujours pour compatibilité. PricingHistory + QuotePricingCheck
+   * restent immuables (IA-6/IA-7) : voir assertPricingValid, seule autorité
+   * de validation (jamais dupliquée côté frontend). */
   constructor(private readonly prisma: PrismaService) {}
 
   /* ── ServiceDomain ──────────────────────────────────────────── */
