@@ -5,15 +5,17 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Patch,
   Post,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { CurrentUser } from './current-user.decorator.js';
@@ -22,6 +24,8 @@ import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { VerifyEmailDto } from './dto/verify-email.dto.js';
 import { ResendVerificationDto } from './dto/resend-verification.dto.js';
+import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
+import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateMeDto } from './dto/update-me.dto.js';
 import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from '../technician/avatar-file.js';
 
@@ -54,6 +58,29 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerification(dto.email);
+  }
+
+  /* Reset password — routes publiques (aucune session requise) :
+   * - forgot-password répond TOUJOURS 200 (anti-énumération) ;
+   * - validate permet au frontend d'afficher le formulaire ou l'erreur ;
+   * - reset-password consomme le token en usage unique et invalide les
+   *   sessions existantes (tokenVersion). */
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    const ip = req.ip ?? undefined;
+    return this.authService.requestPasswordReset(dto.email, ip);
+  }
+
+  @Get('reset-password/:token/validate')
+  async validateResetToken(@Param('token') token: string) {
+    return this.authService.validateResetToken(token);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
   @Post('login')

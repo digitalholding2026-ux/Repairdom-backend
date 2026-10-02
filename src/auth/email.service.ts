@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   buildMissionAvailableEmail,
+  buildPasswordResetEmail,
   buildVerificationEmail,
 } from './email-templates.js';
 
@@ -115,6 +116,30 @@ export class EmailService {
     } catch (error) {
       // Réseau/timeout/HTTP : journalisé sans secret, sans propagation (le compte
       // reste non vérifié, un nouveau lien peut être demandé).
+      const reason = error instanceof Error ? error.message : 'erreur inconnue';
+      this.logger.error(`Échec d'envoi Resend pour ${to} : ${reason}.`);
+    }
+  }
+
+  /* E-mail de réinitialisation : même politique que la vérification
+   * (sans clé → journal sans le lien/token ; échec → journal sans
+   * propagation, un nouveau lien peut être demandé). Le prénom personnalise
+   * l'e-mail, jamais le token. */
+  async sendPasswordResetEmail(to: string, firstName: string, resetLink: string): Promise<void> {
+    if (!this.apiKey) {
+      this.logger.warn(`[email non envoyé] lien de réinitialisation généré pour ${to} (Resend non configuré).`);
+      return;
+    }
+    try {
+      const content = buildPasswordResetEmail(firstName, resetLink, this.footerLinks());
+      await this.postEmail({
+        to,
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+      });
+      this.logger.log(`E-mail de réinitialisation envoyé à ${to}.`);
+    } catch (error) {
       const reason = error instanceof Error ? error.message : 'erreur inconnue';
       this.logger.error(`Échec d'envoi Resend pour ${to} : ${reason}.`);
     }

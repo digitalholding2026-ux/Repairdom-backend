@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -40,6 +42,38 @@ const EMAIL_INVALID_OR_EXPIRED =
 const EMAIL_VERIFICATION_REQUIRED =
   'Votre adresse email doit être vérifiée avant de pouvoir accéder à Relio.';
 const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
+/* Reset password — politique (sans dépendance externe) :
+ * - token opaque 32 octets, expiration 1 h (surchargée par
+ *   PASSWORD_RESET_TOKEN_TTL_MS, bornée [5 min, 24 h]) ;
+ * - rate-limiting en base (PasswordResetAttempt) : 3 demandes/heure/e-mail,
+ *   10 demandes/heure/IP ;
+ * - mot de passe fort : 8+ caractères, 1 majuscule, 1 minuscule, 1 chiffre
+ *   (au-delà du min 8 de l'inscription, exigé ici explicitement). */
+const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
+const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_MAX_PER_EMAIL_PER_HOUR = 3;
+const PASSWORD_RESET_MAX_PER_IP_PER_HOUR = 10;
+const RESET_LINK_INVALID_OR_EXPIRED =
+  'Ce lien a expiré ou est invalide. Demandez un nouveau lien.';
+export const PASSWORD_STRENGTH_MESSAGE =
+  'Le mot de passe doit contenir au moins 8 caractères, 1 majuscule, 1 minuscule et 1 chiffre.';
+
+/** Règle de robustesse partagée (service + DTO) : jamais de mot de passe
+ *  faible accepté, message unique et actionnable. */
+export function assertPasswordStrong(password: string): void {
+  if (
+    typeof password !== 'string' ||
+    password.length < 8 ||
+    password.length > 128 ||
+    !/[A-Z]/.test(password) ||
+    !/[a-z]/.test(password) ||
+    !/[0-9]/.test(password)
+  ) {
+    throw new BadRequestException(PASSWORD_STRENGTH_MESSAGE);
+  }
+}
 
 @Injectable()
 export class AuthService {
@@ -93,6 +127,7 @@ export class AuthService {
     address: string | null;
     whatsapp: string | null;
     createdAt: Date;
+    tokenVersion: number;
   }): AuthUser {
     return {
       id: user.id,
@@ -107,6 +142,7 @@ export class AuthService {
       address: user.address,
       whatsapp: user.whatsapp,
       createdAt: user.createdAt,
+      tokenVersion: user.tokenVersion,
     };
   }
 
@@ -253,8 +289,7 @@ export class AuthService {
   }
 
   /** Renvoie le lien de validation sans jamais révéler si l'adresse existe. */
-  async resendVerification(email: string): Promise<{ ok: boolean }> {
-    const found = await this.prisma.user.findUnique({
+  async resendVerification(email: string): Promise<{ ok: boolean }> {    const found = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
     if (found && found.role === 'CLIENT' && !found.emailVerified) {
@@ -270,6 +305,115 @@ export class AuthService {
       await this.email.sendVerificationEmail(found.email, link);
     }
     return { ok: true };
+  }
+
+  private passwordResetTtlMs(): number {
+    const raw = Number(this.config.get<string>('PASSWORD_RESET_TOKEN_TTL_MS'));
+    if (!Number.isFinite(raw)) return PASSWORD_RESET_DEFAULT_TTL_MS;
+    return Math.min(
+      Math.max(Math.round(raw), PASSWORD_RESET_MIN_TTL_MS),
+      PASSWORD_RESET_MAX_TTL_MS,
+    );
+  }
+
+  /* Demande de réinitialisation : réponse TOUJOURS identique (`{ ok: true }`),
+   * que l'e-mail existe ou non (anti-énumération). Le token n'est JAMAIS
+   * journalisé. Rate-limiting en base : 3/heure/e-mail, 10/heure/IP (429). */
+  async requestPasswordReset(email: string, ip?: string): Promise<{ ok: boolean }> {
+    const normalized = email.toLowerCase().trim();
+    const since = new Date(Date.now() - 60 * 60 * 1000);
+    // Épure best-effort des tentatives périmées (table technique bornée).
+    await this.prisma.passwordResetAttempt
+      .deleteMany({ where: { createdAt: { lt: since } } })
+      .catch(() => undefined);
+    const [emailCount, ipCount] = await Promise.all([
+      this.prisma.passwordResetAttempt.count({
+        where: { email: normalized, createdAt: { gte: since } },
+      }),
+      ip
+        ? this.prisma.passwordResetAttempt.count({
+            where: { ip, createdAt: { gte: since } },
+          })
+        : Promise.resolve(0),
+    ]);
+    if (
+      emailCount >= PASSWORD_RESET_MAX_PER_EMAIL_PER_HOUR ||
+      ipCount >= PASSWORD_RESET_MAX_PER_IP_PER_HOUR
+    ) {
+      throw new HttpException(
+        'Trop de demandes. Réessayez dans une heure.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    await this.prisma.passwordResetAttempt.create({
+      data: { email: normalized, ip: ip ?? null },
+    });
+
+    const found = await this.prisma.user.findUnique({
+      where: { email: normalized },
+    });
+    if (found) {
+      const token = randomBytes(32).toString('hex');
+      await this.prisma.user.update({
+        where: { id: found.id },
+        data: {
+          passwordResetToken: token,
+          passwordResetExpiresAt: new Date(Date.now() + this.passwordResetTtlMs()),
+        },
+      });
+      const link = `${this.frontendUrl}/reinitialiser-mot-de-passe?token=${token}`;
+      await this.email.sendPasswordResetEmail(found.email, found.firstName, link);
+    }
+    return { ok: true };
+  }
+
+  /** Validité d'un lien (utilisée par le frontend avant d'afficher le formulaire). */
+  async validateResetToken(token: string): Promise<{ valid: boolean }> {
+    const trimmed = token.trim();
+    if (!trimmed) return { valid: false };
+    const found = await this.prisma.user.findFirst({
+      where: { passwordResetToken: trimmed },
+    });
+    if (
+      !found ||
+      !found.passwordResetExpiresAt ||
+      found.passwordResetExpiresAt.getTime() < Date.now()
+    ) {
+      return { valid: false };
+    }
+    return { valid: true };
+  }
+
+  /* Réinitialisation : token à usage UNIQUE (effacé après usage),
+   * `tokenVersion` incrémentée → TOUTES les sessions existantes invalidées.
+   * Le rôle est renvoyé pour rediriger vers la bonne page de connexion. */
+  async resetPassword(
+    token: string,
+    newPassword: string,
+  ): Promise<{ ok: boolean; role: UserRole }> {
+    assertPasswordStrong(newPassword);
+    const trimmed = token.trim();
+    const found = await this.prisma.user.findFirst({
+      where: { passwordResetToken: trimmed },
+    });
+    if (
+      !found ||
+      !found.passwordResetExpiresAt ||
+      found.passwordResetExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException(RESET_LINK_INVALID_OR_EXPIRED);
+    }
+    const passwordHash = await hashPassword(newPassword);
+    const updated = await this.prisma.user.update({
+      where: { id: found.id },
+      data: {
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetExpiresAt: null,
+        tokenVersion: { increment: 1 },
+      },
+    });
+    return { ok: true, role: updated.role as UserRole };
   }
 
   async updateMe(id: string, dto: UpdateMeDto): Promise<AuthUser> {
@@ -345,7 +489,7 @@ export class AuthService {
 
   signToken(user: AuthUser): string {
     return jwt.sign(
-      { sub: user.id, email: user.email, role: user.role },
+      { sub: user.id, email: user.email, role: user.role, tokenVersion: user.tokenVersion },
       this.jwtSecret,
       { expiresIn: this.expiresIn as SignOptions['expiresIn'] },
     );
@@ -353,7 +497,7 @@ export class AuthService {
 
   async verifyToken(token: string): Promise<RequestUser> {
     try {
-      const payload = jwt.verify(token, this.jwtSecret) as { sub?: string };
+      const payload = jwt.verify(token, this.jwtSecret) as { sub?: string; tokenVersion?: unknown };
       if (!payload.sub) throw new UnauthorizedException('Session invalide ou expirée.');
       const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
       if (!user) throw new UnauthorizedException('Session invalide ou expirée.');
@@ -362,7 +506,14 @@ export class AuthService {
       if (user.isActive === false) {
         throw new UnauthorizedException('Session invalide ou expirée.');
       }
-      return { id: user.id, email: user.email, role: user.role as UserRole };
+      // Reset password : tout JWT émis avant l'incrémentation de
+      // `tokenVersion` est rejeté (toutes sessions invalidées). Les JWT
+      // antérieurs au chantier (sans version) valent version 0.
+      const presented = typeof payload.tokenVersion === 'number' ? payload.tokenVersion : 0;
+      if (presented !== user.tokenVersion) {
+        throw new UnauthorizedException('Session invalide ou expirée.');
+      }
+      return { id: user.id, email: user.email, role: user.role as UserRole, tokenVersion: user.tokenVersion };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Session invalide ou expirée.');

@@ -214,6 +214,13 @@ model User {
   emailVerificationToken String?
   emailVerificationExpiresAt DateTime?
   passwordHash        String
+  // Reset password — token à usage unique (convention identique à la
+  // vérification e-mail : token opaque stocké en base, expiration courte,
+  // effacé après usage). `tokenVersion` invalide tous les JWT émis avant
+  // un reset (comparée dans `verifyToken`, incrémentée à chaque reset).
+  passwordResetToken String?
+  passwordResetExpiresAt DateTime?
+  tokenVersion        Int                 @default(0)
   // Sprint ADMIN SUPER POWERS — désactivation logique d'un compte par
   // l'admin (alternative à la suppression physique quand l'historique
   // métier/financier doit être conservé). Un compte désactivé ne peut plus
@@ -553,6 +560,20 @@ model KycReview {
 
   @@index([technicianId])
   @@index([reviewerId])
+}
+
+// Reset password — journal des demandes (rate-limiting en base, sans
+// dépendance externe) : max 3 demandes/heure/e-mail et 10/heure/IP.
+// Lignes techniques épurables (createdAt < 1 h) ; aucune donnée sensible
+// (ni token, ni mot de passe) n'y figure.
+model PasswordResetAttempt {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  email     String
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
 }
 
 model DemandeMedia {

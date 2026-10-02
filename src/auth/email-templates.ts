@@ -24,6 +24,10 @@ export const VERIFICATION_EMAIL_SUBJECT = 'Vérifiez votre adresse email — Rel
 /** Durée réelle du lien (backend `VERIFICATION_TOKEN_TTL_MS` = 24 h). */
 export const VERIFICATION_LINK_VALIDITY_LABEL = '24 heures';
 
+export const PASSWORD_RESET_EMAIL_SUBJECT = 'Réinitialisez votre mot de passe — Relio';
+/** Durée réelle du lien (backend TTL reset = 1 heure par défaut). */
+export const PASSWORD_RESET_LINK_VALIDITY_LABEL = '1 heure';
+
 export interface EmailFooterLinks {
   siteUrl: string;
   cguUrl: string;
@@ -156,8 +160,52 @@ export function buildVerificationEmail(link: string, links: EmailFooterLinks): V
   return { subject: VERIFICATION_EMAIL_SUBJECT, text, html };
 }
 
-export interface MissionAvailableEmailInput {
-  demandeLink: string;
+export interface PasswordResetEmailContent {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/** E-mail de réinitialisation. Route réelle : `/reinitialiser-mot-de-passe?token=…`
+ *  (top-level, rôle détecté après reset). Même structure visuelle que
+ *  `buildVerificationEmail` (layout partagé, CTA, URL de secours, footer). */
+export function buildPasswordResetEmail(
+  firstName: string,
+  link: string,
+  links: EmailFooterLinks,
+): PasswordResetEmailContent {
+  const name = firstName.trim() || 'Bonjour';
+  const text = [
+    `${name},`,
+    '',
+    'Vous avez demandé à réinitialiser votre mot de passe Relio.',
+    'Cliquez sur le lien ci-dessous pour choisir un nouveau mot de passe :',
+    '',
+    link,
+    '',
+    `Ce lien expire dans ${PASSWORD_RESET_LINK_VALIDITY_LABEL}. Si vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.`,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl} — Conditions : ${links.cguUrl}`,
+  ].join('\n');
+  const html = emailLayout({
+    preheader: 'Réinitialisez votre mot de passe Relio (lien valable 1 heure).',
+    title: 'Réinitialisez votre mot de passe',
+    bodyHtml: [
+      `<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#334155;margin:0 0 12px 0;">${escapeHtml(name)}, vous avez demandé à réinitialiser votre mot de passe Relio. Cliquez sur le bouton ci-dessous pour en choisir un nouveau :</p>`,
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:12px 0;"><tr><td style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;padding:12px 14px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.7;color:#334155;">Validité du lien : <strong>${PASSWORD_RESET_LINK_VALIDITY_LABEL}</strong></td></tr></table>`,
+      `<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.65;color:#64748B;margin:0 0 12px 0;">Si vous n'êtes pas à l'origine de cette demande, ignorez cet e-mail.</p>`,
+    ].join(''),
+    ctaLabel: 'Je réinitialise mon mot de passe',
+    ctaUrl: link,
+    links,
+  });
+  return { subject: PASSWORD_RESET_EMAIL_SUBJECT, text, html };
+}
+
+export interface MissionAvailableEmailInput {  demandeLink: string;
   city: string;
   categoryLabel: string;
   reference: string;

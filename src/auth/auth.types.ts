@@ -13,12 +13,16 @@ export interface AuthUser {
   address: string | null;
   whatsapp: string | null;
   createdAt: Date;
+  /** Version de session (reset password) : comparée au payload JWT. */
+  tokenVersion: number;
 }
 
 export interface RequestUser {
   id: string;
   email: string;
   role: UserRole;
+  /** Version de session portée par le JWT vérifié. */
+  tokenVersion: number;
 }
 
 export const COOKIE_NAME = 'repairdom_token';

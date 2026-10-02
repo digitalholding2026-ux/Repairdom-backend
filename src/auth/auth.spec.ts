@@ -29,6 +29,7 @@ const BASE_USER: Row = {
   whatsapp: null,
   createdAt: new Date(),
   isActive: true,
+  tokenVersion: 0,
 };
 
 function configMock() {
