@@ -55,6 +55,10 @@ const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
 const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_MAX_PER_EMAIL_PER_HOUR = 3;
 const PASSWORD_RESET_MAX_PER_IP_PER_HOUR = 10;
+/* Rétention du journal de rate-limiting : 24 h (au-delà du besoin de la
+ * fenêtre de comptage d'1 h, sans cron ni tâche planifiée — nettoyage
+ * opportuniste à chaque demande, best-effort). */
+const PASSWORD_RESET_ATTEMPT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const RESET_LINK_INVALID_OR_EXPIRED =
   'Ce lien a expiré ou est invalide. Demandez un nouveau lien.';
 export const PASSWORD_STRENGTH_MESSAGE =
@@ -149,6 +153,9 @@ export class AuthService {
   async register(dto: RegisterDto): Promise<AuthUser> {
     const isTechnician = dto.role === 'TECHNICIAN';
 
+    // Robustesse alignée sur reset-password : un mot de passe accepté à
+    // l'inscription doit aussi être accepté à la réinitialisation.
+    assertPasswordStrong(dto.password);
     if (isTechnician) {
       if (!dto.phone?.trim()) {
         throw new BadRequestException('Le téléphone est requis pour un compte technicien.');
@@ -322,9 +329,12 @@ export class AuthService {
   async requestPasswordReset(email: string, ip?: string): Promise<{ ok: boolean }> {
     const normalized = email.toLowerCase().trim();
     const since = new Date(Date.now() - 60 * 60 * 1000);
-    // Épure best-effort des tentatives périmées (table technique bornée).
+    // Cleanup opportuniste (pas de cron) : purge les tentatives de plus de
+    // 24 h pour borner la table technique. Best-effort, jamais bloquant.
     await this.prisma.passwordResetAttempt
-      .deleteMany({ where: { createdAt: { lt: since } } })
+      .deleteMany({
+        where: { createdAt: { lt: new Date(Date.now() - PASSWORD_RESET_ATTEMPT_RETENTION_MS) } },
+      })
       .catch(() => undefined);
     const [emailCount, ipCount] = await Promise.all([
       this.prisma.passwordResetAttempt.count({

@@ -74,7 +74,17 @@ function setup(users: Row[] = []) {
       }),
     },
     passwordResetAttempt: {
-      deleteMany: vi.fn(async () => ({ count: 0 })),
+      deleteMany: vi.fn(async ({ where }: any) => {
+        const lt = where.createdAt?.lt as Date | undefined;
+        let count = 0;
+        for (let i = attempts.length - 1; i >= 0; i -= 1) {
+          if (lt && attempts[i].createdAt < lt) {
+            attempts.splice(i, 1);
+            count += 1;
+          }
+        }
+        return { count };
+      }),
       create: vi.fn(async ({ data }: any) => {
         const row = { id: `a-${attempts.length + 1}`, createdAt: new Date(), ...data };
         attempts.push(row);
@@ -117,8 +127,7 @@ describe('requestPasswordReset', () => {
     expect(email.sendPasswordResetEmail).not.toHaveBeenCalled();
   });
 
-  it('4e demande en <1h pour le même e-mail → 429', async () => {
-    const { service } = setup([{ ...BASE_USER }]);
+  it('4e demande en <1h pour le même e-mail → 429', async () => {    const { service } = setup([{ ...BASE_USER }]);
     const now = Date.now();
     for (let i = 0; i < 3; i += 1) {
       await service.requestPasswordReset('awa@example.com', `9.9.9.${i}`);
@@ -127,6 +136,27 @@ describe('requestPasswordReset', () => {
     await expect(service.requestPasswordReset('awa@example.com', '9.9.9.9')).rejects.toMatchObject({
       status: 429,
     });
+  });
+
+  it('cleanup opportuniste : 5 tentatives >24h purgées, 2 récentes conservées', async () => {
+    const { service, prisma } = setup([{ ...BASE_USER }]);
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (let i = 0; i < 5; i += 1) {
+      await prisma.passwordResetAttempt.create({
+        data: { email: 'awa@example.com', ip: '1.1.1.1', createdAt: old },
+      });
+    }
+    for (let i = 0; i < 2; i += 1) {
+      await prisma.passwordResetAttempt.create({
+        data: { email: 'awa@example.com', ip: '1.1.1.1', createdAt: new Date() },
+      });
+    }
+    await service.requestPasswordReset('awa@example.com', '2.2.2.2');
+    const remaining = await prisma.passwordResetAttempt.count({
+      where: { email: 'awa@example.com' },
+    });
+    // 2 récentes + 1 créée par l'appel, 0 ancienne.
+    expect(remaining).toBe(3);
   });
 });
 

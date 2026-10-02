@@ -131,6 +131,17 @@ describe('register — validation métier', () => {
       service.register({ role: 'TECHNICIAN', firstName: 'T', email: 't@x.y', password: 'S3cret!pass' } as never),
     ).rejects.toMatchObject({ status: 400 });
   });
+
+  it('mot de passe faible → 400 (règle alignée sur reset-password)', async () => {
+    const { service } = authService();
+    await expect(
+      service.register({ role: 'CLIENT', firstName: 'A', lastName: 'B', email: 'a@x.y', password: 'faible12', city: 'D', address: 'R' } as never),
+    ).rejects.toMatchObject({
+      status: 400,
+      message:
+        'Le mot de passe doit contenir au moins 8 caractères, 1 majuscule, 1 minuscule et 1 chiffre.',
+    });
+  });
 });
 
 describe('login — identifiants, état du compte, vérification', () => {
