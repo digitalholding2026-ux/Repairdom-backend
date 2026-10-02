@@ -72,6 +72,15 @@ export class CatalogController {
     return this.catalog.deleteDomain(id);
   }
 
+  /* Suppression DÉFINITIVE d'un catalogue (domaine) : transaction atomique,
+   * enfants catalogue supprimés, missions/devis/diagnostics/contrôles
+   * existants préservés (détachés, snapshots intacts). Irréversible —
+   * le frontend exige une confirmation explicite. */
+  @Delete('domains/:id/hard')
+  deleteDomainHard(@Param('id') id: string) {
+    return this.catalog.deleteDomainHard(id);
+  }
+
   /* ── DeviceBrand / DeviceModel ─────────────────────────────── */
 
   @Get('domains/:domainId/brands')

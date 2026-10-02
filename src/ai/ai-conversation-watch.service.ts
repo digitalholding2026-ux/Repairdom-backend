@@ -199,9 +199,13 @@ export class AiConversationWatchService {
   }
 
   /* Contexte minimal et borné : message courant + fenêtre récente (rôles
-   * uniquement, contenus tronqués) + demande/diagnostic/devis résumés.
+   * uniquement, contenus tronqués) + demande/diagnostic/devis résumés +
+   * contexte catalogue (mission → modèle → catégorie → barème exact).
    * EXCLUS : téléphone, email, adresse, GPS, KYC, soldes, payouts, tokens,
-   * secrets — ces colonnes ne sont jamais sélectionnées. */
+   * secrets — ces colonnes ne sont jamais sélectionnées.
+   * Chantier catalogue source de vérité : le backend construit le contexte
+   * (IDs vérifiés + min/ref/max), l'IA ne reçoit que ce contexte borné ;
+   * IA-6 reste la source déterministe du contrôle prix. */
   private async buildUserPrompt(message: {
     id: string;
     demandeId: string;
@@ -217,7 +221,16 @@ export class AiConversationWatchService {
       }),
       this.prisma.demande.findUnique({
         where: { id: message.demandeId },
-        select: { id: true, reference: true, category: true, status: true },
+        select: {
+          id: true,
+          reference: true,
+          category: true,
+          status: true,
+          domain: { select: { name: true, isActive: true } },
+          brand: { select: { name: true, isActive: true } },
+          model: { select: { id: true, name: true, isActive: true } },
+          problem: { select: { id: true, name: true, isActive: true } },
+        },
       }),
       this.prisma.diagnostic.findFirst({
         where: { demandeId: message.demandeId },
@@ -231,6 +244,40 @@ export class AiConversationWatchService {
         select: { amount: true, currency: true, status: true, source: true },
       }),
     ]);
+    // Barème catalogue pertinent (MODÈLE + CATÉGORIE, actif uniquement) :
+    // agrégation backend bornée, jamais de dump catalogue, jamais de PII.
+    let scaleLine: string | null = null;
+    if (demande?.model?.isActive && demande?.problem?.isActive && demande.model.id && demande.problem.id) {
+      try {
+        const scoped = await this.prisma.problem.findUnique({
+          where: { id: demande.problem.id },
+          select: {
+            modelId: true,
+            isActive: true,
+            diagnostics: {
+              where: { isActive: true },
+              select: { interventions: { where: { isActive: true }, select: { pricing: true } } },
+            },
+          },
+        });
+        if (scoped?.isActive && scoped.modelId === demande.model.id) {
+          const pricings = scoped.diagnostics
+            .flatMap((d) => d.interventions.map((i) => i.pricing))
+            .filter((p): p is NonNullable<typeof p> => p !== null && p.isActive);
+          if (pricings.length > 0) {
+            const mins = pricings.map((p) => p.minPrice).filter((v): v is number => v !== null);
+            const maxs = pricings.map((p) => p.maxPrice).filter((v): v is number => v !== null);
+            const refs = [...new Set(pricings.map((p) => p.referencePrice).filter((v): v is number => v !== null))];
+            const min = mins.length > 0 ? Math.min(...mins) : null;
+            const max = maxs.length > 0 ? Math.max(...maxs) : null;
+            const ref = refs.length === 1 ? refs[0] : null;
+            scaleLine = `Barème catalogue ${demande.model.name} + ${demande.problem.name} : min ${min ?? '—'} / référence ${ref ?? '—'} / max ${max ?? '—'} XAF.`;
+          }
+        }
+      } catch {
+        scaleLine = null;
+      }
+    }
     const ordered = [...recent].reverse();
     const lines = ordered.map((row) =>
       row.id === message.id
@@ -240,7 +287,15 @@ export class AiConversationWatchService {
     const context: string[] = [];
     if (demande) {
       context.push(`Mission ${demande.reference} : ${demande.category} (statut ${demande.status}).`);
+      const deviceBits = [
+        demande.domain?.isActive ? demande.domain.name : null,
+        demande.brand?.isActive ? demande.brand.name : null,
+        demande.model?.isActive ? demande.model.name : null,
+        demande.problem?.isActive ? demande.problem.name : null,
+      ].filter(Boolean);
+      if (deviceBits.length > 0) context.push(`Appareil : ${deviceBits.join(' → ')}.`);
     }
+    if (scaleLine) context.push(scaleLine);
     if (diagnostic) {
       const intervention = diagnostic.proposedIntervention
         ? ` Intervention proposée : ${truncate(diagnostic.proposedIntervention, AI_CONVERSATION_MAX_CONTEXT_CHARS)}.`

@@ -6,6 +6,7 @@ import { AiDiagnosisMatchService } from './ai-diagnosis-match.service.js';
 import { AiPricingCheckService } from './ai-pricing-check.service.js';
 import { AiWarningService } from './ai-warning.service.js';
 import { AiConversationWatchService } from './ai-conversation-watch.service.js';
+import { CatalogContextService } from './catalog-context.service.js';
 import { AiAdminService } from './ai-admin.service.js';
 import { AiAdminAgentService } from './ai-admin-agent.service.js';
 
@@ -15,7 +16,7 @@ import { AiAdminAgentService } from './ai-admin-agent.service.js';
  * AUCUN contrôleur (aucune route publique `/ai/...`) : injection par les
  * services backend autorisés uniquement. */
 @Module({
-  providers: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService, AiAdminService, AiAdminAgentService],
-  exports: [AiConfig, AiGatewayService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService, AiAdminService, AiAdminAgentService],
+  providers: [AiConfig, AiGatewayService, CatalogContextService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService, AiAdminService, AiAdminAgentService],
+  exports: [AiConfig, AiGatewayService, CatalogContextService, AiClassificationService, AiDiagnosisMatchService, AiPricingCheckService, AiWarningService, AiConversationWatchService, AiAdminService, AiAdminAgentService],
 })
 export class AiModule {}

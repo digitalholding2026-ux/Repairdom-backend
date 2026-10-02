@@ -313,13 +313,20 @@ describe('contexte modèle : le mapping identifie catégorie + modèle', () => {
       }),
     };
     const upsert = vi.fn(async ({ create }: { create: unknown }) => create);
+    // Périmètre modèle d'abord (cd-11), complément domaine ensuite.
+    const findMany = vi.fn(async (args?: { where?: { id?: { notIn?: string[] } } }) => {
+      if (args?.where?.id?.notIn) {
+        return MODEL_CANDIDATES.filter((c) => !args.where!.id!.notIn!.includes(c.id));
+      }
+      return MODEL_CANDIDATES.filter((c) => c.problem.modelId === 'm-11');
+    });
     const svc = service({
       gateway,
       prisma: {
         diagnostic: { findFirst: vi.fn(async () => DIAG_MODEL) },
         diagnosticCatalogMatch: { findUnique: vi.fn(async () => null), upsert },
         catalogDiagnostic: {
-          findMany: vi.fn(async () => MODEL_CANDIDATES),
+          findMany,
           findUnique: vi.fn(async () => ({ id: 'cd-11', isActive: true })),
         },
       },

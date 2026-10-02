@@ -146,11 +146,68 @@ export class AiDiagnosisMatchService {
    * portent le nom du modèle dans leur libellé — le mapping identifie ainsi
    * « Afficheur + iPhone 11 », pas un « Afficheur » global (IA-6 résout
    * ensuite le barème exact-modèle). Sans modèle mission : ordre historique,
-   * libellé « tous modèles ». */
+   * libellé « tous modèles ».
+   * Chantier catalogue source de vérité : quand le modèle est connu, le
+   * périmètre modèle est chargé EN PREMIER (requête dédiée) puis complété
+   * par le domaine jusqu'à 40 — l'IA raisonne prioritairement sur les
+   * catégories du modèle concerné, jamais sur tout le catalogue. */
   private async loadCandidates(
     domainId: string | null,
     mission?: { brandId: string | null; modelId: string | null },
   ): Promise<MatchCandidate[]> {
+    // Périmètre modèle d'abord (exact-modèle), puis complément domaine.
+    if (mission?.modelId && domainId) {
+      const scoped = await this.prisma.catalogDiagnostic.findMany({
+        where: { isActive: true, problem: { domainId, modelId: mission.modelId } },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        take: AI_DIAGNOSIS_MATCH_MAX_CANDIDATES,
+        select: {
+          id: true,
+          name: true,
+          problem: {
+            select: {
+              name: true,
+              domainId: true,
+              slug: true,
+              modelId: true,
+              brandId: true,
+              domain: { select: { name: true } },
+              brand: { select: { name: true } },
+              model: { select: { name: true } },
+            },
+          },
+        },
+      });
+      if (scoped.length >= AI_DIAGNOSIS_MATCH_MAX_CANDIDATES) {
+        return this.toCandidates(scoped);
+      }
+      const rest = await this.prisma.catalogDiagnostic.findMany({
+        where: {
+          isActive: true,
+          problem: { domainId },
+          id: { notIn: scoped.map((r) => r.id) },
+        },
+        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        take: AI_DIAGNOSIS_MATCH_MAX_CANDIDATES - scoped.length,
+        select: {
+          id: true,
+          name: true,
+          problem: {
+            select: {
+              name: true,
+              domainId: true,
+              slug: true,
+              modelId: true,
+              brandId: true,
+              domain: { select: { name: true } },
+              brand: { select: { name: true } },
+              model: { select: { name: true } },
+            },
+          },
+        },
+      });
+      return this.toCandidates([...scoped, ...rest], mission);
+    }
     const rows = await this.prisma.catalogDiagnostic.findMany({
       where: {
         isActive: true,
@@ -175,6 +232,33 @@ export class AiDiagnosisMatchService {
         },
       },
     });
+    const rank = (row: (typeof rows)[number]): number => {
+      const problemModelId = row.problem?.modelId ?? null;
+      const problemBrandId = row.problem?.brandId ?? null;
+      if (mission?.modelId && problemModelId === mission.modelId) return 0;
+      if (mission?.brandId && problemBrandId === mission.brandId && problemModelId === null) return 1;
+      if (problemModelId === null && problemBrandId === null) return 2;
+      return 3;
+    };
+    return this.toCandidates([...rows].sort((a, b) => rank(a) - rank(b)), mission);
+  }
+
+  private toCandidates(
+    rows: Array<{
+      id: string;
+      name: string;
+      problem: {
+        name: string;
+        domainId: string;
+        modelId: string | null;
+        brandId: string | null;
+        domain: { name: string };
+        brand: { name: string } | null;
+        model: { name: string } | null;
+      };
+    }>,
+    mission?: { brandId: string | null; modelId: string | null },
+  ): MatchCandidate[] {
     const rank = (row: (typeof rows)[number]): number => {
       const problemModelId = row.problem?.modelId ?? null;
       const problemBrandId = row.problem?.brandId ?? null;

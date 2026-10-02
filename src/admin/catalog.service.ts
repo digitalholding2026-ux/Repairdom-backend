@@ -1712,6 +1712,63 @@ export class CatalogService {
     });
   }
 
+  /* ── Suppression DÉFINITIVE d'un catalogue (domaine) ────────── */
+  /* Chantier RELIO catalogue source de vérité :
+   * - l'admin choisit explicitement la suppression définitive (route
+   *   dédiée, confirmation frontend irréversible) ;
+   * - suppression ATOMIQUE en transaction Prisma (BEGIN → dépendances
+   *   catalogue → catalogue → COMMIT, ROLLBACK si échec) ;
+   * - les enfants catalogue sont supprimés via les `onDelete: Cascade`
+   *   Prisma (brands → models, problems → diagnostics → interventions →
+   *   pricings → pricingHistories) ;
+   * - les données métier/historiques sont PRÉSERVÉES par `onDelete: SetNull`
+   *   : Demande (domain/brand/model/problem), Diagnostic et Quote
+   *   (catalogDiagnostic/Intervention), DiagnosticCatalogMatch
+   *   (catalogDiagnostic) : les missions, devis, diagnostics et matchings
+   *   existants restent lisibles avec une référence null ;
+   * - QuotePricingCheck est INDÉPENDANT (snapshot min/ref/max + pricingIds
+   *   texte, aucune FK vers Pricing) : les contrôles IA-6 passés survivent
+   *   avec leurs valeurs figées ;
+   * - FinancialTransaction / FundsHold / avis IA-7 / flags IA-8 / litiges
+   *   ne référencent jamais le catalogue directement : intacts ;
+   * - DemandeClassification.domainId et QuotePricingCheck.catalogDiagnosticId
+   *   sont des textes sans FK (propositions IA auditées) : conservés tels
+   *   quels (éventuellement orphelins, jamais recalculés) — l'historique
+   *   reste auditable, les nouvelles recherches actives ne les retrouvent
+   *   plus (filtre isActive + existence) ;
+   * - après suppression, le slug est libéré : un nouveau catalogue du même
+   *   nom peut être recréé (aucune conservation artificielle). */
+
+  async deleteDomainHard(id: string) {
+    const domain = await this.prisma.serviceDomain.findUnique({ where: { id } });
+    if (!domain) throw new NotFoundException('Domaine introuvable.');
+    // Compteurs pré-suppression (rapport admin, sans bloquer).
+    const [brands, problems, demandes] = await Promise.all([
+      this.prisma.deviceBrand.count({ where: { domainId: id } }),
+      this.prisma.problem.count({ where: { domainId: id } }),
+      this.prisma.demande.count({ where: { domainId: id } }),
+    ]);
+    const diagnostics = await this.prisma.catalogDiagnostic.count({
+      where: { problem: { domainId: id } },
+    });
+    const interventions = await this.prisma.catalogIntervention.count({
+      where: { diagnostic: { problem: { domainId: id } } },
+    });
+    // Transaction atomique : une seule suppression racine, les cascades DB
+    // font le reste ; tout échec → ROLLBACK, aucun catalogue partiel.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.serviceDomain.delete({ where: { id } });
+    });
+    return {
+      id,
+      kind: 'domain',
+      action: 'HARD_DELETED' as const,
+      message:
+        'Catalogue supprimé définitivement avec ses éléments. Les missions, devis, diagnostics et contrôles existants sont conservés (références détachées, snapshots intacts). Cette action est irréversible.',
+      deleted: { marques: brands, problemes: problems, diagnostics, interventions, demandesDetachees: demandes },
+    };
+  }
+
   /* ── Suppressions administratives (Sprint ADMIN SUPER POWERS) ──── */
   /* Stratégie unique, documentée, sans données orphelines :
    *   - aucun dépendant (enfants catalogue, demandes, diagnostics, devis,

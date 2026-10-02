@@ -106,11 +106,17 @@ export class AiClassificationService {
         select: { id: true, name: true },
         orderBy: { name: 'asc' },
       });
+      // Catalogue source de vérité : candidats modèles proches (bornés, actifs
+      // uniquement) ajoutés comme contexte — l'IA propose, le backend vérifie.
+      // Lecture seule : jamais de création/modification catalogue/tarif.
+      const modelHints = await this.findModelHints(
+        `${input.equipmentType ?? ''} ${input.deviceLabel ?? ''} ${input.description ?? ''}`,
+      );
       const completion = await this.gateway.completeJson<unknown>({
         caller: 'AiClassification',
         messages: [
           { role: 'system', content: this.systemPrompt(domains) },
-          { role: 'user', content: this.userPrompt(input) },
+          { role: 'user', content: this.userPrompt(input, modelHints) },
         ],
         timeoutMs: this.timeoutMs,
         correlationId: input.demandeId,
@@ -150,7 +156,7 @@ export class AiClassificationService {
     ].join('\n');
   }
 
-  private userPrompt(input: AiClassificationInput): string {
+  private userPrompt(input: AiClassificationInput, modelHints: string[] = []): string {
     const lines = [
       // IA-4.1 — signal principal en premier : équipement déclaré par le client.
       `Équipement déclaré par le client : ${input.equipmentType?.trim().slice(0, 120) || 'non renseigné'}`,
@@ -158,6 +164,9 @@ export class AiClassificationService {
       `Contexte de panne : ${input.description?.trim().slice(0, 1000) || 'aucun'}`,
       `Ville : ${input.city?.trim() || 'non renseignée'}`,
     ];
+    if (modelHints.length > 0) {
+      lines.push(`Modèles catalogue proches (contexte uniquement, à vérifier) : ${modelHints.join(' ; ')}.`);
+    }
     if (input.mediaKinds && input.mediaKinds.length > 0) {
       lines.push(`Pièces jointes : ${[...new Set(input.mediaKinds)].join(', ')}`);
     }
@@ -242,6 +251,45 @@ export class AiClassificationService {
     });
     this.logger.warn(`Classification IA indisponible pour ${demandeId} (${reason}) : fallback dispatch standard.`);
     return this.toOutcome(demandeId, row);
+  }
+
+  /* Recherche déterministe bornée de modèles proches (tokens ≥3 lettres,
+   * normalisation sans accents, max 5, actifs uniquement). Contexte seul :
+   * la validation backend du domainId reste inchangée ci-dessous. */
+  private async findModelHints(query: string): Promise<string[]> {
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    const tokens = norm(query).split(' ').filter((t) => t.length >= 3);
+    if (tokens.length === 0) return [];
+    try {
+      const models = await this.prisma.deviceModel.findMany({
+        where: { isActive: true, brand: { isActive: true, domain: { isActive: true } } },
+        take: 200,
+        orderBy: { name: 'asc' },
+        select: {
+          name: true,
+          brand: { select: { name: true, domain: { select: { name: true } } } },
+        },
+      });
+      return models
+        .map((m) => {
+          const hay = norm(`${m.name} ${m.brand.name} ${m.brand.domain.name}`);
+          let score = 0;
+          for (const t of tokens) if (hay.includes(t)) score += 1;
+          return { m, score };
+        })
+        .filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .map((s) => `${s.m.name} (${s.m.brand.name} — ${s.m.brand.domain.name})`);
+    } catch {
+      return [];
+    }
   }
 
   /* IA-9 — lecture admin paginée des classifications (visualisation
