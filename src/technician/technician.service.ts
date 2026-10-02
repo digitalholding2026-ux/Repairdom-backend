@@ -48,6 +48,11 @@ import {
 } from './kyc-file.js';
 import type { KycDocumentType } from '../generated/prisma/enums.js';
 import { ReviewsService } from '../reviews/reviews.service.js';
+import { RealtimeService } from '../realtime/realtime.service.js';
+import {
+  TECHNICIAN_AVAILABLE_CHANNEL,
+  missionChannel,
+} from '../realtime/realtime.types.js';
 
 // Correctif boucle circulaire DISPATCH-V1 : les prédicats géographiques
 // partagés vivent dans le module feuille `../geo/geo-eligibility.js` (aucune
@@ -119,6 +124,8 @@ export class TechnicianService {
     private readonly prisma: PrismaService,
     private readonly storage: SupabaseStorageService,
     private readonly reviews: ReviewsService,
+    // Temps réel (socle SSE) : injection optionnelle (tests sans module).
+    private readonly realtime?: RealtimeService,
   ) {}
 
   /** Contexte appareil (catalogue, Sprint 8.1) sur les demandes techniques :
@@ -843,10 +850,32 @@ export class TechnicianService {
       throw new ForbiddenException('Cette demande ne correspond pas à votre profil.');
     }
 
+    // Temps réel (après commit) : statut mission + retrait des listes.
+    this.realtime?.publish(missionChannel(demandeId), 'mission.status_changed', {
+      demandeId,
+      toStatus: 'ACCEPTED',
+      technicianId: userId,
+      createdAt: new Date().toISOString(),
+    });
+    this.realtime?.publish(TECHNICIAN_AVAILABLE_CHANNEL, 'technician.mission_taken', {
+      demandeId,
+      technicianId: userId,
+      createdAt: new Date().toISOString(),
+    });
+    this.realtime?.publishToUser(result.clientId, 'notification.created', {
+      demandeId,
+      kind: 'TECHNICIAN_ACCEPTED',
+    });
+
     return toApiDemande(result);
   }
 
   async updateStatus(userId: string, demandeId: string, dto: TechnicianUpdateStatusDto) {
+    // Capturés dans la transaction, diffusés après commit (jamais d'événement
+    // fantôme en cas de rollback).
+    let fromStatus: string | null = null;
+    let scheduledAtIso: string | null = null;
+    let notifyClientId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findFirst({
         where: { id: demandeId, technicianId: userId },
@@ -911,13 +940,17 @@ export class TechnicianService {
           tx,
           buildNotification('SCHEDULED', current.id, userId, 'TECHNICIAN'),
         );
+        notifyClientId = current.clientId;
       }
       if (dto.status === 'COMPLETED') {
         await createNotification(
           tx,
           buildNotification('COMPLETED', current.id, current.clientId, 'CLIENT'),
         );
+        notifyClientId = current.clientId;
       }
+      fromStatus = current.status;
+      if (scheduledAt) scheduledAtIso = scheduledAt.toISOString();
 
       return updated;
     });
@@ -926,6 +959,21 @@ export class TechnicianService {
       const existing = await this.prisma.demande.findUnique({ where: { id: demandeId } });
       if (!existing) throw new NotFoundException('Demande introuvable.');
       throw new ForbiddenException('Vous n\'êtes pas le technicien assigné à cette demande.');
+    }
+
+    // Temps réel : diffusion du changement de statut (après commit).
+    this.realtime?.publish(missionChannel(demandeId), 'mission.status_changed', {
+      demandeId,
+      fromStatus,
+      toStatus: dto.status,
+      scheduledAt: scheduledAtIso,
+      createdAt: new Date().toISOString(),
+    });
+    if (notifyClientId) {
+      this.realtime?.publishToUser(notifyClientId, 'notification.created', {
+        demandeId,
+        kind: dto.status,
+      });
     }
 
     return toApiDemande(result);
@@ -1013,6 +1061,8 @@ export class TechnicianService {
       // (jamais transformé en position précise artificielle).
       withPosition = isUsableTravelAccuracy(accuracy);
     }
+    // Capturé dans la transaction, diffusé après commit.
+    let notifyClientId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await this.requireAssignedDemande(tx, userId, demandeId);
       if (
@@ -1067,9 +1117,33 @@ export class TechnicianService {
           tx,
           buildNotification('TECHNICIAN_EN_ROUTE', current.id, current.clientId, 'CLIENT'),
         );
+        notifyClientId = current.clientId;
       }
       return updated;
     });
+
+    // Temps réel (après commit) : départ + position éventuelle + notification.
+    this.realtime?.publish(missionChannel(demandeId), 'mission.technician_en_route', {
+      demandeId,
+      technicianId: userId,
+      hasPosition: withPosition,
+      createdAt: new Date().toISOString(),
+    });
+    if (withPosition) {
+      this.realtime?.publish(missionChannel(demandeId), 'mission.technician_position', {
+        demandeId,
+        technicianId: userId,
+        latitude,
+        longitude,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (notifyClientId) {
+      this.realtime?.publishToUser(notifyClientId, 'notification.created', {
+        demandeId,
+        kind: 'TECHNICIAN_EN_ROUTE',
+      });
+    }
 
     return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
   }
@@ -1095,6 +1169,9 @@ export class TechnicianService {
         'Position trop imprécise pour être actualisée. Réessayez dans un endroit à ciel ouvert.',
       );
     }
+    // Diffusé après commit uniquement si une écriture a eu lieu (pas sur le
+    // chemin throttle qui renvoie l'état courant sans écrire).
+    let wrotePosition = false;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await this.requireAssignedDemande(tx, userId, demandeId);
       if (!current.technicianEnRouteAt || current.technicianArrivedAt) {
@@ -1139,11 +1216,23 @@ export class TechnicianService {
           'Cette mission a été modifiée entre-temps. Veuillez réactualiser avant de réessayer.',
         );
       }
+      wrotePosition = true;
       return tx.demande.findFirstOrThrow({
         where: { id: current.id, technicianId: userId },
         include: this.deviceInclude,
       });
     });
+
+    // Temps réel (après commit) : position actualisée.
+    if (wrotePosition) {
+      this.realtime?.publish(missionChannel(demandeId), 'mission.technician_position', {
+        demandeId,
+        technicianId: userId,
+        latitude,
+        longitude,
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
   }
@@ -1216,6 +1305,15 @@ export class TechnicianService {
         fromStatus: current.status,
       });
       return updated;
+    });
+
+    // Temps réel (après commit) : arrivée (+ position si fournie).
+    this.realtime?.publish(missionChannel(demandeId), 'mission.technician_arrived', {
+      demandeId,
+      technicianId: userId,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
+      createdAt: new Date().toISOString(),
     });
 
     return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };

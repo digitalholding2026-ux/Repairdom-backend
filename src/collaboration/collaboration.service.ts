@@ -31,6 +31,8 @@ import {
   recordEvent,
   toApiEvent,
 } from '../mission-events/mission-events.js';
+import { RealtimeService } from '../realtime/realtime.service.js';
+import { missionChannel } from '../realtime/realtime.types.js';
 
 export const DEFAULT_QUOTE_CURRENCY = 'XAF';
 
@@ -73,6 +75,9 @@ export class CollaborationService {
     private readonly diagnosisMatch: AiDiagnosisMatchService,
     private readonly pricingCheck: AiPricingCheckService,
     private readonly conversationWatch?: AiConversationWatchService,
+    // Temps réel (socle SSE) : injection optionnelle (tests sans module) ;
+    // `publish()` ne lève jamais, les appels restent fire-and-forget.
+    private readonly realtime?: RealtimeService,
   ) {}
 
   /* IA-5 — déclenche le mapping catalogue d'un diagnostic libre, SANS
@@ -371,6 +376,13 @@ export class CollaborationService {
     // persisté ; provider IA indisponible/timeout/invalide → aucun flag,
     // message intact, erreur tracée côté service uniquement).
     this.triggerConversationWatch(message.id);
+    // Temps réel : diffusion du message aux abonnés du channel mission
+    this.realtime?.publish(missionChannel(demandeId), 'mission.message_created', {
+      messageId: message.id,
+      content: message.content,
+      senderId: message.senderId,
+      createdAt: message.createdAt.toISOString(),
+    });
     return this.toApiMessage(message);
   }
 
@@ -515,6 +527,21 @@ export class CollaborationService {
       return quote;
     });
 
+    // Temps réel : diffusion du devis créé + notification client (après commit).
+    this.realtime?.publish(missionChannel(demandeId), 'mission.quote_created', {
+      quoteId: quote.id,
+      amount: quote.amount,
+      currency: quote.currency,
+      description: quote.description,
+      source: quote.source,
+      diagnosticId: quote.diagnosticId,
+      createdAt: quote.createdAt.toISOString(),
+    });
+    this.realtime?.publishToUser(demande.clientId, 'notification.created', {
+      demandeId,
+      kind: 'QUOTE_CREATED',
+    });
+
     // IA-6 — contrôle tarifaire du devis MANUAL (signal, jamais bloquant) :
     // best-effort après commit, erreurs silencieuses tracées côté service.
     try {
@@ -625,6 +652,26 @@ export class CollaborationService {
 
       return quote;
     });
+
+    // Temps réel : diffusion de l'acceptation/rejet du devis
+    this.realtime?.publish(missionChannel(demandeId), action === 'accept' ? 'mission.quote_accepted' : 'mission.quote_rejected', {
+      quoteId: updated.id,
+      amount: updated.amount,
+      currency: updated.currency,
+      status: updated.status,
+      createdAt: new Date().toISOString(),
+    });
+    if (demande.technicianId) {
+      this.realtime?.publishToUser(
+        demande.technicianId,
+        'notification.created',
+        {
+          demandeId,
+          kind: action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
+        },
+      );
+    }
+
     return this.toApiQuote(updated, user.role);
   }
 
@@ -1019,6 +1066,20 @@ export class CollaborationService {
 
       return request;
     });
+
+    // Temps réel : diffusion de la demande de négociation (après commit).
+    this.realtime?.publish(missionChannel(demandeId), 'mission.negotiation_requested', {
+      quoteId,
+      requestedBy: user.id,
+      createdAt: new Date().toISOString(),
+    });
+    if (demande.technicianId) {
+      this.realtime?.publishToUser(demande.technicianId, 'notification.created', {
+        demandeId,
+        kind: 'NEGOTIATION_REQUESTED',
+      });
+    }
+
     return {
       demandeId: updated.id,
       negotiationRequestedAt: updated.negotiationRequestedAt!.toISOString(),

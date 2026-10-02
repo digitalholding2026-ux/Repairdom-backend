@@ -9,6 +9,8 @@ import { FinancialService } from '../financial/financial.service.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { DispatchService } from '../dispatch/dispatch.service.js';
 import { AiClassificationService } from '../ai/ai-classification.service.js';
+import { RealtimeService } from '../realtime/realtime.service.js';
+import { missionChannel } from '../realtime/realtime.types.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
 // module feuille `./demande-helpers.js` (aucune dépendance de service).
 // Ré-exportés ici pour compatibilité des imports existants.
@@ -70,6 +72,8 @@ export class DemandesService {
     private readonly dispatch: DispatchService,
     private readonly aiClassification: AiClassificationService,
     private readonly disputes: DisputesService,
+    // Temps réel (socle SSE) : injection optionnelle (tests sans module).
+    private readonly realtime?: RealtimeService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -394,6 +398,9 @@ export class DemandesService {
   }
 
   async updateStatus(clientId: string, id: string, dto: UpdateDemandeStatusDto) {
+    // Capturés dans la transaction, diffusés après commit.
+    let fromStatus: string | null = null;
+    let notifyTechnicianId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findFirst({
         where: { id, clientId },
@@ -439,6 +446,7 @@ export class DemandesService {
             tx,
             buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
           );
+          notifyTechnicianId = current.technicianId;
         }
       }
 
@@ -480,11 +488,27 @@ export class DemandesService {
           clientId,
         });
       }
+      fromStatus = current.status;
 
       return updated;
     });
 
     if (!result) throw new NotFoundException('Demande introuvable.');
+
+    // Temps réel (après commit) : changement de statut + notification.
+    this.realtime?.publish(missionChannel(id), 'mission.status_changed', {
+      demandeId: id,
+      fromStatus,
+      toStatus: dto.status,
+      createdAt: new Date().toISOString(),
+    });
+    if (notifyTechnicianId) {
+      this.realtime?.publishToUser(notifyTechnicianId, 'notification.created', {
+        demandeId: id,
+        kind: 'CONFIRMED',
+      });
+    }
+
     return toApiDemande(this.withTechnician(result));
   }
 

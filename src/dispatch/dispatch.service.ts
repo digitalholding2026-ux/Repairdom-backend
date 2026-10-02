@@ -20,6 +20,8 @@ import {
   buildNotification,
   recordEvent,
 } from '../mission-events/mission-events.js';
+import { RealtimeService } from '../realtime/realtime.service.js';
+import { TECHNICIAN_AVAILABLE_CHANNEL } from '../realtime/realtime.types.js';
 
 /* Sprint DISPATCH-V1 — Dispatch intelligent (2 vagues max, STOP ensuite).
  *
@@ -204,6 +206,8 @@ export class DispatchService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly email: EmailService,
+    // Temps réel (socle SSE) : injection optionnelle (tests sans module).
+    private readonly realtime?: RealtimeService,
   ) {
     // Base des liens e-mail dispatch. En production, définir FRONTEND_URL
     // (jamais l'ancien domaine public).
@@ -388,6 +392,32 @@ export class DispatchService {
         metadata: { wave, candidateCount: selected.length },
       });
     });
+
+    // Temps réel (après commit) : diffusion unique sur le channel des
+    // techniciens + signal personnel par candidat notifié (le frontend
+    // revalide l'éligibilité via le détail avant d'afficher).
+    if (selected.length > 0) {
+      this.realtime?.publish(TECHNICIAN_AVAILABLE_CHANNEL, 'technician.new_mission_available', {
+        demandeId,
+        reference: demande.reference,
+        category: demande.category,
+        city: demande.city,
+        createdAt: new Date().toISOString(),
+      });
+      for (const candidate of ranked) {
+        this.realtime?.publishToUser(candidate.userId, 'technician.new_mission_available', {
+          demandeId,
+          reference: demande.reference,
+          category: demande.category,
+          city: demande.city,
+          createdAt: new Date().toISOString(),
+        });
+        this.realtime?.publishToUser(candidate.userId, 'notification.created', {
+          demandeId,
+          kind: 'MISSION_AVAILABLE',
+        });
+      }
+    }
 
     // E-mails isolés par destinataire : un échec ne remet jamais en cause
     // la vague ni les notifications In-App déjà persistées.

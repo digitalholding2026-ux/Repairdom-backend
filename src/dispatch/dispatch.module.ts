@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
+import { RealtimeModule } from '../realtime/realtime.module.js';
 import { DispatchService } from './dispatch.service.js';
 import { DispatchScheduler } from './dispatch.scheduler.js';
 
@@ -8,7 +9,7 @@ import { DispatchScheduler } from './dispatch.scheduler.js';
  * pour le déclenchement vague 1 ; le scheduler interne balaye les vagues 2
  * dues depuis la vérité persistée (DispatchWave). */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, RealtimeModule],
   providers: [DispatchService, DispatchScheduler],
   exports: [DispatchService],
 })

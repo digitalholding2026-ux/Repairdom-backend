@@ -15,6 +15,7 @@ import { FinancialModule } from './financial/financial.module.js';
 import { DisputesModule } from './disputes/disputes.module.js';
 import { SasPayModule } from './saspay/saspay.module.js';
 import { AiModule } from './ai/ai.module.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { AiModule } from './ai/ai.module.js';
     DisputesModule,
     SasPayModule,
     AiModule,
+    RealtimeModule,
   ],
 })
 export class AppModule {}
