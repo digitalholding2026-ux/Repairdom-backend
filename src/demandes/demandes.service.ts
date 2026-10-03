@@ -8,7 +8,6 @@ import { assertTransition } from './demandes-lifecycle.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { DispatchService } from '../dispatch/dispatch.service.js';
-import { AiClassificationService } from '../ai/ai-classification.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
@@ -70,7 +69,6 @@ export class DemandesService {
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
     private readonly dispatch: DispatchService,
-    private readonly aiClassification: AiClassificationService,
     private readonly disputes: DisputesService,
     // Temps réel (socle SSE) : injection optionnelle (tests sans module).
     private readonly realtime?: RealtimeService,
@@ -89,7 +87,7 @@ export class DemandesService {
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
-    // IA-4.1 — l'équipement déclaré (objet à réparer, pas la panne) est
+    // L'équipement déclaré (objet à réparer, pas la panne) est
     // obligatoire quand la catégorie résolue vaut `autre` SANS ancrage
     // catalogue : un `modelId` valide (vérifié dans `resolveDevice` :
     // existant, actif, cohérent) identifie déjà l'appareil, même si la
@@ -163,35 +161,6 @@ export class DemandesService {
 
           return created;
         });
-
-        // IA-4 — classification des demandes « Autre » AVANT la vague 1
-        // (le dispatch enrichi en bénéficie) : best-effort strict, JAMAIS
-        // bloquante (le service ne lève pas, fallback tracé en base).
-        if (demande.category === 'autre') {
-          try {
-            await this.aiClassification.classifyAutreDemande({
-              demandeId: demande.id,
-              deviceLabel: [
-                demande.domain?.name,
-                demande.brand?.name,
-                demande.model?.name,
-              ]
-                .filter(Boolean)
-                .join(' — '),
-              description: demande.description,
-              // IA-4.1 — signal principal d'identification du domaine.
-              equipmentType: demande.equipmentType,
-              city: demande.city,
-              mediaKinds: (demande.medias ?? []).map((media) => media.kind),
-            });
-          } catch (error) {
-            this.logger.error(
-              `Classification IA impossible pour ${demande.id} : ${
-                error instanceof Error ? error.message : 'erreur inconnue'
-              } (fallback dispatch standard).`,
-            );
-          }
-        }
 
         // Sprint DISPATCH-V1 — vague 1 APRÈS commit créateur : un échec du
         // dispatch (vague, notification, e-mail) ne doit JAMAIS annuler ni

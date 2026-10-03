@@ -1,6 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { IsBooleanString, IsEnum, IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
 
 enum Environment {
   Development = 'development',
@@ -126,64 +126,6 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   SASPAY_PAYOUT_RELAY_SECRET?: string;
-
-  // IA-1 — socle AI Gateway (GroqCloud, infrastructure uniquement).
-  // Toutes optionnelles : sans elles le gateway refuse proprement
-  // (AI_DISABLED) et aucun comportement métier ne change. La clé reste
-  // backend uniquement, jamais committée, jamais exposée au frontend.
-  @IsOptional()
-  @IsBooleanString()
-  AI_ENABLED?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  GROQ_API_KEY?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  GROQ_BASE_URL?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  GROQ_MODEL?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  GROQ_FALLBACK_MODEL?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  GROQ_TIMEOUT_MS?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  AI_AGENT_PLAN_MAX_TOKENS?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  AI_AGENT_SYNTH_MAX_TOKENS?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  AI_429_MAX_RETRIES?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  AI_429_RETRY_DELAY_MS?: string;
-
-  // IA-4 — classification des demandes « Autre » (aide au dispatch).
-  // Optionnelles : défauts sûrs en code (seuil 0.7, timeout 8 s).
-  @IsOptional()
-  @IsNumberString()
-  AI_CLASSIFICATION_MIN_CONFIDENCE?: string;
-
-  @IsOptional()
-  @IsNumberString()
-  AI_CLASSIFICATION_TIMEOUT_MS?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {
@@ -219,21 +161,6 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
     }
     if (parsed.protocol !== 'https:' || !parsed.hostname) {
       throw new Error('SUPABASE_URL must be a valid https URL (https://<ref>.supabase.co).');
-    }
-  }
-
-  // GROQ_BASE_URL renseignée : https exigée (jamais de clé en clair
-  // sur HTTP). La clé elle-même n'est jamais affichée dans les erreurs.
-  const rawGroqUrl = (validatedConfig.GROQ_BASE_URL ?? '').trim().replace(/\/+$/, '');
-  if (rawGroqUrl.length > 0) {
-    let parsed: URL;
-    try {
-      parsed = new URL(rawGroqUrl);
-    } catch {
-      throw new Error('GROQ_BASE_URL must be a valid URL.');
-    }
-    if (parsed.protocol !== 'https:' || !parsed.hostname) {
-      throw new Error('GROQ_BASE_URL must be a valid https URL.');
     }
   }
 

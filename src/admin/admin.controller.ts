@@ -17,18 +17,8 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { SendTechnicianMessageDto } from './dto/send-technician-message.dto.js';
-import { ReviewAiWarningDto } from './dto/review-ai-warning.dto.js';
-import { ReviewConversationFlagDto } from './dto/review-conversation-flag.dto.js';
-import { AiWarningService } from '../ai/ai-warning.service.js';
-import { AiConversationWatchService } from '../ai/ai-conversation-watch.service.js';
-import { AiAdminService } from '../ai/ai-admin.service.js';
-import { AiAdminAgentService } from '../ai/ai-admin-agent.service.js';
-import { AiAgentChatDto } from './dto/ai-agent-chat.dto.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { ReviewDisputeDto } from '../disputes/dto/review-dispute.dto.js';
-import { AiClassificationService } from '../ai/ai-classification.service.js';
-import { AiDiagnosisMatchService } from '../ai/ai-diagnosis-match.service.js';
-import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -36,13 +26,6 @@ import { AiPricingCheckService } from '../ai/ai-pricing-check.service.js';
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
-    private readonly warnings: AiWarningService,
-    private readonly conversationWatch: AiConversationWatchService,
-    private readonly aiAdmin: AiAdminService,
-    private readonly classifications: AiClassificationService,
-    private readonly diagnosisMatches: AiDiagnosisMatchService,
-    private readonly pricingChecks: AiPricingCheckService,
-    private readonly aiAgent: AiAdminAgentService,
     private readonly disputes: DisputesService,
   ) {}
 
@@ -113,133 +96,6 @@ export class AdminController {
     return this.adminService.sendTechnicianMessage(user.id, dto.email, dto.message);
   }
 
-  /* IA-7 — surveillance tarifaire (lecture + revue humaine, jamais de
-   * sanction automatique). Données : avertissements, technicien, demande,
-   * quote, diagnostic, prix, barème snapshot, justification, statut
-   * effectif, niveau de surveillance, dates, historique. */
-  @Get('ai-warnings')
-  listAiWarnings(
-    @Query('technicianId') technicianId?: string,
-    @Query('status') status?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.warnings.getWarningsForAdmin({
-      technicianId: technicianId?.trim() || undefined,
-      status: status?.trim() || undefined,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
-  }
-
-  @Get('ai-warnings/technician/:id/level')
-  getTechnicianSurveillanceLevel(@Param('id') id: string) {
-    return this.warnings.getSurveillanceLevel(id).then((level) => ({
-      technicianId: id,
-      surveillanceLevel: level,
-      humanReviewRequired: level >= 3,
-    }));
-  }
-
-  @Post('ai-warnings/:id/review')
-  reviewAiWarning(
-    @Param('id') id: string,
-    @CurrentUser() user: RequestUser,
-    @Body() dto: ReviewAiWarningDto,
-  ) {
-    return this.warnings.reviewWarning(user.id, id, dto.reviewNote);
-  }
-
-  /* IA-8 — surveillance conversationnelle (signaux OPEN + revue humaine,
-   * jamais de sanction automatique, jamais visible client/technicien).
-   * Données : catégorie, sévérité, confiance, message, conversation,
-   * demande, auteurs, dates, statut, historique de revue. */
-  @Get('conversation-flags')
-  listConversationFlags(
-    @Query('status') status?: string,
-    @Query('category') category?: string,
-    @Query('severity') severity?: string,
-    @Query('demandeId') demandeId?: string,
-    @Query('senderId') senderId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.conversationWatch.getFlagsForAdmin({
-      status: status?.trim() || undefined,
-      category: category?.trim() || undefined,
-      severity: severity?.trim() || undefined,
-      demandeId: demandeId?.trim() || undefined,
-      senderId: senderId?.trim() || undefined,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
-  }
-
-  @Post('conversation-flags/:id/review')
-  reviewConversationFlag(
-    @Param('id') id: string,
-    @CurrentUser() user: RequestUser,
-    @Body() dto: ReviewConversationFlagDto,
-  ) {
-    return this.conversationWatch.reviewFlag(user.id, id, dto.decision, dto.reviewNote);
-  }
-
-  /* IA-9 — dashboard IA admin (visualisation + revue humaine, jamais de
-   * décision automatique : voir, filtrer, examiner — l'humain décide). */
-
-  @Get('ai/overview')
-  getAiOverview() {
-    return this.aiAdmin.getOverview();
-  }
-
-  @Get('ai/classifications')
-  listAiClassifications(
-    @Query('classification') classification?: string,
-    @Query('domainId') domainId?: string,
-    @Query('demandeId') demandeId?: string,
-    @Query('since') since?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.classifications.listForAdmin({
-      classification: classification?.trim() || undefined,
-      domainId: domainId?.trim() || undefined,
-      demandeId: demandeId?.trim() || undefined,
-      since: since?.trim() || undefined,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
-  }
-
-  @Get('ai/matches')
-  listAiMatches(
-    @Query('classification') classification?: string,
-    @Query('demandeId') demandeId?: string,
-    @Query('since') since?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.diagnosisMatches.listForAdmin({
-      classification: classification?.trim() || undefined,
-      demandeId: demandeId?.trim() || undefined,
-      since: since?.trim() || undefined,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
-  }
-
-  /* IA-11 — Agent IA du back-office (ADMIN uniquement, lecture seule :
-   * question → tool contrôlé → synthèse factuelle, jamais de mutation). */
-  @Get('ai-agent/status')
-  getAiAgentStatus() {
-    return this.aiAgent.status();
-  }
-
-  @Post('ai-agent/chat')
-  chatWithAiAgent(@Body() dto: AiAgentChatDto) {
-    return this.aiAgent.chat(dto.message, dto.history ?? []);
-  }
-
   /* Litiges post-intervention (ADMIN uniquement) : liste paginée,
    * détail avec mission + parties, décision motivée. RESOLVED libère le
    * hold (fonds rendus, sans règlement) ; REJECTED rouvre la confirmation.
@@ -265,24 +121,5 @@ export class AdminController {
   @Patch('disputes/:id/review')
   reviewDispute(@Param('id') id: string, @CurrentUser() user: RequestUser, @Body() dto: ReviewDisputeDto) {
     return this.disputes.reviewDispute(user.id, id, dto);
-  }
-
-  @Get('ai/pricing-checks')
-  listAiPricingChecks(
-    @Query('result') result?: string,
-    @Query('demandeId') demandeId?: string,
-    @Query('technicianId') technicianId?: string,
-    @Query('since') since?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.pricingChecks.listForAdmin({
-      result: result?.trim() || undefined,
-      demandeId: demandeId?.trim() || undefined,
-      technicianId: technicianId?.trim() || undefined,
-      since: since?.trim() || undefined,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
-    });
   }
 }

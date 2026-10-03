@@ -215,7 +215,7 @@ export class UpdateProblemDto {
 
 /* Catalogue simplifié : l'Admin ne saisit plus que nom/slug/description.
  * Les champs techniques ci-dessous restent ACCEPTÉS (compatibilité fiche
- * catalogue lue par le technicien + IA-5) mais ne sont plus proposés dans
+ * catalogue lue par le technicien) mais ne sont plus proposés dans
  * l'interface Admin. Ne pas les supprimer du schéma sans audit des flux
  * collaboration/technicien. */
 export class CreateDiagnosticDto {

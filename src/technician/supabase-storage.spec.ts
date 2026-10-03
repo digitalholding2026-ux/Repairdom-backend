@@ -104,4 +104,82 @@ describe('SupabaseStorageService — upload', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
+
+  it('espaces autour de SUPABASE_URL rognés (copier-coller Railway)', async () => {
+    const fetchMock = mockFetchOnce({ status: 200, ok: true } as Response);
+    const service = new SupabaseStorageService(
+      mockConfig({
+        SUPABASE_URL: '  https://project.supabase.co/  ',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+      }) as never,
+    );
+    await service.uploadObject('clients/u/f.png', Buffer.from([1]), 'image/png');
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://project.supabase.co/storage/v1/object/repairdom-profile-images/clients/u/f.png',
+    );
+  });
+
+  it('URL invalide → 503 sans appel réseau ni fuite', async () => {
+    const fetchMock = mockFetchOnce({ status: 200, ok: true } as Response);
+    const service = new SupabaseStorageService(
+      mockConfig({
+        SUPABASE_URL: 'not-a-url',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+      }) as never,
+    );
+    const error = await service
+      .uploadObject('clients/u/f.png', Buffer.from([1]), 'image/png')
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((error as Error).message).not.toContain('service-role-key');
+  });
+
+  it('DNS ENOTFOUND → 502 générique, catégorie DNS, sans secret', async () => {
+    const dnsError = new TypeError('fetch failed') as TypeError & { cause?: unknown };
+    dnsError.cause = new Error('getaddrinfo ENOTFOUND project.supabase.co') as Error & { code?: string };
+    (dnsError.cause as { code?: string }).code = 'ENOTFOUND';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw dnsError;
+      }),
+    );
+    const service = new SupabaseStorageService(CONFIGURED as never);
+    const error = await service
+      .uploadObject('clients/u/f.png', Buffer.from([1]), 'image/png')
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BadGatewayException);
+    expect((error as Error).message).toBe(
+      'Impossible d’enregistrer le fichier. Réessayez dans un instant.',
+    );
+    expect((error as Error).message).not.toContain('service-role-key');
+    expect((error as Error).message).not.toContain('ENOTFOUND');
+    const connectivity = await service.checkStorageConnectivity();
+    expect(connectivity.category).toBe('DNS');
+    expect(connectivity.ok).toBe(false);
+    expect(connectivity.hostname).toBe('project.supabase.co');
+  });
+
+  it('checkConnectivity : HTTP 401 = joignable mais clé rejetée (pas DNS)', async () => {
+    mockFetchOnce({ status: 401, ok: false } as unknown as Response);
+    const service = new SupabaseStorageService(CONFIGURED as never);
+    const result = await service.checkStorageConnectivity();
+    expect(result.httpStatus).toBe(401);
+    expect(result.category).toBe('HTTP');
+    expect(result.ok).toBe(false);
+  });
+
+  it('checkConnectivity : HTTP 200 = OK', async () => {
+    mockFetchOnce({ status: 200, ok: true } as unknown as Response);
+    const service = new SupabaseStorageService(CONFIGURED as never);
+    const result = await service.checkStorageConnectivity();
+    expect(result).toMatchObject({ ok: true, category: 'OK' });
+  });
+
+  it('getStorageHost expose le hostname seul, jamais la clé', () => {
+    const service = new SupabaseStorageService(CONFIGURED as never);
+    expect(service.getStorageHost()).toBe('project.supabase.co');
+  });
 });

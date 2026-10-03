@@ -171,9 +171,9 @@ export class CatalogController {
 
   /* ── CatalogDiagnostic ──────────────────────────────────────── */
 
-  /* IA-2 — barèmes par diagnostic (lecture seule, ADMIN) : liste paginée
-   * + détail agrégé (diagnostic → domaine → barème actif) pour l'admin et
-   * les futurs chantiers IA. Aucune écriture, aucun workflow modifié. */
+  /* Barèmes par diagnostic (lecture seule, ADMIN) : liste paginée
+   * + détail agrégé (diagnostic → domaine → barème actif) pour l'admin.
+   * Aucune écriture, aucun workflow modifié. */
   @Get('diagnostics/scales')
   listDiagnosticScales(
     @Query('search') search?: string,

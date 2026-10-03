@@ -30,7 +30,7 @@ export class CatalogService {
    *   Spécification  = DeviceBrand        (ex. iOS / Android, valeurs libres)
    *   Modèle         = DeviceModel        (ex. iPhone 11, actif/inactif)
    *   Catégorie      = Problem            (panne/intervention par modèle)
-   *   Fiche catalogue = CatalogDiagnostic  (ancre IA-5, conservée telle quelle)
+   *   Fiche catalogue = CatalogDiagnostic  (conservée telle quelle)
    *   Tarification   = CatalogIntervention + Pricing (min / référence / max)
    *
    * Champs techniques CONSERVÉS en base (aucune migration destructive) car
@@ -42,7 +42,7 @@ export class CatalogService {
    *   - currency / priceMode → compatibilité des snapshots.
    * L'interface Admin simplifiée ne les saisit/affiche plus ; le backend les
    * accepte toujours pour compatibilité. PricingHistory + QuotePricingCheck
-   * restent immuables (IA-6/IA-7) : voir assertPricingValid, seule autorité
+   * restent immuables : voir assertPricingValid, seule autorité
    * de validation (jamais dupliquée côté frontend). */
   constructor(private readonly prisma: PrismaService) {}
 
@@ -483,7 +483,7 @@ export class CatalogService {
     });
   }
 
-  /* IA-2 — vue « barème par diagnostic » (lecture seule, aucune table
+  /* Vue « barème par diagnostic » (lecture seule, aucune table
    * ajoutée : le barème reste porté par les Pricing d'interventions).
    * Agrégation sur les interventions ACTIVES au pricing ACTIF :
    *   min = min des minPrice, max = max des maxPrice,
@@ -563,7 +563,7 @@ export class CatalogService {
     };
   }
 
-  /** Barème d'un diagnostic (futurs IA-5/6/7 : diagnostic → domaine → barème). */
+  /** Barème d'un diagnostic (diagnostic → domaine → barème). */
   async getDiagnosticScale(id: string) {
     const diagnostic = await this.prisma.catalogDiagnostic.findUnique({
       where: { id },
@@ -583,7 +583,7 @@ export class CatalogService {
    * agrégation des pricings ACTIFS des interventions ACTIVES des diagnostics
    * ACTIFS du problème, même sémantique que toDiagnosticScale (min des mins,
    * max des maxs, référence unique ou null si divergente). Référence du
-   * tableau « tarifs du modèle » côté Admin et du contrôle IA-6 exact-modèle.
+   * tableau « tarifs du modèle » côté Admin et du contrôle exact-modèle.
    * Un problème hors modèle (modelId null) reste consultable mais ne porte
    * aucun nouveau tarif (voir createPricing). */
   async getProblemScale(id: string) {
@@ -652,7 +652,7 @@ export class CatalogService {
     };
   }
 
-  /* IA-2 — liste paginée des barèmes (plusieurs centaines de diagnostics) :
+  /* Liste paginée des barèmes (plusieurs centaines de diagnostics) :
    * recherche insensible à la casse (diagnostic/intervention), filtre
    * domaine, filtre statut (actif/inactif/avec barème/sans barème).
    * Pagination serveur (défaut 20, max 100). Tri : domaine, problème,
@@ -921,7 +921,7 @@ export class CatalogService {
     // une catégorie rattachée à un modèle précis (MODÈLE + CATÉGORIE).
     // Un barème « global » sans modèle est ambigu dès que la catégorie est
     // partagée entre modèles (ex. Afficheur sur iPhone 11 / XR / 12) et
-    // fausserait le contrôle IA-6. Les tarifs historiques hors modèle restent
+    // fausserait le contrôle tarifaire. Les tarifs historiques hors modèle restent
     // lisibles (getPricing, historique) mais aucun nouveau ne peut naître.
     if (!intervention.diagnostic?.problem?.modelId) {
       throw new BadRequestException(
@@ -1727,12 +1727,12 @@ export class CatalogService {
    *   (catalogDiagnostic) : les missions, devis, diagnostics et matchings
    *   existants restent lisibles avec une référence null ;
    * - QuotePricingCheck est INDÉPENDANT (snapshot min/ref/max + pricingIds
-   *   texte, aucune FK vers Pricing) : les contrôles IA-6 passés survivent
+   *   texte, aucune FK vers Pricing) : les contrôles passés survivent
    *   avec leurs valeurs figées ;
-   * - FinancialTransaction / FundsHold / avis IA-7 / flags IA-8 / litiges
+   * - FinancialTransaction / FundsHold / litiges
    *   ne référencent jamais le catalogue directement : intacts ;
    * - DemandeClassification.domainId et QuotePricingCheck.catalogDiagnosticId
-   *   sont des textes sans FK (propositions IA auditées) : conservés tels
+   *   sont des textes sans FK (données historiques) : conservés tels
    *   quels (éventuellement orphelins, jamais recalculés) — l'historique
    *   reste auditable, les nouvelles recherches actives ne les retrouvent
    *   plus (filtre isActive + existence) ;

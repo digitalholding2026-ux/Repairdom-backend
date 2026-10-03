@@ -57,7 +57,7 @@ export interface DemandeRecord {
   // Dépôt multimédia : NULL pour les demandes sans texte (le technicien
   // lit alors les pièces jointes). Textes historiques conservés.
   description: string | null;
-  // IA-4.1 — équipement déclaré par le client (optionnel : NULL pour
+  // Équipement déclaré par le client (optionnel : NULL pour
   // l'historique et les domaines catalogue). Exposé tel quel (jamais un
   // diagnostic) au technicien comme au client propriétaire.
   equipmentType?: string | null;

@@ -3,7 +3,7 @@ import { CollaborationService } from './collaboration.service.js';
 
 /* Correctif post-audit — couverture Quotes/collaboration (aucune spec
  * dédiée auparavant) : création MANUAL/CATALOG, bornes, acceptation,
- * double acceptation, négociation, QuoteSource, garde IA-6 best-effort.
+ * double acceptation, négociation, QuoteSource.
  * Comportement métier inchangé, uniquement vérifié. */
 
 type Row = Record<string, any>;
@@ -127,9 +127,8 @@ function quoteService(options: {
     $transaction: vi.fn(async (callback: (t: unknown) => Promise<unknown>) => callback(tx)),
   };
   const financial = { holdClientAtAcceptance: vi.fn(async () => undefined) };
-  const pricingCheck = { evaluateManualQuote: vi.fn(async () => null) };
-  const service = new CollaborationService(prisma, financial as never, {} as never, pricingCheck as never);
-  return { service, prisma, tx, financial, pricingCheck, quotes, events, notifications };
+  const service = new CollaborationService(prisma, financial as never);
+  return { service, prisma, tx, financial, quotes, events, notifications };
 }
 
 const TECH = { id: 't1', role: 'TECHNICIAN' } as never;
@@ -145,7 +144,6 @@ describe('createQuote — création manuelle', () => {
     expect(result.totalToDebit).toBe(22000);
     expect(result.source).toBe('MANUAL');
     expect(world.quotes.get('q-old')?.status).toBe('REJECTED');
-    expect(world.pricingCheck.evaluateManualQuote).toHaveBeenCalledTimes(1);
     expect(world.events.some((e) => e.type === 'QUOTE_CREATED')).toBe(true);
     expect(world.notifications.some((n) => n.type === 'QUOTE_CREATED' && n.userId === 'c1')).toBe(true);
   });
@@ -171,13 +169,6 @@ describe('createQuote — création manuelle', () => {
     const world = quoteService({ quotes: [fullQuote({ id: 'q-a', status: 'ACCEPTED' })] });
     await expect(world.service.createQuote(TECH, 'm1', MANUAL_DTO)).rejects.toMatchObject({ status: 409 });
     expect(world.tx.quote.create).not.toHaveBeenCalled();
-  });
-
-  it('IA-6 en panne → création quand même (best-effort, warn tracé)', async () => {
-    const world = quoteService();
-    world.pricingCheck.evaluateManualQuote.mockRejectedValueOnce(new Error('IA down'));
-    const result = await world.service.createQuote(TECH, 'm1', MANUAL_DTO);
-    expect(result.status).toBe('PENDING');
   });
 });
 

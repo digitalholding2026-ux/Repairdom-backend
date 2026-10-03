@@ -124,7 +124,7 @@ export class DisputesService {
       return dispute;
     });
     // Fan-out admin best-effort (hors transaction : une notification manquée
-    // ne doit jamais faire échouer l'ouverture, comme IA-8).
+    // ne doit jamais faire échouer l'ouverture).
     try {
       const admins = await this.prisma.user.findMany({
         where: { role: 'ADMIN', isActive: true },

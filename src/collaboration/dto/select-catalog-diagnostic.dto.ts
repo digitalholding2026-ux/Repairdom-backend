@@ -56,7 +56,7 @@ export class SelectCatalogDiagnosticDto {
   @MaxLength(1000)
   notes?: string;
 
-  /* IA-3 — note vocale facultative (chemin retourné par l'upload audio,
+  /* Note vocale facultative (chemin retourné par l'upload audio,
    * lié en transaction à la création ; jamais d'URL persistée). */
   @IsOptional()
   @IsString()

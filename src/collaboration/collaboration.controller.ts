@@ -51,7 +51,7 @@ export class CollaborationController {
     return this.collaborationService.createDiagnostic(user, demandeId, dto);
   }
 
-  /* IA-3 — note vocale du diagnostic libre (TECHNICIAN assigné) : upload
+  /* Note vocale du diagnostic libre (TECHNICIAN assigné) : upload
    * réel AVANT création, lié en transaction (aucune ligne orpheline).
    * 25 Mo max, formats audio validés côté service. */
   @Post(':demandeId/diagnostics/audio/upload')

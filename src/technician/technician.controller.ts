@@ -17,8 +17,6 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TechnicianService } from './technician.service.js';
 import { DemandeMediaService } from '../demandes/demande-media.service.js';
-import { AiWarningService } from '../ai/ai-warning.service.js';
-import { JustifyWarningDto } from './dto/justify-warning.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
@@ -43,7 +41,6 @@ export class TechnicianController {
   constructor(
     private readonly technicianService: TechnicianService,
     private readonly mediaService: DemandeMediaService,
-    private readonly warnings: AiWarningService,
   ) {}
 
   @Get('profile')
@@ -204,22 +201,5 @@ export class TechnicianController {
     return this.mediaService
       .getMediaFileUrl({ userId: user.id, role: user.role }, id, mediaId)
       .then((url) => ({ url }));
-  }
-
-  /* IA-7 — avertissements tarifaires du technicien connecté (lecture +
-   * justification, propriété stricte). Aucune sanction, aucun blocage. */
-  @Get('ai-warnings')
-  listAiWarnings(@CurrentUser() user: RequestUser) {
-    return this.warnings.listMyWarnings(user.id);
-  }
-
-  @Post('ai-warnings/:id/justify')
-  @HttpCode(HttpStatus.OK)
-  justifyAiWarning(
-    @CurrentUser() user: RequestUser,
-    @Param('id') id: string,
-    @Body() dto: JustifyWarningDto,
-  ) {
-    return this.warnings.justifyWarning(user.id, id, dto.text);
   }
 }

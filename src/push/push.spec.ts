@@ -143,6 +143,30 @@ describe('sendToUser', () => {
       service.sendToUser('u-1', { title: 'T', body: 'B', tag: 't', url: '/', type: 'x' }),
     ).resolves.toEqual({ sent: 0, skipped: 'vapid_not_configured', failed: 0 });
   });
+
+  it('force:true → payload contient force:true (bypass anti-doublon SW)', async () => {
+    const { service } = setup({ sseActive: true, vapid: true });
+    await service.registerSubscription('u-1', SUBSCRIPTION);
+    vi.mocked(webPush.sendNotification).mockClear();
+    await service.sendToUser(
+      'u-1',
+      { title: 'T', body: 'B', tag: 't', url: '/', type: 'x' },
+      { force: true },
+    );
+    expect(webPush.sendNotification).toHaveBeenCalledTimes(1);
+    const [, body] = vi.mocked(webPush.sendNotification).mock.calls[0] as [unknown, string];
+    expect(JSON.parse(body)).toMatchObject({ title: 'T', force: true });
+  });
+
+  it('sans force → payload SANS force (anti-doublon SW actif)', async () => {
+    const { service } = setup({ sseActive: false, vapid: true });
+    await service.registerSubscription('u-1', SUBSCRIPTION);
+    vi.mocked(webPush.sendNotification).mockClear();
+    await service.sendToUser('u-1', { title: 'T', body: 'B', tag: 't', url: '/', type: 'x' });
+    expect(webPush.sendNotification).toHaveBeenCalledTimes(1);
+    const [, body] = vi.mocked(webPush.sendNotification).mock.calls[0] as [unknown, string];
+    expect(JSON.parse(body)).not.toHaveProperty('force');
+  });
 });
 
 describe('PushController — auth et validation', () => {
@@ -172,5 +196,17 @@ describe('PushController — auth et validation', () => {
         endpoint: 'https://push.example.com/sub/1',
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('test → envoi forcé avec force:true dans le payload', async () => {
+    const { service } = setup({ sseActive: true, vapid: true });
+    await service.registerSubscription('u-1', SUBSCRIPTION);
+    const ctl = new PushController(service);
+    vi.mocked(webPush.sendNotification).mockClear();
+    const result = await ctl.test({ id: 'u-1', email: 'a@b.c', role: 'CLIENT' } as never);
+    expect(result).toMatchObject({ sent: 1 });
+    expect(webPush.sendNotification).toHaveBeenCalledTimes(1);
+    const [, body] = vi.mocked(webPush.sendNotification).mock.calls[0] as [unknown, string];
+    expect(JSON.parse(body)).toMatchObject({ force: true });
   });
 });

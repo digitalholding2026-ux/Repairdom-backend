@@ -15,7 +15,6 @@ import { haversineMeters, isLocationFresh } from '../geo/geo-distance.js';
 /* Fenêtre de fraîcheur GPS (définie en geo, réexportée pour les tests). */
 export { GPS_FRESHNESS_MS } from '../geo/geo-distance.js';
 import { isMatchingStatus, labelForCategory } from '../demandes/demande-helpers.js';
-import { ALLOWED_CATEGORIES } from '../demandes/categories.js';
 import {
   buildNotification,
   recordEvent,
@@ -112,19 +111,13 @@ export function selectCandidatesForWave(
   demande: DispatchDemandeGeo,
   wave: typeof DISPATCH_WAVE_1 | typeof DISPATCH_WAVE_2,
   alreadyNotifiedUserIds: readonly string[],
-  /* IA-4 — catégories IA enrichissantes (demandes « Autre » classifiées) :
-   * élargissent le matching aux compétences probables, SANS retirer aucune
-   * règle (statut, dispo, KYC/acceptation, ville, zone, GPS, ASAP). */
-  extraCategories: readonly string[] = [],
 ): DispatchCandidate[] {
   const excluded = new Set(alreadyNotifiedUserIds);
   return candidates.filter((candidate) => {
     if (!candidate.isAvailable) return false;
     if (excluded.has(candidate.userId)) return false;
     const categoryOk = candidate.categories.some(
-      (category) =>
-        normalizeValue(category) === normalizeValue(demande.category) ||
-        extraCategories.some((extra) => normalizeValue(category) === normalizeValue(extra)),
+      (category) => normalizeValue(category) === normalizeValue(demande.category),
     );
     if (!categoryOk) return false;
     if (wave === DISPATCH_WAVE_1) {
@@ -253,34 +246,6 @@ export class DispatchService {
     return results;
   }
 
-  /* IA-4 — catégories IA enrichissantes pour une demande « Autre » :
-   * classification CLASSIFIED + confiance ≥ seuil configuré (re-vérifié
-   * ici), sinon [] (matching historique strict). Log sans PII. */
-  private async classificationCategories(demande: {
-    id: string;
-    category: string;
-  }): Promise<string[]> {
-    if (demande.category !== 'autre') return [];
-    const row = await this.prisma.demandeClassification.findUnique({
-      where: { demandeId: demande.id },
-    });
-    if (!row || row.classification !== 'CLASSIFIED') return [];
-    const threshold = Number(this.config.get<string>('AI_CLASSIFICATION_MIN_CONFIDENCE'));
-    const minConfidence = Number.isFinite(threshold) ? Math.min(Math.max(threshold, 0), 1) : 0.7;
-    if (row.confidence === null || row.confidence < minConfidence) return [];
-    const categories = row.categories.filter(
-      (category): category is string =>
-        typeof category === 'string' &&
-        (ALLOWED_CATEGORIES as readonly string[]).includes(category),
-    );
-    if (categories.length > 0) {
-      this.logger.log(
-        `Dispatch ${demande.id} : signal IA (${row.classification}, confiance ${row.confidence}) → catégories [${categories.join(', ')}].`,
-      );
-    }
-    return categories;
-  }
-
   private async runWave(
     demandeId: string,
     wave: typeof DISPATCH_WAVE_1 | typeof DISPATCH_WAVE_2,
@@ -319,17 +284,12 @@ export class DispatchService {
       select: { userId: true },
       distinct: ['userId'],
     });
-    // IA-4 — signal d'enrichissement UNIQUEMENT pour les demandes « Autre »
-    // classifiées avec confiance suffisante (re-vérifiée ici, la config
-    // ayant pu changer). Toute autre situation → matching historique.
-    const extraCategories = await this.classificationCategories(demande);
     const candidates = await this.loadCandidates();
     const selected = selectCandidatesForWave(
       candidates,
       { city: demande.city, cityId: demande.cityId, zoneId: demande.zoneId, category: demande.category },
       wave,
       alreadyNotified.map((row) => row.userId),
-      extraCategories,
     );
     // GPS V2 — classement par proximité des seuls compatibles (filtres
     // métier ci-dessus inchangés ; vagues, idempotence et ASAP temporel

@@ -93,7 +93,7 @@ export class CreateDemandeDto {
   @MaxLength(1000)
   description?: string;
 
-  /* IA-4.1 — équipement déclaré par le client en texte libre (« réfrigérateur »,
+  /* Équipement déclaré par le client en texte libre (« réfrigérateur »,
    * jamais un diagnostic catalogue). Optionnel au niveau DTO, mais le service
    * l'exige (après trim) quand la catégorie résolue vaut `autre`. Longueur
    * alignée sur `city`/`neighborhood` (120) : un nom d'appareil, pas un récit. */

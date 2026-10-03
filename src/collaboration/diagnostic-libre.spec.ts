@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { CollaborationService } from './collaboration.service.js';
 import { DemandeMediaService } from '../demandes/demande-media.service.js';
 
-/* IA-3 — diagnostic libre du technicien (Prisma/stockage mockés) : audio
+/* Diagnostic libre du technicien (Prisma/stockage mockés) : audio
  * lié en transaction, source MANUAL préservée, permissions, texte source
- * intact. Aucun appel IA. */
+ * intact. */
 
 function collaboration(prisma: unknown) {
-  const diagnosisMatch = { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) };
-  return new CollaborationService(prisma as never, {} as never, diagnosisMatch as never, { evaluateManualQuote: vi.fn(async () => null) } as never);
+  return new CollaborationService(prisma as never, {} as never);
 }
 
 function demandeRow(overrides: Record<string, unknown> = {}) {

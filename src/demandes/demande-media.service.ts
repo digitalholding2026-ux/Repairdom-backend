@@ -111,7 +111,7 @@ export class DemandeMediaService {
     await this.storage.deleteDemandeObject(storagePath);
   }
 
-  /* IA-3 — note vocale du diagnostic libre : même bucket privé, mêmes
+  /* Note vocale du diagnostic libre : même bucket privé, mêmes
    * garanties (upload AVANT création, URLs signées, aucun accès tiers).
    * Préfixe `diagnostics/{userId}/…` (jamais de stockage parallèle). */
 

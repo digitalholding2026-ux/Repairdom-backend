@@ -129,6 +129,10 @@ export class PushService {
       icon: PUSH_ICON,
       badge: PUSH_ICON,
       tag: payload.tag,
+      // `force: true` (push de test) : le Service Worker affiche TOUJOURS
+      // (bypass anti-doublon SSE côté client). Absent sinon : l'anti-doublon
+      // reste actif pour tous les pushs métier.
+      ...(options.force ? { force: true } : {}),
       data: { url: payload.url, type: payload.type },
     });
     let sent = 0;

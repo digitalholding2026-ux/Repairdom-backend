@@ -14,7 +14,6 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { FinancialModule } from './financial/financial.module.js';
 import { DisputesModule } from './disputes/disputes.module.js';
 import { SasPayModule } from './saspay/saspay.module.js';
-import { AiModule } from './ai/ai.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { PushModule } from './push/push.module.js';
 
@@ -37,7 +36,6 @@ import { PushModule } from './push/push.module.js';
     FinancialModule,
     DisputesModule,
     SasPayModule,
-    AiModule,
     RealtimeModule,
     PushModule,
   ],

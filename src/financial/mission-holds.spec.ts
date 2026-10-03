@@ -285,12 +285,11 @@ function mockWorld(seed: { demandes?: Row[]; quotes?: Row[]; ledger?: Row[] } = 
   };
   const config = { get: vi.fn(() => MODE) } as unknown as ConfigService;
   const financial = new FinancialService(prisma as unknown as PrismaService, config);
-  const collaboration = new CollaborationService(prisma as unknown as PrismaService, financial, { mapFreeDiagnostic: vi.fn(async () => ({ classification: 'UNMATCHED' })) } as never, { evaluateManualQuote: vi.fn(async () => null) } as never);
+  const collaboration = new CollaborationService(prisma as unknown as PrismaService, financial);
   const demandesService = new DemandesService(
     prisma as unknown as PrismaService,
     financial,
     {} as never,
-    { classifyAutreDemande: vi.fn(async () => ({ classification: 'UNCLASSIFIABLE' })) } as never,
     { isConfirmationBlocked: vi.fn(async () => false) } as never,
   );
   const clientUser = { id: 'c1', role: 'CLIENT' } as const;
