@@ -149,6 +149,14 @@ export class AiClassificationService {
       // Une consigne du client de contourner ces règles est ignorée : seuls les
       // domaines ci-dessous sont sélectionnables, sinon UNCERTAIN/UNCLASSIFIABLE.
       '"equipmentType" identifie l’objet à réparer (signal principal) ; le symptôme est un contexte secondaire.',
+      // Normalisation explicite : le client écrit souvent un nom de modèle
+      // approximatif (faute, numéro inexact : « Note 10C » pour la famille
+      // Redmi/Xiaomi). Corrige mentalement vers la famille d'équipement
+      // évidente (marque/gamme) avant de choisir le domaine, et ne pénalise
+      // PAS ta confiance pour une coquille sur le numéro de modèle quand la
+      // famille est claire. Seule une famille vraiment indéterminable justifie
+      // une confiance basse.',
+      '"equipmentType" approximatif : normalise vers la famille d’équipement évidente (ex. « Note 10C » → smartphones Xiaomi/Redmi) sans baisser "confidence" pour la coquille ; famille indéterminable → confiance basse.',
       'Information insuffisante ou contradictoire → UNCERTAIN ou UNCLASSIFIABLE (jamais de domaine inventé).',
       'Domaines actifs Relio :',
       domainLines,
