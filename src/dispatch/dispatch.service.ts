@@ -22,6 +22,7 @@ import {
 } from '../mission-events/mission-events.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { TECHNICIAN_AVAILABLE_CHANNEL } from '../realtime/realtime.types.js';
+import { PushService } from '../push/push.service.js';
 
 /* Sprint DISPATCH-V1 — Dispatch intelligent (2 vagues max, STOP ensuite).
  *
@@ -208,6 +209,8 @@ export class DispatchService {
     private readonly email: EmailService,
     // Temps réel (socle SSE) : injection optionnelle (tests sans module).
     private readonly realtime?: RealtimeService,
+    // Push web (chantier #2B) : idem, `sendToUser()` ne lève jamais.
+    private readonly push?: PushService,
   ) {
     // Base des liens e-mail dispatch. En production, définir FRONTEND_URL
     // (jamais l'ancien domaine public).
@@ -415,6 +418,14 @@ export class DispatchService {
         this.realtime?.publishToUser(candidate.userId, 'notification.created', {
           demandeId,
           kind: 'MISSION_AVAILABLE',
+        });
+        // Push web : le technicien n'a pas forcément l'app ouverte.
+        void this.push?.sendToUser(candidate.userId, {
+          title: 'Nouvelle mission disponible près de vous',
+          body: `${labelForCategory(demande.category)} à ${demande.city} (réf. ${demande.reference})`,
+          tag: `mission-${demandeId}`,
+          url: '/technicien/demandes',
+          type: 'new_mission_available',
         });
       }
     }

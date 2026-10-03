@@ -71,6 +71,12 @@ export class RealtimeService implements OnModuleInit, OnModuleDestroy {
     return this.userSubscriptions.get(userId)?.size ?? 0;
   }
 
+  /** Anti-doublon push (chantier #2B) : vrai si l'utilisateur voit déjà
+   *  l'app (au moins une connexion SSE ouverte). */
+  hasActiveConnection(userId: string): boolean {
+    return (this.userSubscriptions.get(userId)?.size ?? 0) > 0;
+  }
+
   subscribe(
     userId: string,
     role: UserRole,

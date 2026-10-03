@@ -53,6 +53,7 @@ import {
   TECHNICIAN_AVAILABLE_CHANNEL,
   missionChannel,
 } from '../realtime/realtime.types.js';
+import { PushService } from '../push/push.service.js';
 
 // Correctif boucle circulaire DISPATCH-V1 : les prédicats géographiques
 // partagés vivent dans le module feuille `../geo/geo-eligibility.js` (aucune
@@ -126,6 +127,8 @@ export class TechnicianService {
     private readonly reviews: ReviewsService,
     // Temps réel (socle SSE) : injection optionnelle (tests sans module).
     private readonly realtime?: RealtimeService,
+    // Push web (chantier #2B) : idem, `sendToUser()` ne lève jamais.
+    private readonly push?: PushService,
   ) {}
 
   /** Contexte appareil (catalogue, Sprint 8.1) sur les demandes techniques :
@@ -974,6 +977,16 @@ export class TechnicianService {
         demandeId,
         kind: dto.status,
       });
+      // Push web : validation demandée au client (COMPLETED uniquement).
+      if (dto.status === 'COMPLETED') {
+        void this.push?.sendToUser(notifyClientId, {
+          title: 'Mission terminée, à valider',
+          body: 'Votre technicien a terminé. Validez la mission pour clôturer.',
+          tag: `completed-${demandeId}`,
+          url: `/client/demandes/${demandeId}`,
+          type: 'status_completed',
+        });
+      }
     }
 
     return toApiDemande(result);
@@ -1143,6 +1156,14 @@ export class TechnicianService {
         demandeId,
         kind: 'TECHNICIAN_EN_ROUTE',
       });
+      // Push web : le client n'a pas forcément l'app ouverte.
+      void this.push?.sendToUser(notifyClientId, {
+        title: 'Votre technicien est en route',
+        body: 'Suivez son arrivée depuis votre mission.',
+        tag: `en-route-${demandeId}`,
+        url: `/client/demandes/${demandeId}`,
+        type: 'technician_en_route',
+      });
     }
 
     return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
@@ -1251,6 +1272,8 @@ export class TechnicianService {
     if (latitude !== undefined || longitude !== undefined) {
       this.assertTravelCoordinates(latitude, longitude);
     }
+    // Capturé dans la transaction, diffusé après commit.
+    let arrivedClientId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await this.requireAssignedDemande(tx, userId, demandeId);
       if (!current.technicianEnRouteAt) {
@@ -1304,6 +1327,7 @@ export class TechnicianService {
         actorUserId: userId,
         fromStatus: current.status,
       });
+      arrivedClientId = current.clientId;
       return updated;
     });
 
@@ -1315,6 +1339,16 @@ export class TechnicianService {
       longitude: longitude ?? null,
       createdAt: new Date().toISOString(),
     });
+    if (arrivedClientId) {
+      // Push web : le client n'a pas forcément l'app ouverte.
+      void this.push?.sendToUser(arrivedClientId, {
+        title: 'Votre technicien est arrivé',
+        body: "Le technicien est arrivé sur le lieu de l'intervention.",
+        tag: `arrived-${demandeId}`,
+        url: `/client/demandes/${demandeId}`,
+        type: 'technician_arrived',
+      });
+    }
 
     return { ...toApiDemande(result), travel: toApiTravelTechnician(result) };
   }

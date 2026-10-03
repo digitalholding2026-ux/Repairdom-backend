@@ -33,6 +33,8 @@ import {
 } from '../mission-events/mission-events.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
+import { PushService } from '../push/push.service.js';
+import { formatFCFA } from '../common/format-fcfa.js';
 
 export const DEFAULT_QUOTE_CURRENCY = 'XAF';
 
@@ -78,6 +80,8 @@ export class CollaborationService {
     // Temps réel (socle SSE) : injection optionnelle (tests sans module) ;
     // `publish()` ne lève jamais, les appels restent fire-and-forget.
     private readonly realtime?: RealtimeService,
+    // Push web (chantier #2B) : idem, `sendToUser()` ne lève jamais.
+    private readonly push?: PushService,
   ) {}
 
   /* IA-5 — déclenche le mapping catalogue d'un diagnostic libre, SANS
@@ -541,6 +545,14 @@ export class CollaborationService {
       demandeId,
       kind: 'QUOTE_CREATED',
     });
+    // Push web (montant en FCFA) : uniquement si l'app est fermée (skip SSE).
+    void this.push?.sendToUser(demande.clientId, {
+      title: 'Nouveau devis reçu',
+      body: `Un devis de ${formatFCFA(quote.amount)} est disponible`,
+      tag: `quote-${demandeId}`,
+      url: `/client/demandes/${demandeId}`,
+      type: 'quote_created',
+    });
 
     // IA-6 — contrôle tarifaire du devis MANUAL (signal, jamais bloquant) :
     // best-effort après commit, erreurs silencieuses tracées côté service.
@@ -670,6 +682,17 @@ export class CollaborationService {
           kind: action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
         },
       );
+      // Push web : le technicien n'a pas forcément l'app ouverte.
+      void this.push?.sendToUser(demande.technicianId, {
+        title: action === 'accept' ? 'Votre devis a été accepté' : 'Votre devis a été refusé',
+        body:
+          action === 'accept'
+            ? `Le client a accepté votre devis de ${formatFCFA(updated.amount)}`
+            : 'Le client a refusé votre devis. Vous pouvez en proposer un nouveau.',
+        tag: `quote-${demandeId}`,
+        url: `/technicien/demandes/${demandeId}`,
+        type: action === 'accept' ? 'quote_accepted' : 'quote_rejected',
+      });
     }
 
     return this.toApiQuote(updated, user.role);

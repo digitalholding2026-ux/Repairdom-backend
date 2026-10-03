@@ -263,6 +263,27 @@ model User {
   withdrawalRequestsCreated WithdrawalRequest[] @relation("WithdrawalRequestCreator")
   fundsHolds FundsHold[] @relation("FundsHoldOwner")
   fundsHoldsCreated FundsHold[] @relation("FundsHoldCreator")
+  // Push web (chantier #2B) : abonnements navigateur de l'utilisateur
+  // (supprimés avec le compte, ON DELETE CASCADE).
+  pushSubscriptions PushSubscription[]
+}
+
+// Push web VAPID (chantier #2B, complément du SSE pour app fermée).
+// Upsert par `endpoint` (le navigateur réutilise le même endpoint par
+// installation). Aucune donnée métier, aucune PII au-delà de l'endpoint.
+model PushSubscription {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  deviceLabel String?
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+
+  @@index([userId])
 }
 
 // Sprint UX CLIENT — zones de service (villes) couvertes par RepairDom.

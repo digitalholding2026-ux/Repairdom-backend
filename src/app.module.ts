@@ -16,6 +16,7 @@ import { DisputesModule } from './disputes/disputes.module.js';
 import { SasPayModule } from './saspay/saspay.module.js';
 import { AiModule } from './ai/ai.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
+import { PushModule } from './push/push.module.js';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { RealtimeModule } from './realtime/realtime.module.js';
     SasPayModule,
     AiModule,
     RealtimeModule,
+    PushModule,
   ],
 })
 export class AppModule {}

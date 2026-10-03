@@ -5,11 +5,12 @@ import { TechnicianModule } from '../technician/technician.module.js';
 import { AiModule } from '../ai/ai.module.js';
 import { DisputesModule } from '../disputes/disputes.module.js';
 import { RealtimeModule } from '../realtime/realtime.module.js';
+import { PushModule } from '../push/push.module.js';
 import { CollaborationController } from './collaboration.controller.js';
 import { CollaborationService } from './collaboration.service.js';
 
 @Module({
-  imports: [AuthModule, FinancialModule, TechnicianModule, AiModule, DisputesModule, RealtimeModule],
+  imports: [AuthModule, FinancialModule, TechnicianModule, AiModule, DisputesModule, RealtimeModule, PushModule],
   controllers: [CollaborationController],
   providers: [CollaborationService],
 })
