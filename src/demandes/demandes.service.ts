@@ -90,11 +90,14 @@ export class DemandesService {
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
     // IA-4.1 — l'équipement déclaré (objet à réparer, pas la panne) est
-    // obligatoire quand la catégorie résolue vaut `autre` (condition sur la
-    // catégorie FINALE : un `domainId` catalogue fait sortir de `autre`).
+    // obligatoire quand la catégorie résolue vaut `autre` SANS ancrage
+    // catalogue : un `modelId` valide (vérifié dans `resolveDevice` :
+    // existant, actif, cohérent) identifie déjà l'appareil, même si la
+    // catégorie/problème reste `autre` (le client ne choisit jamais de
+    // diagnostic). Condition sur la catégorie FINALE + absence d'ancre.
     // Trim backend (jamais de confiance au frontend), aucune valeur inventée.
     const equipmentType = dto.equipmentType?.trim() ? dto.equipmentType.trim() : null;
-    if (device.category === 'autre' && !equipmentType) {
+    if (device.category === 'autre' && !device.modelId && !equipmentType) {
       throw new BadRequestException(
         "Indiquez l'appareil ou l'équipement à réparer (obligatoire pour « Autre »).",
       );

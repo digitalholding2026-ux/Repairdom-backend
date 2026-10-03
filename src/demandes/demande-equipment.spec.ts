@@ -47,6 +47,24 @@ function mockPrisma() {
     $transaction: vi.fn(async (cb: (t: unknown) => Promise<unknown>) => cb(tx)),
     serviceCity: { findMany: vi.fn(async () => []) },
     zone: { findMany: vi.fn(async () => []) },
+    // Catalogue fixé : domaine SANS catégorie métier (cas du bug prod),
+    // marque et modèle cohérents et actifs.
+    serviceDomain: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'd-1' ? { id: 'd-1', category: null, isActive: true } : null,
+      ),
+    },
+    deviceBrand: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'b-1' ? { id: 'b-1', domainId: 'd-1', isActive: true } : null,
+      ),
+    },
+    deviceModel: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id === 'm-1' ? { id: 'm-1', brandId: 'b-1', isActive: true } : null,
+      ),
+    },
+    problem: { findUnique: vi.fn(async () => null) },
   };
   const dispatch = { dispatchWave1: vi.fn(async () => undefined) };
   const classifyAutreDemande = vi.fn(async () => ({ classification: 'UNCLASSIFIABLE' }));
@@ -103,6 +121,20 @@ describe('DemandesService.create — obligation si Autre (catégorie résolue)',
     expect(result.equipmentType).toBeNull();
     // IA-4 non déclenchée hors Autre.
     expect(classifyAutreDemande).not.toHaveBeenCalled();
+  });
+
+  it('cas 5 (bug prod) : modèle catalogue + catégorie autre, sans équipement → 201', async () => {
+    // Parcours Appareil → Marque → Modèle sur un domaine SANS catégorie
+    // métier : le modelId valide identifie déjà l'appareil, l'équipement
+    // n'est pas exigé même si la catégorie résolue vaut 'autre'.
+    const { service, classifyAutreDemande, inputs } = mockPrisma();
+    const anchored = dto({ domainId: 'd-1', brandId: 'b-1', modelId: 'm-1' });
+    const result = await service.create('c-1', anchored as never);
+    expect((inputs[0] as Record<string, unknown>).modelId).toBe('m-1');
+    expect((inputs[0] as Record<string, unknown>).category).toBe('autre');
+    expect(result.equipmentType).toBeNull();
+    // IA-4 reste déclenchée sur catégorie 'autre' (inchangé, best-effort).
+    expect(classifyAutreDemande).toHaveBeenCalledTimes(1);
   });
 
   it.each([
