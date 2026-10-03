@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as webPush from 'web-push';
+import webPush from 'web-push';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import type { PushSendResult, PushSubscriptionInput } from './push.types.js';

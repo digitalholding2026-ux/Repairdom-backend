@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('web-push', () => ({
-  setVapidDetails: vi.fn(),
-  sendNotification: vi.fn(async () => undefined),
-}));
+vi.mock('web-push', () => {
+  const fns = {
+    setVapidDetails: vi.fn(),
+    sendNotification: vi.fn(async () => undefined),
+  };
+  return { ...fns, default: fns };
+});
 
 import * as webPush from 'web-push';
 import { PushController } from './push.controller.js';
