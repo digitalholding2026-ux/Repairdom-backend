@@ -36,14 +36,14 @@ CREATE INDEX "Demande_equipmentFamily_idx" ON "Demande"("equipmentFamily");
 -- (ce que Relio sait réellement dispatcher). Courte, administrable depuis
 -- le backoffice ; « UNKNOWN » (« Je ne sais pas ») mappe vers `autre` et
 -- reste identifiable (jamais un fourre-tout silencieux).
-INSERT INTO "EquipmentFamily" ("code", "label", "icon", "category", "sortOrder") VALUES
-  ('GAME_CONSOLE', 'Console / jeu vidéo', '🎮', 'electromenager', 10),
-  ('TV_ECRAN', 'Télévision / écran', '📺', 'electromenager', 20),
-  ('AUDIO_SON', 'Audio / sono', '🔊', 'electromenager', 30),
-  ('IMPRIMANTE', 'Imprimante / scanner', '🖨️', 'informatique', 40),
-  ('ENERGIE', 'Groupe électrogène / onduleur / solaire', '🔌', 'electricite', 50),
-  ('POMPE_EAU', 'Pompe à eau / forage', '💧', 'plomberie', 60),
-  ('VENTILATION', 'Ventilateur / brasseur d’air', '🌀', 'climatisation', 70),
-  ('COFFRE', 'Coffre-fort / serrure spéciale', '🔐', 'serrurerie', 80),
-  ('UNKNOWN', 'Je ne sais pas', '❓', 'autre', 100)
+INSERT INTO "EquipmentFamily" ("code", "label", "icon", "category", "sortOrder", "updatedAt") VALUES
+  ('GAME_CONSOLE', 'Console / jeu vidéo', '🎮', 'electromenager', 10, CURRENT_TIMESTAMP),
+  ('TV_ECRAN', 'Télévision / écran', '📺', 'electromenager', 20, CURRENT_TIMESTAMP),
+  ('AUDIO_SON', 'Audio / sono', '🔊', 'electromenager', 30, CURRENT_TIMESTAMP),
+  ('IMPRIMANTE', 'Imprimante / scanner', '🖨️', 'informatique', 40, CURRENT_TIMESTAMP),
+  ('ENERGIE', 'Groupe électrogène / onduleur / solaire', '🔌', 'electricite', 50, CURRENT_TIMESTAMP),
+  ('POMPE_EAU', 'Pompe à eau / forage', '💧', 'plomberie', 60, CURRENT_TIMESTAMP),
+  ('VENTILATION', 'Ventilateur / brasseur d’air', '🌀', 'climatisation', 70, CURRENT_TIMESTAMP),
+  ('COFFRE', 'Coffre-fort / serrure spéciale', '🔐', 'serrurerie', 80, CURRENT_TIMESTAMP),
+  ('UNKNOWN', 'Je ne sais pas', '❓', 'autre', 100, CURRENT_TIMESTAMP)
 ON CONFLICT ("code") DO NOTHING;
