@@ -126,6 +126,29 @@ describe('DemandesService.create — obligation si Autre (catégorie résolue)',
     expect(result.equipmentType).toBeNull();
   });
 
+  it('parcours simplifié : domaine sans marque → 400 (plus de dépôt sans marque)', async () => {
+    const { service, inputs } = mockPrisma();
+    await expect(service.create('c-1', dto({ domainId: 'd-1' }) as never)).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(inputs).toHaveLength(0);
+  });
+
+  it('parcours simplifié : domaine + marque réelle → 201 sans équipement ni modèle', async () => {
+    const { service, inputs } = mockPrisma();
+    const result = await service.create('c-1', dto({ domainId: 'd-1', brandId: 'b-1' }) as never);
+    expect((inputs[0] as Record<string, unknown>).brandId).toBe('b-1');
+    expect((inputs[0] as Record<string, unknown>).modelId).toBeNull();
+    expect(result.equipmentType).toBeNull();
+  });
+
+  it('marque inconnue ou inactive → 400', async () => {
+    const { service } = mockPrisma();
+    await expect(
+      service.create('c-1', dto({ domainId: 'd-1', brandId: 'b-unknown' }) as never),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
   it('dispatch en panne → demande créée quand même (non bloquant)', async () => {
     const { service } = mockPrisma();
     (service as unknown as { dispatch: { dispatchWave1: unknown } }).dispatch = {

@@ -77,11 +77,11 @@ export class DemandesService {
   async create(clientId: string, dto: CreateDemandeDto) {
     const medias = dto.medias ?? [];
     const description = dto.description?.trim() ? dto.description.trim() : null;
-    // Dépôt multimédia : sans texte, au moins un média valide est exigé
-    // (le technicien doit toujours pouvoir comprendre la panne).
+    // Dépôt de demande : une description textuelle OU au moins un média est
+    // exigé (le technicien doit toujours pouvoir comprendre la panne).
     if (!description && medias.length === 0) {
       throw new BadRequestException(
-        'Ajoutez un message vocal, une vidéo ou au moins une photo pour décrire votre problème.',
+        'Décrivez votre problème (10 caractères minimum) ou ajoutez un message vocal, une vidéo ou une photo.',
       );
     }
     const requestedMode = dto.requestedMode ?? 'ASAP';
@@ -89,13 +89,14 @@ export class DemandesService {
     const device = await this.resolveDevice(dto);
     // L'équipement déclaré (objet à réparer, pas la panne) est
     // obligatoire quand la catégorie résolue vaut `autre` SANS ancrage
-    // catalogue : un `modelId` valide (vérifié dans `resolveDevice` :
-    // existant, actif, cohérent) identifie déjà l'appareil, même si la
-    // catégorie/problème reste `autre` (le client ne choisit jamais de
-    // diagnostic). Condition sur la catégorie FINALE + absence d'ancre.
-    // Trim backend (jamais de confiance au frontend), aucune valeur inventée.
+    // catalogue : un `modelId` ou un `brandId` valide (vérifié dans
+    // `resolveDevice` : existant, actif, cohérent) identifie déjà
+    // l'appareil, même si la catégorie/problème reste `autre` (le client
+    // ne choisit jamais de diagnostic). Condition sur la catégorie FINALE
+    // + absence d'ancre. Trim backend (jamais de confiance au frontend),
+    // aucune valeur inventée.
     const equipmentType = dto.equipmentType?.trim() ? dto.equipmentType.trim() : null;
-    if (device.category === 'autre' && !device.modelId && !equipmentType) {
+    if (device.category === 'autre' && !device.modelId && !device.brandId && !equipmentType) {
       throw new BadRequestException(
         "Indiquez l'appareil ou l'équipement à réparer (obligatoire pour « Autre »).",
       );
@@ -257,6 +258,16 @@ export class DemandesService {
     if (domainId) {
       const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
       if (domain?.category) category = domain.category;
+    }
+
+    // Parcours client simplifié : avec un domaine du catalogue, une marque
+    // réellement enregistrée et active est obligatoire (plus d'option
+    // « toutes les marques », plus de dépôt sans marque). Sans domaine
+    // (appareil hors catalogue), l'équipement déclaré reste l'ancre.
+    if (domainId && !brandId) {
+      throw new BadRequestException(
+        'Sélectionnez une marque disponible pour cette catégorie.',
+      );
     }
 
     return { domainId, brandId, modelId, problemId, category };

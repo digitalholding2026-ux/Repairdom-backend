@@ -57,8 +57,12 @@ export class CreateDemandeDto {
   @IsIn(ALLOWED_CATEGORIES)
   categoryId: string;
 
-  /* Appareil (catalogue) — Sprint 8.1. Tout est optionnel pour la
-   * rétro-compatibilité : une demande « classique » sans appareil reste valide. */
+  /* Appareil (catalogue) — parcours client simplifié : catégorie
+   * (domaine) + marque réelle et active obligatoires côté service quand un
+   * domaine est fourni ; `modelId`/`problemId` restent acceptés pour
+   * compatibilité (anciens clients, flux technicien) mais ne sont plus
+   * demandés au client. Sans domaine (hors catalogue), `equipmentType`
+   * reste l'ancre. */
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -83,9 +87,9 @@ export class CreateDemandeDto {
   @MaxLength(80)
   problemId?: string;
 
-  /* Dépôt multimédia — description textuelle OPTIONNELLE : le client
-   * décrit sa panne par vocal/vidéo/photos (au moins un média exigé sans
-   * texte, voir `DemandesService.create`). Les textes historiques restent
+  /* Description libre du problème en langage naturel (parcours client :
+   * requise par le wizard, 10 caractères minimum). Le service exige une
+   * description OU au moins un média. Les textes historiques restent
    * valides (colonne conservée). */
   @IsOptional()
   @IsString()

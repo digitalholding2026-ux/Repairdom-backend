@@ -46,6 +46,50 @@ export class CatalogService {
    * de validation (jamais dupliquée côté frontend). */
   constructor(private readonly prisma: PrismaService) {}
 
+  /* Normalisation des slugs (anti-doublons casse/espaces) : minuscules,
+   * espaces/underscores → tirets, caractères non alphanumériques retirés,
+   * tirets multiples fusionnés. Idempotent sur les slugs déjà propres. Le
+   * nom d'affichage reste intact (trim seul) : seule la clé technique est
+   * normalisée. */
+  private normalizeSlug(raw: string): string {
+    const slug = raw
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    if (!slug) throw new BadRequestException('Slug invalide (lettres ou chiffres requis).');
+    return slug;
+  }
+
+  /* Garde anti-doublon sur le NOM (insensible casse/espaces) en complément
+   * de l'unicité du slug : « TECNO », « tecno » ou «  Tecno  » sont le même
+   * enregistrement dans un périmètre donné. */
+  private async assertUniqueName(
+    model: 'serviceDomain' | 'deviceBrand' | 'deviceModel' | 'problem',
+    scope: Record<string, unknown>,
+    name: string,
+    excludeId: string | null,
+    label: string,
+  ): Promise<void> {
+    const delegate = this.prisma[model] as unknown as {
+      findFirst: (args: unknown) => Promise<{ name?: string } | null>;
+    };
+    const existing = await delegate.findFirst({
+      where: {
+        ...scope,
+        name: { equals: name.trim(), mode: 'insensitive' },
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        `${label} existe déjà : « ${name.trim()} » (vérifiez la casse et les espaces).`,
+      );
+    }
+  }
+
   /* ── ServiceDomain ──────────────────────────────────────────── */
 
   async listDomains() {
@@ -80,9 +124,10 @@ export class CatalogService {
   }
 
   async createDomain(dto: CreateDomainDto) {
-    const slug = dto.slug.trim().toLowerCase();
+    const slug = this.normalizeSlug(dto.slug);
     const existing = await this.prisma.serviceDomain.findUnique({ where: { slug } });
     if (existing) throw new BadRequestException('Ce slug existe déjà.');
+    await this.assertUniqueName('serviceDomain', {}, dto.name, null, 'Cette catégorie');
     return this.prisma.serviceDomain.create({
       data: {
         name: dto.name.trim(),
@@ -98,11 +143,14 @@ export class CatalogService {
     const domain = await this.prisma.serviceDomain.findUnique({ where: { id } });
     if (!domain) throw new NotFoundException('Domaine introuvable.');
     if (dto.slug) {
-      const slug = dto.slug.trim().toLowerCase();
+      const slug = this.normalizeSlug(dto.slug);
       const conflict = await this.prisma.serviceDomain.findFirst({
         where: { slug, NOT: { id } },
       });
       if (conflict) throw new BadRequestException('Ce slug existe déjà.');
+    }
+    if (dto.name !== undefined) {
+      await this.assertUniqueName('serviceDomain', {}, dto.name, id, 'Cette catégorie');
     }
     return this.prisma.serviceDomain.update({
       where: { id },
@@ -148,11 +196,18 @@ export class CatalogService {
   async createBrand(dto: CreateBrandDto) {
     const domain = await this.prisma.serviceDomain.findUnique({ where: { id: dto.domainId } });
     if (!domain) throw new NotFoundException('Domaine introuvable.');
-    const slug = dto.slug.trim().toLowerCase();
+    const slug = this.normalizeSlug(dto.slug);
     const existing = await this.prisma.deviceBrand.findFirst({
       where: { domainId: dto.domainId, slug },
     });
     if (existing) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
+    await this.assertUniqueName(
+      'deviceBrand',
+      { domainId: dto.domainId },
+      dto.name,
+      null,
+      'Cette marque',
+    );
     return this.prisma.deviceBrand.create({
       data: {
         domainId: dto.domainId,
@@ -167,17 +222,26 @@ export class CatalogService {
     const brand = await this.prisma.deviceBrand.findUnique({ where: { id } });
     if (!brand) throw new NotFoundException('Marque introuvable.');
     if (dto.slug) {
-      const slug = dto.slug.trim().toLowerCase();
+      const slug = this.normalizeSlug(dto.slug);
       const conflict = await this.prisma.deviceBrand.findFirst({
         where: { domainId: brand.domainId, slug, NOT: { id } },
       });
       if (conflict) throw new BadRequestException('Ce slug existe déjà pour ce domaine.');
     }
+    if (dto.name !== undefined) {
+      await this.assertUniqueName(
+        'deviceBrand',
+        { domainId: brand.domainId },
+        dto.name,
+        id,
+        'Cette marque',
+      );
+    }
     return this.prisma.deviceBrand.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.slug !== undefined ? { slug: this.normalizeSlug(dto.slug) } : {}),
         ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
@@ -209,11 +273,18 @@ export class CatalogService {
   async createModel(dto: CreateModelDto) {
     const brand = await this.prisma.deviceBrand.findUnique({ where: { id: dto.brandId } });
     if (!brand) throw new NotFoundException('Marque introuvable.');
-    const slug = dto.slug.trim().toLowerCase();
+    const slug = this.normalizeSlug(dto.slug);
     const existing = await this.prisma.deviceModel.findFirst({
       where: { brandId: dto.brandId, slug },
     });
     if (existing) throw new BadRequestException('Ce slug existe déjà pour cette marque.');
+    await this.assertUniqueName(
+      'deviceModel',
+      { brandId: dto.brandId },
+      dto.name,
+      null,
+      'Ce modèle',
+    );
     return this.prisma.deviceModel.create({
       data: {
         brandId: dto.brandId,
@@ -228,17 +299,26 @@ export class CatalogService {
     const model = await this.prisma.deviceModel.findUnique({ where: { id } });
     if (!model) throw new NotFoundException('Modèle introuvable.');
     if (dto.slug) {
-      const slug = dto.slug.trim().toLowerCase();
+      const slug = this.normalizeSlug(dto.slug);
       const conflict = await this.prisma.deviceModel.findFirst({
         where: { brandId: model.brandId, slug, NOT: { id } },
       });
       if (conflict) throw new BadRequestException('Ce slug existe déjà pour cette marque.');
     }
+    if (dto.name !== undefined) {
+      await this.assertUniqueName(
+        'deviceModel',
+        { brandId: model.brandId },
+        dto.name,
+        id,
+        'Ce modèle',
+      );
+    }
     return this.prisma.deviceModel.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.slug !== undefined ? { slug: this.normalizeSlug(dto.slug) } : {}),
         ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
@@ -394,7 +474,7 @@ export class CatalogService {
       dto.brandId ?? undefined,
       dto.modelId ?? undefined,
     );
-    const slug = dto.slug.trim().toLowerCase();
+    const slug = this.normalizeSlug(dto.slug);
     // Sprint 8.6.5 — unicité scopée par (domaine, marque, modèle, slug) :
     // deux problèmes de même libellé sur des modèles différents sont autorisés
     // uniquement s'ils ont des scopes différents. Le scope est exactement
@@ -412,6 +492,13 @@ export class CatalogService {
         'Ce slug existe déjà pour ce périmètre (même domaine, marque et modèle).',
       );
     }
+    await this.assertUniqueName(
+      'problem',
+      { domainId: dto.domainId, brandId: dto.brandId ?? null, modelId: dto.modelId ?? null },
+      dto.name,
+      null,
+      'Cette catégorie',
+    );
     return this.prisma.problem.create({
       data: {
         domainId: dto.domainId,
@@ -437,7 +524,7 @@ export class CatalogService {
       );
     }
     if (dto.slug) {
-      const slug = dto.slug.trim().toLowerCase();
+      const slug = this.normalizeSlug(dto.slug);
       // Sprint 8.6.5 — l'unicité du slug est évaluée sur le scope EFFECTIF du
       // problème après mise à jour (domaine + marque + modèle + slug).
       const effectiveBrandId = dto.brandId === undefined ? problem.brandId : (dto.brandId ?? null);
@@ -457,11 +544,22 @@ export class CatalogService {
         );
       }
     }
+    if (dto.name !== undefined) {
+      const effectiveBrandId = dto.brandId === undefined ? problem.brandId : (dto.brandId ?? null);
+      const effectiveModelId = dto.modelId === undefined ? problem.modelId : (dto.modelId ?? null);
+      await this.assertUniqueName(
+        'problem',
+        { domainId: problem.domainId, brandId: effectiveBrandId, modelId: effectiveModelId },
+        dto.name,
+        id,
+        'Cette catégorie',
+      );
+    }
     return this.prisma.problem.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.slug !== undefined ? { slug: dto.slug.trim().toLowerCase() } : {}),
+        ...(dto.slug !== undefined ? { slug: this.normalizeSlug(dto.slug) } : {}),
         ...(dto.description !== undefined ? { description: dto.description?.trim() || null } : {}),
         ...(dto.brandId !== undefined ? { brandId: dto.brandId ?? null } : {}),
         ...(dto.modelId !== undefined ? { modelId: dto.modelId ?? null } : {}),
