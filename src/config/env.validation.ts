@@ -126,6 +126,25 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   SASPAY_PAYOUT_RELAY_SECRET?: string;
+
+  // Agent IA Backoffice (lecture seule, à la demande) : UNIQUEMENT ces 3
+  // variables. Toutes optionnelles : sans GROQ_API_KEY l'agent se déclare
+  // indisponible et aucun comportement métier ne change. Clé backend
+  // uniquement, jamais committée, jamais exposée au frontend.
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  GROQ_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  GROQ_BASE_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  GROQ_MODEL?: string;
 }
 
 export function validate(config: Record<string, unknown>): EnvironmentVariables {
@@ -161,6 +180,21 @@ export function validate(config: Record<string, unknown>): EnvironmentVariables 
     }
     if (parsed.protocol !== 'https:' || !parsed.hostname) {
       throw new Error('SUPABASE_URL must be a valid https URL (https://<ref>.supabase.co).');
+    }
+  }
+
+  // GROQ_BASE_URL renseignée : https exigée (jamais de clé en clair
+  // sur HTTP). La clé elle-même n'est jamais affichée dans les erreurs.
+  const rawGroqUrl = (validatedConfig.GROQ_BASE_URL ?? '').trim().replace(/\/+$/, '');
+  if (rawGroqUrl.length > 0) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawGroqUrl);
+    } catch {
+      throw new Error('GROQ_BASE_URL must be a valid URL.');
+    }
+    if (parsed.protocol !== 'https:' || !parsed.hostname) {
+      throw new Error('GROQ_BASE_URL must be a valid https URL.');
     }
   }
 
