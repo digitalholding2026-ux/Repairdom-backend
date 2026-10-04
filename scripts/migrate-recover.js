@@ -11,10 +11,19 @@
  * 3. Marks the migration as applied via prisma migrate resolve --applied
  */
 
-import { PrismaClient } from '../../src/generated/prisma/client.js';
-import { execSync } from 'child_process';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
+import { execSync } from 'node:child_process';
+import { PrismaClient } from '../dist/generated/prisma/client.js';
 
-const prisma = new PrismaClient();
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error('DATABASE_URL is required to run the migration recovery script.');
+}
+
+const pool = new Pool({ connectionString: databaseUrl });
+const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
 const TARGET_MIGRATION = '20261009010000_equipment_families';
 
