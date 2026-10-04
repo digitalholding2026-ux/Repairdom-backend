@@ -6,8 +6,8 @@ import { CreateDemandeDto } from './dto/create-demande.dto.js';
 import { DemandesService } from './demandes.service.js';
 import { toApiDemande } from './demande-helpers.js';
 
-/* Équipement déclaré obligatoire si « Autre » (champ métier conservé).
- * Prisma simulé, aucun réseau. */
+/* Parcours « Autre appareil » — indice structuré (code de famille) exigé
+ * quand il n'y a pas de domaine catalogue. Prisma simulé, aucun réseau. */
 
 function dto(overrides: Record<string, unknown> = {}) {
   return plainToInstance(CreateDemandeDto, {
@@ -17,6 +17,12 @@ function dto(overrides: Record<string, unknown> = {}) {
     ...overrides,
   });
 }
+
+const FAMILIES: Record<string, { code: string; category: string; isActive: boolean }> = {
+  GAME_CONSOLE: { code: 'GAME_CONSOLE', category: 'electromenager', isActive: true },
+  UNKNOWN: { code: 'UNKNOWN', category: 'autre', isActive: true },
+  OFF: { code: 'OFF', category: 'autre', isActive: false },
+};
 
 function mockPrisma() {
   const inputs: unknown[] = [];
@@ -45,7 +51,7 @@ function mockPrisma() {
     $transaction: vi.fn(async (cb: (t: unknown) => Promise<unknown>) => cb(tx)),
     serviceCity: { findMany: vi.fn(async () => []) },
     zone: { findMany: vi.fn(async () => []) },
-    // Catalogue fixé : domaine SANS catégorie métier (cas du bug prod),
+    // Catalogue fixé : domaine SANS catégorie métier,
     // marque et modèle cohérents et actifs.
     serviceDomain: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
@@ -63,6 +69,9 @@ function mockPrisma() {
       ),
     },
     problem: { findUnique: vi.fn(async () => null) },
+    equipmentFamily: {
+      findUnique: vi.fn(async ({ where }: { where: { code: string } }) => FAMILIES[where.code] ?? null),
+    },
   };
   const dispatch = { dispatchWave1: vi.fn(async () => undefined) };
   const service = new DemandesService(
@@ -74,59 +83,65 @@ function mockPrisma() {
   return { service, inputs, dispatch };
 }
 
-describe('DTO — equipmentType borné, optionnel au niveau champ', () => {
-  it('cas 7 : >120 caractères refusé', async () => {
-    expect(await validate(dto({ equipmentType: 'x'.repeat(121) }))).not.toEqual([]);
+describe('DTO — equipmentFamily borné (code structuré)', () => {
+  it('>40 caractères refusé', async () => {
+    expect(await validate(dto({ equipmentFamily: 'X'.repeat(41) }))).not.toEqual([]);
   });
 
-  it('120 caractères accepté, absent accepté (le service tranche selon Autre)', async () => {
-    expect(await validate(dto({ equipmentType: 'x'.repeat(120) }))).toEqual([]);
+  it('code valide accepté, absent accepté (le service tranche selon Autre)', async () => {
+    expect(await validate(dto({ equipmentFamily: 'GAME_CONSOLE' }))).toEqual([]);
     expect(await validate(dto())).toEqual([]);
   });
 });
 
-describe('DemandesService.create — obligation si Autre (catégorie résolue)', () => {
-  it('cas 3 : Autre sans équipement → 400, rien de persisté', async () => {
+describe('DemandesService.create — indice structuré si Autre sans domaine', () => {
+  it('Autre sans indice → 400, rien de persisté', async () => {
     const { service, inputs } = mockPrisma();
     await expect(service.create('c-1', dto() as never)).rejects.toMatchObject({ status: 400 });
     expect(inputs).toHaveLength(0);
   });
 
-  it('cas 3 : Autre + équipement vide/espaces → 400', async () => {
+  it('Autre + indice inconnu ou inactif → 400', async () => {
     const { service } = mockPrisma();
-    await expect(service.create('c-1', dto({ equipmentType: '   ' }) as never)).rejects.toMatchObject({
-      status: 400,
-    });
+    await expect(
+      service.create('c-1', dto({ equipmentFamily: 'NOPE' }) as never),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      service.create('c-1', dto({ equipmentFamily: 'OFF' }) as never),
+    ).rejects.toMatchObject({ status: 400 });
   });
 
-  it('cas 1/2 : Autre + équipement → stocké trimmé', async () => {
+  it('Autre + GAME_CONSOLE → catégorie electromenager, code stocké, texte null', async () => {
     const { service, inputs } = mockPrisma();
-    const result = await service.create('c-1', dto({ equipmentType: '  réfrigérateur  ' }) as never);
-    expect((inputs[0] as Record<string, unknown>).equipmentType).toBe('réfrigérateur');
-    expect(result.equipmentType).toBe('réfrigérateur');
-  });
-
-  it('cas 4 : domaine normal sans équipement → inchangé, stocké null', async () => {
-    const { service, inputs } = mockPrisma();
-    const normal = dto({ categoryId: 'plomberie' });
-    const result = await service.create('c-1', normal as never);
+    const result = await service.create('c-1', dto({ equipmentFamily: 'GAME_CONSOLE' }) as never);
+    expect((inputs[0] as Record<string, unknown>).equipmentFamily).toBe('GAME_CONSOLE');
+    expect((inputs[0] as Record<string, unknown>).category).toBe('electromenager');
     expect((inputs[0] as Record<string, unknown>).equipmentType).toBeNull();
-    expect(result.equipmentType).toBeNull();
+    expect(result.equipmentFamily).toBe('GAME_CONSOLE');
   });
 
-  it('cas 5 (bug prod) : modèle catalogue + catégorie autre, sans équipement → 201', async () => {
-    // Parcours Appareil → Marque → Modèle sur un domaine SANS catégorie
-    // métier : le modelId valide identifie déjà l'appareil, l'équipement
-    // n'est pas exigé même si la catégorie résolue vaut 'autre'.
+  it('code en minuscules → normalisé en majuscules', async () => {
     const { service, inputs } = mockPrisma();
-    const anchored = dto({ domainId: 'd-1', brandId: 'b-1', modelId: 'm-1' });
-    const result = await service.create('c-1', anchored as never);
-    expect((inputs[0] as Record<string, unknown>).modelId).toBe('m-1');
-    expect((inputs[0] as Record<string, unknown>).category).toBe('autre');
-    expect(result.equipmentType).toBeNull();
+    await service.create('c-1', dto({ equipmentFamily: '  game_console ' }) as never);
+    expect((inputs[0] as Record<string, unknown>).equipmentFamily).toBe('GAME_CONSOLE');
   });
 
-  it('parcours simplifié : domaine sans marque → 400 (plus de dépôt sans marque)', async () => {
+  it('UNKNOWN (« Je ne sais pas ») → catégorie autre, identifiable', async () => {
+    const { service, inputs } = mockPrisma();
+    const result = await service.create('c-1', dto({ equipmentFamily: 'UNKNOWN' }) as never);
+    expect((inputs[0] as Record<string, unknown>).equipmentFamily).toBe('UNKNOWN');
+    expect((inputs[0] as Record<string, unknown>).category).toBe('autre');
+    expect(result.categoryId).toBe('autre');
+  });
+
+  it('domaine + indice → 400 (incohérent : catalogue OU indice)', async () => {
+    const { service } = mockPrisma();
+    await expect(
+      service.create('c-1', dto({ domainId: 'd-1', brandId: 'b-1', equipmentFamily: 'GAME_CONSOLE' }) as never),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('domaine sans marque → 400 (plus de dépôt sans marque)', async () => {
     const { service, inputs } = mockPrisma();
     await expect(service.create('c-1', dto({ domainId: 'd-1' }) as never)).rejects.toMatchObject({
       status: 400,
@@ -134,19 +149,20 @@ describe('DemandesService.create — obligation si Autre (catégorie résolue)',
     expect(inputs).toHaveLength(0);
   });
 
-  it('parcours simplifié : domaine + marque réelle → 201 sans équipement ni modèle', async () => {
+  it('domaine + marque réelle → 201 sans indice ni modèle', async () => {
     const { service, inputs } = mockPrisma();
     const result = await service.create('c-1', dto({ domainId: 'd-1', brandId: 'b-1' }) as never);
     expect((inputs[0] as Record<string, unknown>).brandId).toBe('b-1');
     expect((inputs[0] as Record<string, unknown>).modelId).toBeNull();
-    expect(result.equipmentType).toBeNull();
+    expect(result.equipmentFamily).toBeNull();
   });
 
-  it('marque inconnue ou inactive → 400', async () => {
-    const { service } = mockPrisma();
-    await expect(
-      service.create('c-1', dto({ domainId: 'd-1', brandId: 'b-unknown' }) as never),
-    ).rejects.toMatchObject({ status: 400 });
+  it('domaine normal non-autre sans indice → inchangé', async () => {
+    const { service, inputs } = mockPrisma();
+    const normal = dto({ categoryId: 'plomberie' });
+    const result = await service.create('c-1', normal as never);
+    expect((inputs[0] as Record<string, unknown>).equipmentFamily).toBeNull();
+    expect(result.equipmentFamily).toBeNull();
   });
 
   it('dispatch en panne → demande créée quand même (non bloquant)', async () => {
@@ -154,19 +170,19 @@ describe('DemandesService.create — obligation si Autre (catégorie résolue)',
     (service as unknown as { dispatch: { dispatchWave1: unknown } }).dispatch = {
       dispatchWave1: vi.fn(async () => Promise.reject(new Error('dispatch down'))),
     };
-    const result = await service.create('c-1', dto({ equipmentType: 'climatiseur' }) as never);
+    const result = await service.create('c-1', dto({ equipmentFamily: 'GAME_CONSOLE' }) as never);
     expect(result.id).toBe('d-1');
   });
 });
 
-describe('toApiDemande — équipement exposé tel quel (jamais un diagnostic)', () => {
-  it('renvoie la valeur client, null en historique', () => {
+describe('toApiDemande — indice exposé, texte historique conservé', () => {
+  it('renvoie le code famille, null sinon', () => {
     const record = {
       id: 'd-1',
       reference: 'RD-1',
       status: 'SUBMITTED',
-      category: 'autre',
-      description: null,
+      category: 'electromenager',
+      description: 'La console ne démarre plus.',
       city: 'Douala',
       cityId: null,
       zoneId: null,
@@ -190,9 +206,12 @@ describe('toApiDemande — équipement exposé tel quel (jamais un diagnostic)',
       finalAmount: null,
       medias: [],
     };
+    expect(toApiDemande({ ...record, equipmentFamily: 'GAME_CONSOLE' }).equipmentFamily).toBe(
+      'GAME_CONSOLE',
+    );
+    expect(toApiDemande(record).equipmentFamily).toBeNull();
     expect(toApiDemande({ ...record, equipmentType: 'Portail électrique' }).equipmentType).toBe(
       'Portail électrique',
     );
-    expect(toApiDemande(record).equipmentType).toBeNull();
   });
 });

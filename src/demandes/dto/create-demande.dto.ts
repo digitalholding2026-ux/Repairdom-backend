@@ -61,8 +61,8 @@ export class CreateDemandeDto {
    * (domaine) + marque réelle et active obligatoires côté service quand un
    * domaine est fourni ; `modelId`/`problemId` restent acceptés pour
    * compatibilité (anciens clients, flux technicien) mais ne sont plus
-   * demandés au client. Sans domaine (hors catalogue), `equipmentType`
-   * reste l'ancre. */
+   * demandés au client. Sans domaine (hors catalogue), `equipmentFamily`
+   * (indice structuré) est exigé quand la catégorie vaut `autre`. */
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -97,14 +97,15 @@ export class CreateDemandeDto {
   @MaxLength(1000)
   description?: string;
 
-  /* Équipement déclaré par le client en texte libre (« réfrigérateur »,
-   * jamais un diagnostic catalogue). Optionnel au niveau DTO, mais le service
-   * l'exige (après trim) quand la catégorie résolue vaut `autre`. Longueur
-   * alignée sur `city`/`neighborhood` (120) : un nom d'appareil, pas un récit. */
+  /* Parcours « Autre appareil » — indice structuré (code de famille, ex.
+   * GAME_CONSOLE, UNKNOWN) choisi dans la liste du catalogue. Exigé par le
+   * service quand il n'y a pas de domaine et que la catégorie vaut `autre` ;
+   * la famille doit exister et être active (jamais de valeur arbitraire).
+   * Remplace le texte libre historique pour les nouvelles demandes. */
   @IsOptional()
   @IsString()
-  @MaxLength(120)
-  equipmentType?: string;
+  @MaxLength(40)
+  equipmentFamily?: string;
 
   @IsString()
   @IsNotEmpty()

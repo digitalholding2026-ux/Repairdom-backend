@@ -1,9 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ALLOWED_CATEGORIES } from '../demandes/categories.js';
 import { toAdminPricing } from './pricing-visibility.js';
 import type {
   CreateDomainDto,
   UpdateDomainDto,
+  CreateFamilyDto,
+  UpdateFamilyDto,
   CreateProblemDto,
   UpdateProblemDto,
   CreateDiagnosticDto,
@@ -326,6 +329,106 @@ export class CatalogService {
     });
   }
 
+  /* ── EquipmentFamily (parcours « Autre appareil ») ──────────── */
+  /* Source de vérité unique des indices structurés. `code` stable et
+   * unique (jamais affiché comme diagnostic, jamais renommé côté client) ;
+   * `category` = catégorie métier de dispatch (une demande avec cette
+   * famille est dispatchée comme cette catégorie, matching inchangé). */
+
+  private normalizeFamilyCode(raw: string): string {
+    const code = raw.trim().toUpperCase().replace(/[\s-]+/g, '_').replace(/[^A-Z0-9_]/g, '');
+    if (!code) throw new BadRequestException('Code invalide (lettres ou chiffres requis).');
+    return code;
+  }
+
+  private assertFamilyCategory(category: string): void {
+    if (!(ALLOWED_CATEGORIES as readonly string[]).includes(category)) {
+      throw new BadRequestException('Catégorie de dispatch invalide.');
+    }
+  }
+
+  async listFamilies() {
+    return this.prisma.equipmentFamily.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+    });
+  }
+
+  async getFamily(id: string) {
+    const family = await this.prisma.equipmentFamily.findUnique({ where: { id } });
+    if (!family) throw new NotFoundException('Famille introuvable.');
+    const demandes = await this.prisma.demande.count({ where: { equipmentFamily: family.code } });
+    return { ...family, demandeCount: demandes };
+  }
+
+  async createFamily(dto: CreateFamilyDto) {
+    const code = this.normalizeFamilyCode(dto.code);
+    this.assertFamilyCategory(dto.category);
+    const existing = await this.prisma.equipmentFamily.findUnique({ where: { code } });
+    if (existing) throw new BadRequestException('Ce code existe déjà.');
+    const homonym = await this.prisma.equipmentFamily.findFirst({
+      where: { label: { equals: dto.label.trim(), mode: 'insensitive' } },
+    });
+    if (homonym) {
+      throw new BadRequestException(
+        `Cette famille existe déjà : « ${dto.label.trim()} » (vérifiez la casse et les espaces).`,
+      );
+    }
+    return this.prisma.equipmentFamily.create({
+      data: {
+        code,
+        label: dto.label.trim(),
+        icon: dto.icon?.trim() || null,
+        category: dto.category,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+  }
+
+  async updateFamily(id: string, dto: UpdateFamilyDto) {
+    const family = await this.prisma.equipmentFamily.findUnique({ where: { id } });
+    if (!family) throw new NotFoundException('Famille introuvable.');
+    if (dto.category !== undefined) this.assertFamilyCategory(dto.category);
+    if (dto.label !== undefined) {
+      const homonym = await this.prisma.equipmentFamily.findFirst({
+        where: { label: { equals: dto.label.trim(), mode: 'insensitive' }, NOT: { id } },
+      });
+      if (homonym) {
+        throw new BadRequestException(
+          `Cette famille existe déjà : « ${dto.label.trim()} » (vérifiez la casse et les espaces).`,
+        );
+      }
+    }
+    return this.prisma.equipmentFamily.update({
+      where: { id },
+      data: {
+        ...(dto.label !== undefined ? { label: dto.label.trim() } : {}),
+        ...(dto.icon !== undefined ? { icon: dto.icon?.trim() || null } : {}),
+        ...(dto.category !== undefined ? { category: dto.category } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+      },
+    });
+  }
+
+  async deleteFamily(id: string) {
+    return this.deleteOrDeactivate({
+      kind: 'family',
+      id,
+      notFoundMessage: 'Famille introuvable.',
+      find: () => this.prisma.equipmentFamily.findUnique({ where: { id } }),
+      countBlockers: async () => {
+        const family = await this.prisma.equipmentFamily.findUnique({ where: { id } });
+        return {
+          demandes: family
+            ? await this.prisma.demande.count({ where: { equipmentFamily: family.code } })
+            : 0,
+        };
+      },
+      hardDelete: () => this.prisma.equipmentFamily.delete({ where: { id } }),
+      deactivate: () => this.prisma.equipmentFamily.update({ where: { id }, data: { isActive: false } }),
+    });
+  }
+
   /* ── Catalogue public (client/technicien) ────────────────────── */
 
   /* Endpoints publics : uniquement les éléments actifs et aucune donnée
@@ -354,7 +457,9 @@ export class CatalogService {
     });
     if (!domain) throw new NotFoundException('Domaine introuvable.');
     return this.prisma.deviceBrand.findMany({
-      where: { domainId, isActive: true },
+      // L'ancienne marque fourre-tout « autres » (seed historique) n'est
+      // jamais proposée au client : seules les vraies marques le sont.
+      where: { domainId, isActive: true, slug: { not: 'autres' } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       select: {
         id: true,
@@ -374,6 +479,16 @@ export class CatalogService {
       where: { brandId, isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       select: { id: true, name: true, slug: true },
+    });
+  }
+
+  /* Familles d'équipements du parcours « Autre appareil » : uniquement les
+   * actives, triées (le fourre-tout « Je ne sais pas » en dernier). */
+  async listPublicFamilies() {
+    return this.prisma.equipmentFamily.findMany({
+      where: { isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+      select: { code: true, label: true, icon: true },
     });
   }
 

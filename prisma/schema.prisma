@@ -368,6 +368,12 @@ model Demande {
   // catalogue connus. Signal principal d'IA-4, affiché au technicien comme
   // information client (jamais un diagnostic).
   equipmentType String?
+  // Parcours « Autre appareil » : indice structuré choisi par le client
+  // (code de famille, ex. GAME_CONSOLE, UNKNOWN). Remplace le texte libre
+  // pour les nouvelles demandes : le dispatch utilise `category` (dérivée
+  // de la famille, voir EquipmentFamily.category) via le matching existant.
+  // `equipmentType` (texte libre) est conservé pour l'historique uniquement.
+  equipmentFamily String?
   // Sprint 8.7 — `city` reste le snapshot texte historique de la mission
   // (JAMAIS supprimé ni rendu optionnel) ; `cityId` est une référence
   // optionnelle vers ServiceCity. Un ON DELETE SET NULL garantit qu'une ville
@@ -457,6 +463,7 @@ model Demande {
   @@index([brandId])
   @@index([modelId])
   @@index([problemId])
+  @@index([equipmentFamily])
 }
 
 model DemandeEvent {
@@ -993,6 +1000,28 @@ model DemandeDispute {
 }
 
 /* ── Catalogue RepairDom ────────────────────────────────────────── */
+
+// Familles d'équipements du parcours « Autre appareil » — source de vérité
+// unique des indices structurés (familles compréhensibles + « Je ne sais
+// pas »). Chaque famille pointe vers UNE catégorie métier de dispatch
+// (ALLOWED_CATEGORIES) : une demande avec cette famille est dispatchée
+// comme cette catégorie, via le matching existant (aucune IA, aucune
+// logique parallèle). Gérée par l'admin (CRUD catalogue) ; `code` stable,
+// `label` affichable, désactivation sans suppression d'historique (les
+// demandes gardent leur code en texte).
+model EquipmentFamily {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  code      String   @unique
+  label     String
+  icon      String?
+  category  String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+}
 
 model ServiceDomain {
   id          String   @id @default(dbgenerated("gen_random_uuid()"))

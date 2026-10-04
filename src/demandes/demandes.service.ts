@@ -87,19 +87,30 @@ export class DemandesService {
     const requestedMode = dto.requestedMode ?? 'ASAP';
     const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
     const device = await this.resolveDevice(dto);
-    // L'équipement déclaré (objet à réparer, pas la panne) est
-    // obligatoire quand la catégorie résolue vaut `autre` SANS ancrage
-    // catalogue : un `modelId` ou un `brandId` valide (vérifié dans
-    // `resolveDevice` : existant, actif, cohérent) identifie déjà
-    // l'appareil, même si la catégorie/problème reste `autre` (le client
-    // ne choisit jamais de diagnostic). Condition sur la catégorie FINALE
-    // + absence d'ancre. Trim backend (jamais de confiance au frontend),
-    // aucune valeur inventée.
-    const equipmentType = dto.equipmentType?.trim() ? dto.equipmentType.trim() : null;
-    if (device.category === 'autre' && !device.modelId && !device.brandId && !equipmentType) {
+    // Parcours « Autre appareil » : indice structuré obligatoire quand il n'y
+    // a pas de domaine catalogue et que la catégorie vaut `autre`. La famille
+    // doit exister et être active ; sa catégorie métier devient la catégorie
+    // de la demande (dispatch via le matching existant, sans IA). Le texte
+    // libre historique (`equipmentType`) n'est plus accepté en création.
+    let equipmentFamily: string | null = null;
+    const familyCode = dto.equipmentFamily?.trim() ? dto.equipmentFamily.trim().toUpperCase() : null;
+    if (device.domainId && familyCode) {
       throw new BadRequestException(
-        "Indiquez l'appareil ou l'équipement à réparer (obligatoire pour « Autre »).",
+        'Un indice d’équipement ne s’applique qu’aux demandes hors catalogue.',
       );
+    }
+    if (!device.domainId && (device.category === 'autre' || familyCode)) {
+      if (!familyCode) {
+        throw new BadRequestException(
+          'Sélectionnez le type d’appareil qui correspond le mieux à votre situation.',
+        );
+      }
+      const family = await this.prisma.equipmentFamily.findUnique({ where: { code: familyCode } });
+      if (!family || !family.isActive) {
+        throw new BadRequestException('Type d’appareil indisponible.');
+      }
+      equipmentFamily = family.code;
+      device.category = family.category;
     }
     // Sprint 8.8.2 (règles D + E) — rattachement géographique structuré,
     // résolu AVANT la transaction : ville non bloquante + validation zone.
@@ -114,7 +125,8 @@ export class DemandesService {
               reference,
               category: device.category,
               description,
-              equipmentType,
+              equipmentType: null,
+              equipmentFamily,
               city: dto.city,
               cityId: geo.cityId,
               zoneId: geo.zoneId,
@@ -523,6 +535,7 @@ export class DemandesService {
     category: string;
     description: string | null;
     equipmentType?: string | null;
+    equipmentFamily?: string | null;
     city: string;
     cityId: string | null;
     zoneId: string | null;

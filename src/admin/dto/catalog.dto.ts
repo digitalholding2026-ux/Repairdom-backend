@@ -1,4 +1,55 @@
-import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, MaxLength, Min, ValidateIf } from 'class-validator';
+import { ALLOWED_CATEGORIES } from '../../demandes/categories.js';
+
+/* ── EquipmentFamily (parcours « Autre appareil ») ────────────── */
+
+export class CreateFamilyDto {
+  @IsString()
+  @MaxLength(40)
+  code: string;
+
+  @IsString()
+  @MaxLength(100)
+  label: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  icon?: string;
+
+  @IsString()
+  @IsIn(ALLOWED_CATEGORIES)
+  category: string;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+}
+
+export class UpdateFamilyDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  label?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  icon?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ALLOWED_CATEGORIES)
+  category?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  sortOrder?: number;
+}
 
 /* ── ServiceDomain ────────────────────────────────────────────── */
 

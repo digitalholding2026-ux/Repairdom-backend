@@ -131,6 +131,7 @@ const DEMANDE_LIST_SELECT = {
   category: true,
   description: true,
   equipmentType: true,
+  equipmentFamily: true,
   city: true,
   createdAt: true,
   client: { select: { id: true, firstName: true, lastName: true } },

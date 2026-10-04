@@ -33,6 +33,11 @@ export class CatalogPublicController {
     return this.catalog.listPublicModels(brandId);
   }
 
+  @Get('families')
+  listFamilies() {
+    return this.catalog.listPublicFamilies();
+  }
+
   @Get('domains/:domainId/problems')
   listProblems(
     @Param('domainId') domainId: string,

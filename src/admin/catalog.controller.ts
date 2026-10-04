@@ -19,6 +19,8 @@ import { CatalogService } from './catalog.service.js';
 import {
   CreateDomainDto,
   UpdateDomainDto,
+  CreateFamilyDto,
+  UpdateFamilyDto,
   CreateProblemDto,
   UpdateProblemDto,
   CreateDiagnosticDto,
@@ -79,6 +81,35 @@ export class CatalogController {
   @Delete('domains/:id/hard')
   deleteDomainHard(@Param('id') id: string) {
     return this.catalog.deleteDomainHard(id);
+  }
+
+  /* ── EquipmentFamily (parcours « Autre appareil ») ────────── */
+  /* Indices structurés + « Je ne sais pas » : label compréhensible côté
+   * client, catégorie de dispatch côté backend (matching inchangé). */
+
+  @Get('families')
+  listFamilies() {
+    return this.catalog.listFamilies();
+  }
+
+  @Get('families/:id')
+  getFamily(@Param('id') id: string) {
+    return this.catalog.getFamily(id);
+  }
+
+  @Post('families')
+  createFamily(@Body() dto: CreateFamilyDto) {
+    return this.catalog.createFamily(dto);
+  }
+
+  @Patch('families/:id')
+  updateFamily(@Param('id') id: string, @Body() dto: UpdateFamilyDto) {
+    return this.catalog.updateFamily(id, dto);
+  }
+
+  @Delete('families/:id')
+  deleteFamily(@Param('id') id: string) {
+    return this.catalog.deleteFamily(id);
   }
 
   /* ── DeviceBrand / DeviceModel ─────────────────────────────── */
