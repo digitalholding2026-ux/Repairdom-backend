@@ -11,7 +11,7 @@
  * 3. Marks the migration as applied via prisma migrate resolve --applied
  */
 
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/client.js';
 import { execSync } from 'child_process';
 
 const prisma = new PrismaClient();
