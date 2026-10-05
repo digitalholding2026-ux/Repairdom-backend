@@ -114,17 +114,38 @@ export class TechnicianController {
       },
     }),
   )
+  /* `type` et `side` sont lus en `@Body()` brut (multipart) et validés par le
+   * service (`normalizeKycDocumentSide`) : un DTO ne s'applique pas aux
+   * champs texte d'un multipart. Le `ValidationPipe` global ne les voit donc
+   * pas — c'est volontaire, la source de vérité reste le service. */
   submitKycDocument(
     @CurrentUser() user: RequestUser,
     @UploadedFile() file?: UploadedKycFile,
     @Body('type') type?: string,
+    @Body('side') side?: string,
   ) {
-    return this.technicianService.submitKycDocument(user.id, file, type ?? '');
+    return this.technicianService.submitKycDocument(user.id, file, type ?? '', side ?? '');
   }
 
   @Get('kyc')
   listKycDocuments(@CurrentUser() user: RequestUser) {
     return this.technicianService.listKycDocuments(user.id);
+  }
+
+  /* Soumission explicite du dossier (§14/§15) : le backend vérifie la
+   * complétude (identité + faces requises selon la pièce déclarée) avant le
+   * passage en PENDING. Idempotente. */
+  @Post('kyc/submit')
+  @HttpCode(HttpStatus.OK)
+  submitKyc(@CurrentUser() user: RequestUser) {
+    return this.technicianService.submitKyc(user.id);
+  }
+
+  /* Auto-consultation : URL signée éphémère (300 s) de SES documents
+   * uniquement — bucket privé, jamais d'URL publique permanente. */
+  @Get('kyc/documents/:id/url')
+  getKycDocumentUrl(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.technicianService.getKycDocumentUrl(user.id, id);
   }
 
   @Delete('kyc/documents/:id')

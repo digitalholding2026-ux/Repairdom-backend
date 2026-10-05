@@ -30,7 +30,7 @@ import {
   isValidLongitude,
   GPS_TRAVEL_REFRESH_THROTTLE_MS,
 } from '../geo/geo-distance.js';
-import { SupabaseStorageService, AVATAR_BUCKET } from './supabase-storage.service.js';
+import { SupabaseStorageService, AVATAR_BUCKET, KYC_BUCKET } from './supabase-storage.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
   MAX_AVATAR_SIZE,
@@ -46,7 +46,24 @@ import {
   isKycDocumentBuffer,
   type UploadedKycFile,
 } from './kyc-file.js';
-import type { KycDocumentType } from '../generated/prisma/enums.js';
+import type {
+  KycDocumentSide,
+  KycDocumentType,
+  KycIdentityDocumentType,
+  TechnicianActivityType,
+} from '../generated/prisma/enums.js';
+import {
+  TECHNICIAN_MINIMUM_AGE,
+  TECHNICIAN_MINIMUM_AGE_MESSAGE,
+  isAtLeastAge,
+  parseBirthDate,
+} from './technician-age.js';
+import {
+  identityDocumentDefinition,
+  isIdentityDocumentType,
+  requiredSidePhrase,
+} from './identity-documents.js';
+import { NATIONALITY_CODES, normalizeNationality } from './nationalities.js';
 import { ReviewsService } from '../reviews/reviews.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import {
@@ -54,6 +71,9 @@ import {
   missionChannel,
 } from '../realtime/realtime.types.js';
 import { PushService } from '../push/push.service.js';
+
+/** Durée de validité des URLs signées d'auto-consultation KYC : 5 minutes. */
+const KYC_SELF_SIGNED_URL_TTL_SECONDS = 300;
 
 // Correctif boucle circulaire DISPATCH-V1 : les prédicats géographiques
 // partagés vivent dans le module feuille `../geo/geo-eligibility.js` (aucune
@@ -116,7 +136,26 @@ interface PrivateProfileRow {
   lastLongitude: number | null;
   locationUpdatedAt: Date | null;
   createdAt: Date;
-  user: { firstName: string; lastName: string | null; phone: string | null; email: string; role: string };
+  /* `phone` et `whatsapp` appartiennent à `User` (source UNIQUE, §22) :
+   * exposés ici pour que la page profil affiche et modifie les deux numéros
+   * sans dupliquer les colonnes côté TechnicianProfile. */
+  user: {
+    firstName: string;
+    lastName: string | null;
+    phone: string | null;
+    whatsapp: string | null;
+    email: string;
+    role: string;
+  };
+  /* Chantier « Profil technicien complet + KYC dédié » — profil professionnel
+   * et identité KYC. Stockés sur TechnicianProfile (source unique), jamais
+   * dupliqués ailleurs. */
+  activityType: string | null;
+  experienceYears: number | null;
+  familyCodes: string[];
+  birthDate: Date | null;
+  nationality: string | null;
+  kycIdentityDocType: string | null;
 }
 
 @Injectable()
@@ -154,17 +193,98 @@ export class TechnicianService {
   async getProfile(userId: string) {
     const profile = await this.prisma.technicianProfile.findUnique({
       where: { userId },
-      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
     });
     if (!profile) throw new NotFoundException('Profil technicien introuvable.');
     const completedInterventions = await this.completedInterventionsCount(userId);
     return this.serializePrivate(profile, completedInterventions);
   }
 
+  /** Normalise et valide les `familyCodes` contre la table `EquipmentFamily`.
+   *  Source de vérité = la base : un code inconnu ou désactivé est refusé
+   *  (jamais accepté « à l'aveugle »). Les doublons sont compactés et
+   *  l'ordre est rendu déterministe (comparaison à une liste inchangée). */
+  private async assertKnownFamilyCodes(codes: string[]): Promise<string[]> {
+    const unique = [...new Set(codes.map((code) => code.trim()).filter((code) => code.length > 0))];
+    if (unique.length === 0) return [];
+    const known = await this.prisma.equipmentFamily.findMany({
+      where: { code: { in: unique }, isActive: true },
+      select: { code: true },
+    });
+    const knownCodes = new Set(known.map((family) => family.code));
+    const unknown = unique.filter((code) => !knownCodes.has(code));
+    if (unknown.length > 0) {
+      throw new BadRequestException(
+        `Famille d'équipement inconnue ou désactivée : ${unknown.join(', ')}.`,
+      );
+    }
+    return unique.sort();
+  }
+
+  /** Traduit une date `YYYY-MM-DD` en `Date` UTC, ou `undefined` si absente. */
+  private parseBirthDateInput(value: string | null | undefined): Date | undefined | null {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const parsed = parseBirthDate(value);
+    if (parsed === null) {
+      throw new BadRequestException('Date de naissance invalide (AAAA-MM-JJ).');
+    }
+    if (parsed.getTime() > Date.now()) {
+      throw new BadRequestException('La date de naissance ne peut pas être dans le futur.');
+    }
+    return parsed;
+  }
+
+  /** Nationalité : code ISO alpha-2 normalisé, ou `null` si effacée. */
+  private normalizeNationalityInput(value: string | null | undefined): string | null {
+    if (value === undefined || value === null) return null;
+    const normalized = normalizeNationality(value);
+    if (normalized === null || !NATIONALITY_CODES.has(normalized)) {
+      throw new BadRequestException('Nationalité invalide (code pays attendu, ex. CM).');
+    }
+    return normalized;
+  }
+
+  /**
+   * Contrôle de majorité (§11) : un mineur ne peut pas devenir technicien
+   * OPÉRATIONNEL. Placé sur l'activation (`isAvailable: true`) car c'est
+   * précisément ce qui rend le technicien éligible au dispatch.
+   *
+   * `knownBirthDate` = date DÉJÀ EN BASE. La règle du `grandfather` ne
+   * s'applique qu'à l'absence TOTALE de donnée : un technicien qui a
+   * renseigné sa date de naissance ne peut PAS l'effacer dans le même appel
+   * que l'activation, sinon `{ birthDate: null, isAvailable: true }`
+   * contournerait le contrôle en une seule requête.
+   */
+  private assertAdultWhenActivating(
+    knownBirthDate: Date | null,
+    isActivating: boolean,
+  ): void {
+    if (!isActivating) return;
+    if (!knownBirthDate) return; // grandfather : pas de blocage sans donnée
+    if (!isAtLeastAge(knownBirthDate, TECHNICIAN_MINIMUM_AGE)) {
+      throw new ForbiddenException(TECHNICIAN_MINIMUM_AGE_MESSAGE);
+    }
+  }
+
   async updateProfile(userId: string, dto: UpdateTechnicianProfileDto) {
     let profile: PrivateProfileRow;
 
     const existing = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    const birthDate = this.parseBirthDateInput(dto.birthDate);
+    const familyCodes =
+      dto.familyCodes !== undefined ? await this.assertKnownFamilyCodes(dto.familyCodes) : undefined;
+
+    /* Deux gardes complémentaires sur l'activation :
+     *  1. la date DÉJÀ EN BASE (couvre le contournement « effacer la date et
+     *     s'activer dans le même appel ») ;
+     *  2. la date EFFECTIVE du DTO (empêche « s'activer d'abord, corriger la
+     *     date ensuite »).
+     * Sans 1, `{ birthDate: null, isAvailable: true }` passait la garde 2 en
+     * tombant sur le `grandfather`. */
+    this.assertAdultWhenActivating(existing?.birthDate ?? null, dto.isAvailable === true);
+    const effectiveBirthDate = birthDate === undefined ? (existing?.birthDate ?? null) : birthDate;
+    this.assertAdultWhenActivating(effectiveBirthDate, dto.isAvailable === true);
 
     if (!existing) {
       if (!dto.city || !dto.categories || dto.categories.length === 0) {
@@ -182,13 +302,19 @@ export class TechnicianService {
           cityId,
           categories: dto.categories,
           isAvailable: dto.isAvailable ?? false,
-          avatarUrl: dto.avatarUrl ?? null,
+          // `avatarUrl` absent : uniquement posé par `uploadAvatar`.
           bio: dto.bio ?? null,
           experience: dto.experience ?? null,
           serviceDescription: dto.serviceDescription ?? null,
           specialties: dto.specialties ?? [],
+          activityType: dto.activityType as TechnicianActivityType | null ?? null,
+          experienceYears: dto.experienceYears ?? null,
+          familyCodes: familyCodes ?? [],
+          birthDate: effectiveBirthDate,
+          nationality: this.normalizeNationalityInput(dto.nationality),
+          kycIdentityDocType: (dto.kycIdentityDocType as KycIdentityDocumentType | null) ?? null,
         },
-        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
       });
     } else {
       // Un texte de ville modifié invalide le `cityId` précédent : il est
@@ -201,13 +327,26 @@ export class TechnicianService {
           ...(dto.city !== undefined ? { city: dto.city.trim(), cityId } : {}),
           ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
           ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
-          ...(dto.avatarUrl !== undefined ? { avatarUrl: dto.avatarUrl } : {}),
           ...(dto.bio !== undefined ? { bio: dto.bio } : {}),
           ...(dto.experience !== undefined ? { experience: dto.experience } : {}),
           ...(dto.serviceDescription !== undefined ? { serviceDescription: dto.serviceDescription } : {}),
           ...(dto.specialties !== undefined ? { specialties: dto.specialties } : {}),
+          ...(dto.activityType !== undefined
+            ? { activityType: dto.activityType as TechnicianActivityType | null }
+            : {}),
+          ...(dto.experienceYears !== undefined
+            ? { experienceYears: dto.experienceYears }
+            : {}),
+          ...(familyCodes !== undefined ? { familyCodes } : {}),
+          ...(birthDate !== undefined ? { birthDate } : {}),
+          ...(dto.nationality !== undefined
+            ? { nationality: this.normalizeNationalityInput(dto.nationality) }
+            : {}),
+          ...(dto.kycIdentityDocType !== undefined
+            ? { kycIdentityDocType: dto.kycIdentityDocType as KycIdentityDocumentType | null }
+            : {}),
         },
-        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
       });
     }
 
@@ -229,7 +368,7 @@ export class TechnicianService {
         lastLongitude: longitude,
         locationUpdatedAt: new Date(),
       },
-      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
     });
     const completedInterventions = await this.completedInterventionsCount(userId);
     return this.serializePrivate(updated, completedInterventions);
@@ -354,7 +493,7 @@ export class TechnicianService {
   async uploadAvatar(userId: string, file: UploadedAvatarFile | undefined) {
     const profile = await this.prisma.technicianProfile.findUnique({
       where: { userId },
-      include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+      include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
     });
     if (!profile) throw new NotFoundException('Profil technicien introuvable.');
     if (!file) throw new BadRequestException('Fichier manquant.');
@@ -381,7 +520,7 @@ export class TechnicianService {
       updated = await this.prisma.technicianProfile.update({
         where: { userId },
         data: { avatarUrl },
-        include: { user: { select: { firstName: true, lastName: true, phone: true, email: true, role: true } } },
+        include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
       });
     } catch (error) {
       await this.storage.deleteObject(path).catch(() => undefined);
@@ -399,13 +538,19 @@ export class TechnicianService {
     return this.serializePrivate(updated, completedInterventions);
   }
 
-  async submitKycDocument(userId: string, file: UploadedKycFile | undefined, type: string) {
+  async submitKycDocument(
+    userId: string,
+    file: UploadedKycFile | undefined,
+    type: string,
+    side: string = 'SINGLE',
+  ) {
     const profile = await this.prisma.technicianProfile.findUnique({ where: { userId } });
     if (!profile) throw new NotFoundException('Profil technicien introuvable.');
     if (!file) throw new BadRequestException('Fichier manquant.');
     if (!type || !isAllowedKycDocumentType(type)) {
       throw new BadRequestException('Type de document non autorisé.');
     }
+    const normalizedSide = this.normalizeKycDocumentSide(type, side, profile.kycIdentityDocType);
     if (!isAllowedKycMimetype(file.mimetype)) {
       throw new BadRequestException('Format non supporté. Formats acceptés : PDF, JPG, PNG, WEBP.');
     }
@@ -426,11 +571,41 @@ export class TechnicianService {
     const storagePath = `technicians/${userId}/kyc/${randomUUID()}.${extension}`;
     await this.storage.uploadKycObject(storagePath, file.buffer, file.mimetype);
 
-    try {
-      await this.prisma.kycDocument.create({
-        data: {
+    /* Une pièce = une ligne `KycDocument`, contrainte unique
+     * (technicianId, type, side). Ré-uploader la même face REMPLACE la
+     * précédente : on supprime l'ancien objet Storage après avoir écrit la
+     * nouvelle ligne (jamais l'inverse, sinon une erreur d'écriture laisserait
+     * le profil sans document alors que l'ancien était valide). */
+    const replaced = await this.prisma.kycDocument.findUnique({
+      where: {
+        technicianId_type_side: {
           technicianId: userId,
           type: type as KycDocumentType,
+          side: normalizedSide,
+        },
+      },
+      select: { id: true, storagePath: true },
+    });
+
+    try {
+      await this.prisma.kycDocument.upsert({
+        where: {
+          technicianId_type_side: {
+            technicianId: userId,
+            type: type as KycDocumentType,
+            side: normalizedSide,
+          },
+        },
+        create: {
+          technicianId: userId,
+          type: type as KycDocumentType,
+          side: normalizedSide,
+          storagePath,
+          originalName: this.sanitizeOriginalName(file.originalname),
+          mimeType: file.mimetype,
+          size: file.size,
+        },
+        update: {
           storagePath,
           originalName: this.sanitizeOriginalName(file.originalname),
           mimeType: file.mimetype,
@@ -442,16 +617,22 @@ export class TechnicianService {
       throw error;
     }
 
-    // Le statut passe à PENDING uniquement (jamais VERIFIED/REJECTED) et reste PENDING
-    // si l'utilisateur ajoute un document complémentaire. Une resoumission (REJECTED → PENDING)
-    // efface le motif de rejet courant : le précédent reste tracé dans l'historique KycReview.
-    if (profile.kycStatus !== 'PENDING') {
-      await this.prisma.technicianProfile.update({
-        where: { userId },
-        data: { kycStatus: 'PENDING', kycRejectionReason: null },
-      });
+    if (replaced && replaced.storagePath !== storagePath) {
+      await this.storage.deleteKycObject(replaced.storagePath).catch(() => undefined);
     }
 
+    /* Le dépôt NE MODIFIE PAS le statut.
+     *
+     * Raison : le parcours comporte une soumission EXPLICITE (`submitKyc`),
+     * qui vérifie la complétude (identité + faces requises) avant de
+     * transmettre. Faire passer le statut à PENDING dès le PREMIER dépôt
+     * rendait le dossier transmissible alors qu'il était incomplet : le
+     * technicien perdait le bouton « Transmettre » (le parcours masque la
+     * section 5 en PENDING) et ne pouvait s'en sortir qu'en supprimant tous
+     * ses documents. Le dossier arrivait donc chez l'admin en PENDING,
+     * incomplet et non corrigeable.
+     *
+     * `submitKyc` reste le SEUL point de passage à PENDING. */
     return this.listKycDocuments(userId);
   }
 
@@ -468,13 +649,100 @@ export class TechnicianService {
     return {
       status: profile.kycStatus,
       kycRejectionReason: profile.kycRejectionReason ?? null,
+      /* `storagePath` n'est JAMAIS renvoyé : c'est la clé d'objet Supabase,
+       * donc un chemin d'accès direct au fichier. La consultation passe
+       * obligatoirement par `getKycDocumentUrl` (URL signée 5 min, contrôlée
+       * en propriété). Même règle côté admin (`getKycFolder`). */
       documents: documents.map((document) => ({
         id: document.id,
         type: document.type,
+        side: document.side,
+        mimeType: document.mimeType,
         originalName: document.originalName,
         createdAt: document.createdAt.toISOString(),
       })),
     };
+  }
+
+  /**
+   * Soumission explicite du dossier KYC (§14/§15) : contrôle de complétude
+   * côté backend (source de vérité), puis passage en PENDING. Idempotente —
+   * un dossier déjà PENDING est un succès sans réécriture. Le motif de rejet
+   * éventuel est effacé (l'historique reste dans KycReview).
+   */
+  async submitKyc(userId: string) {
+    const profile = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    if (profile.kycStatus === 'VERIFIED') {
+      throw new ConflictException('Votre identité est déjà vérifiée.');
+    }
+
+    const missing: string[] = [];
+    if (!profile.birthDate) {
+      missing.push('votre date de naissance');
+    } else if (!isAtLeastAge(profile.birthDate, TECHNICIAN_MINIMUM_AGE)) {
+      throw new ForbiddenException(TECHNICIAN_MINIMUM_AGE_MESSAGE);
+    }
+    if (!profile.nationality) missing.push('votre nationalité');
+    if (!profile.kycIdentityDocType) missing.push('le type de votre pièce d’identité');
+
+    const identityDocuments = await this.prisma.kycDocument.findMany({
+      where: { technicianId: userId, type: 'IDENTITY' },
+      select: { side: true },
+    });
+    const sides = new Set(identityDocuments.map((document) => document.side));
+    /* Les faces exigées sont lues dans la MÊME table déclarative que celle
+     * utilisée au dépôt (`normalizeKycDocumentSide`). Une face exigée ici est
+     * donc exactement une face que le dépôt peut produire : impossible qu'une
+     * CNI exige un verso à l'upload mais pas à la soumission, ou qu'un
+     * passeport exige une face que sa coercition en SINGLE ne produit jamais
+     * (bug qui rendait la soumission passeport impossible). */
+    if (profile.kycIdentityDocType && isIdentityDocumentType(profile.kycIdentityDocType)) {
+      const definition = identityDocumentDefinition(profile.kycIdentityDocType);
+      for (const side of definition.requiredSides) {
+        if (!sides.has(side)) {
+          missing.push(requiredSidePhrase(profile.kycIdentityDocType, side));
+        }
+      }
+    } else if (identityDocuments.length === 0) {
+      missing.push('votre pièce d’identité');
+    }
+
+    if (missing.length > 0) {
+      throw new BadRequestException(`Dossier incomplet : renseignez ${missing.join(', ')}.`);
+    }
+
+    if (profile.kycStatus !== 'PENDING') {
+      await this.prisma.technicianProfile.update({
+        where: { userId },
+        data: { kycStatus: 'PENDING', kycRejectionReason: null },
+      });
+    }
+    return this.listKycDocuments(userId);
+  }
+
+  /** URL signée éphémère d'auto-consultation d'un document KYC (300 s,
+   *  documents du technicien connecté uniquement — bucket privé, jamais
+   *  d'URL publique permanente). */
+  async getKycDocumentUrl(userId: string, documentId: string) {
+    const profile = await this.prisma.technicianProfile.findUnique({ where: { userId } });
+    if (!profile) throw new NotFoundException('Profil technicien introuvable.');
+    const document = await this.prisma.kycDocument.findFirst({
+      where: { id: documentId, technicianId: userId },
+      select: { storagePath: true, mimeType: true },
+    });
+    if (!document) throw new NotFoundException('Document introuvable.');
+    if (!this.storage.isConfigured) {
+      throw new ServiceUnavailableException(
+        'La consultation des documents est indisponible pour le moment.',
+      );
+    }
+    const url = await this.storage.createSignedUrl(
+      KYC_BUCKET,
+      document.storagePath,
+      KYC_SELF_SIGNED_URL_TTL_SECONDS,
+    );
+    return { url, expiresIn: KYC_SELF_SIGNED_URL_TTL_SECONDS, mimeType: document.mimeType };
   }
 
   async deleteKycDocument(userId: string, documentId: string) {
@@ -492,18 +760,25 @@ export class TechnicianService {
     // Suppression Storage d'abord, puis suppression de la métadonnée en base.
     await this.storage.deleteKycObject(document.storagePath);
 
-    try {
-      await this.prisma.kycDocument.delete({ where: { id: document.id } });
-    } catch (error) {
-      throw error;
-    }
+    await this.prisma.kycDocument.delete({ where: { id: document.id } });
 
-    const remaining = await this.prisma.kycDocument.count({ where: { technicianId: userId } });
-    if (profile.kycStatus === 'PENDING' && remaining === 0) {
-      await this.prisma.technicianProfile.update({
-        where: { userId },
-        data: { kycStatus: 'NOT_SUBMITTED' },
+    /* Un dossier transmis (PENDING) dont on a retiré TOUS les documents n'est
+     * plus soumettable : on le ramène à NOT_SUBMITTED pour que le technicien
+     * puisse recommencer proprement depuis l'étape identité.
+     *
+     * Le décompte porte sur les documents D'IDENTITÉ uniquement : une preuve
+     * professionnelle facultative (§19) ne doit pas maintenir un dossier sans
+     * pièce d'identité dans un état « transmis ». */
+    if (profile.kycStatus === 'PENDING') {
+      const identityRemaining = await this.prisma.kycDocument.count({
+        where: { technicianId: userId, type: 'IDENTITY' },
       });
+      if (identityRemaining === 0) {
+        await this.prisma.technicianProfile.update({
+          where: { userId },
+          data: { kycStatus: 'NOT_SUBMITTED', kycRejectionReason: null },
+        });
+      }
     }
 
     return this.listKycDocuments(userId);
@@ -512,6 +787,45 @@ export class TechnicianService {
   private sanitizeOriginalName(name: string): string {
     const base = name.split(/[\\/]/).pop() ?? name;
     return base.slice(0, 200);
+  }
+
+  /**
+   * Normalise la face d'un document KYC (§15), selon la pièce déclarée au
+   * profil (`kycIdentityDocType`).
+   *
+   * `PROFESSIONAL` = preuve facultative, toujours `SINGLE` : un verso n'a
+   * pas de sens. `IDENTITY` dépend de la pièce déclarée : CNI → RECTO/VERSO
+   * explicites ; passeport → une seule page (RECTO renvoyé en `SINGLE`,
+   * VERSO refusé). Sans pièce déclarée, RECTO/VERSO sont refusés : le
+   * parcours KYC impose le choix du type de pièce avant le dépôt.
+   */
+  private normalizeKycDocumentSide(
+    type: string,
+    side: string,
+    declaredIdentityType: KycIdentityDocumentType | null,
+  ): KycDocumentSide {
+    const requested = String(side ?? '').trim().toUpperCase();
+    if (!requested) return 'SINGLE';
+    const allowed: readonly string[] = ['RECTO', 'VERSO', 'SINGLE'];
+    if (!allowed.includes(requested)) {
+      throw new BadRequestException('Face de document non autorisée (RECTO, VERSO ou SINGLE).');
+    }
+    if (type === 'PROFESSIONAL' || requested === 'SINGLE') {
+      return 'SINGLE';
+    }
+    if (!declaredIdentityType) {
+      throw new BadRequestException(
+        'Déclarez d’abord le type de pièce d’identité (carte nationale ou passeport).',
+      );
+    }
+    if (declaredIdentityType === 'PASSPORT') {
+      if (requested === 'VERSO') {
+        throw new BadRequestException('Le passeport ne comporte pas de verso : déposez une seule page.');
+      }
+      return 'SINGLE';
+    }
+    // CNI : RECTO et VERSO sont deux dépôts distincts.
+    return requested as KycDocumentSide;
   }
 
   async getPublicProfile(technicianId: string): Promise<PublicTechnicianProfile> {
@@ -541,6 +855,12 @@ export class TechnicianService {
       completedInterventions,
       registeredAt: technician.createdAt.toISOString(),
     };
+    /* Le profil PUBLIC n'expose volontairement NI `birthDate`, NI
+     * `nationality`, NI `kycIdentityDocType`, NI `activityType`, NI
+     * `experienceYears`, NI `familyCodes`, NI la couverture, NI le GPS, NI
+     * aucun document KYC. Seule la photo et les compétences sont utiles au
+     * client ; le reste relève de la vérification administrative (§26).
+     * `whatsapp` n'est pas exposé publiquement non plus : le client appelle. */
   }
 
   private serializePrivate(
@@ -562,6 +882,24 @@ export class TechnicianService {
       specialties: profile.specialties,
       kycStatus: profile.kycStatus,
       kycRejectionReason: profile.kycRejectionReason ?? null,
+      // Chantier profil/KYC — champs professionnels et identité (page KYC
+      // dédiée côté frontend). `birthDate` sérialisé en `YYYY-MM-DD` sur les
+      // parties UTC (champ `@db.Date`, sans heure ni fuseau).
+      activityType: profile.activityType,
+      experienceYears: profile.experienceYears,
+      familyCodes: profile.familyCodes,
+      birthDate: profile.birthDate
+        ? [
+            profile.birthDate.getUTCFullYear(),
+            String(profile.birthDate.getUTCMonth() + 1).padStart(2, '0'),
+            String(profile.birthDate.getUTCDate()).padStart(2, '0'),
+          ].join('-')
+        : null,
+      nationality: profile.nationality,
+      kycIdentityDocType: profile.kycIdentityDocType,
+      /* Technicien pré-chantier sans date de naissance : activable (grandfather)
+       * mais invité à compléter sa page KYC. Calculé, jamais stocké. */
+      mustCompleteKycProfile: !profile.birthDate,
       // GPS V1 — exposé au seul propriétaire (jamais dans le profil public).
       lastLatitude: profile.lastLatitude ?? null,
       lastLongitude: profile.lastLongitude ?? null,

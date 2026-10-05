@@ -15,6 +15,11 @@ import { Role } from '../generated/prisma/enums.js';
 import type { KycStatus } from '../generated/prisma/enums.js';
 import type { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
+import {
+  TECHNICIAN_MINIMUM_AGE,
+  computeAge,
+  isAtLeastAge,
+} from '../technician/technician-age.js';
 
 const ALLOWED_KYC_STATUSES: KycStatus[] = ['NOT_SUBMITTED', 'PENDING', 'VERIFIED', 'REJECTED'];
 
@@ -107,6 +112,7 @@ export class AdminService {
         firstName: technician.firstName,
         lastName: technician.lastName,
         phone: technician.phone,
+        whatsapp: technician.whatsapp,
         avatarUrl: profile.avatarUrl,
         city: profile.city,
         categories: profile.categories,
@@ -114,6 +120,31 @@ export class AdminService {
         experience: profile.experience,
         serviceDescription: profile.serviceDescription,
         bio: profile.bio,
+        // Chantier profil/KYC — identité et activité pour la vérification
+        // admin complète (âge calculé exactement, jamais année − année).
+        birthDate: profile.birthDate
+          ? [
+              profile.birthDate.getUTCFullYear(),
+              String(profile.birthDate.getUTCMonth() + 1).padStart(2, '0'),
+              String(profile.birthDate.getUTCDate()).padStart(2, '0'),
+            ].join('-')
+          : null,
+        /* Âge calculé signalé au backoffice pour aider la décision (§17) :
+         * SANS port de garde. Un dossier à 17 ans reste visible et
+         * rejetable — l'admin doit pouvoir le constater, pas le découvrir
+         * par un 403 opaque. Le blocage effectif est posé par le technicien
+         * à l'activation (`assertAdultWhenActivating`) et à la soumission KYC.
+         * NB : un `age` incohérent (null avec birthDate) est un défaut de
+         * données, pas un bug d'affichage. */
+        age: profile.birthDate ? computeAge(profile.birthDate) : null,
+        ageBelowMinimum:
+          profile.birthDate !== null &&
+          !isAtLeastAge(profile.birthDate, TECHNICIAN_MINIMUM_AGE),
+        nationality: profile.nationality,
+        kycIdentityDocType: profile.kycIdentityDocType,
+        activityType: profile.activityType,
+        experienceYears: profile.experienceYears,
+        familyCodes: profile.familyCodes,
         isAvailable: profile.isAvailable,
         kycStatus: profile.kycStatus,
         kycRejectionReason: profile.kycRejectionReason,
@@ -123,6 +154,7 @@ export class AdminService {
       documents: technician.kycDocuments.map((document) => ({
         id: document.id,
         type: document.type,
+        side: document.side,
         originalName: document.originalName,
         mimeType: document.mimeType,
         size: document.size,

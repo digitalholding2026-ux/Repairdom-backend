@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class UpdateMeDto {
   @IsOptional()
@@ -16,11 +16,17 @@ export class UpdateMeDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Matches(/^(\+?[0-9 ().-]{7,19})?$/, {
+    message: 'Numéro de téléphone invalide (chiffres, espaces, +, parenthèses ou tirets).',
+  })
   phone?: string | null;
 
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Matches(/^(\+?[0-9 ().-]{7,19})?$/, {
+    message: 'Numéro WhatsApp invalide (chiffres, espaces, +, parenthèses ou tirets).',
+  })
   whatsapp?: string | null;
 
   @IsOptional()

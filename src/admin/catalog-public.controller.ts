@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
 import { CatalogService } from './catalog.service.js';
+import { NATIONALITIES } from '../technician/nationalities.js';
 
 /* Catalogue public (client/technicien) — Sprint 8.1.
  *
@@ -50,5 +51,14 @@ export class CatalogPublicController {
   @Get('cities')
   listCities() {
     return this.catalog.listPublicCities();
+  }
+
+  /* Nomenclature ISO 3166-1 alpha-2 (KYC technicien). Servie par le backend
+   * afin que le sélecteur du frontend et la validation serveur partagent
+   * EXACTEMENT la même liste : le frontend ne duplique pas 249 pays, et le
+   * backend ne peut pas rejeter un pays que l'UI affiche. */
+  @Get('nationalities')
+  listNationalities() {
+    return NATIONALITIES;
   }
 }

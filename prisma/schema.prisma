@@ -195,6 +195,34 @@ enum KycDocumentType {
   PROFESSIONAL
 }
 
+// Nature de la pièce d'identité déclarée par le technicien. Stockée au
+// niveau du PROFIL (une seule identité par technicien) et non du document :
+// le type de pièce est un attribut de la personne, pas du fichier uploadé.
+// Le recto/verso, lui, est porté par `KycDocument.side` (un document = une
+// ligne). `PASSPORT` n'a pas de verso : le parcours ne le demande pas.
+enum KycIdentityDocumentType {
+  NATIONAL_ID_CARD
+  PASSPORT
+}
+
+// Face du document. `SINGLE` reste la valeur par défaut : les documents
+// historiques et la preuve professionnelle (facultative) n'ont qu'une face.
+enum KycDocumentSide {
+  RECTO
+  VERSO
+  SINGLE
+}
+
+// Mode d'activité professionnelle du technicien. Structuré (jamais du texte
+// libre) pour être lisible par le backoffice et restitué tel quel au client
+// dans le profil public. `OTHER` couvre tout statut pertinent non listé.
+enum TechnicianActivityType {
+  FREELANCE
+  SALARIED
+  COMPANY
+  OTHER
+}
+
 model User {
   id                  String              @id @default(dbgenerated("gen_random_uuid()"))
   role                Role                @default(CLIENT)
@@ -544,6 +572,32 @@ model TechnicianProfile {
   experience String?
   serviceDescription String?
   specialties String[] @default([])
+  // ── Chantier « Profil technicien complet + KYC dédié » ──────────────
+  // Activité professionnelle : structurée (voir TechnicianActivityType),
+  // jamais du texte libre. Nullable pour ne pas casser les profils existants.
+  activityType TechnicianActivityType?
+  // Expérience : nombre d'ANNÉES (structuré). Le champ texte historique
+  // `experience` est conservé tel quel pour l'historique et l'affichage
+  // libre ; `experienceYears` est la valeur exploitable/filtrable.
+  experienceYears Int?
+  // Compétences par famille d'équipement structurée (§8) : codes de
+  // `EquipmentFamily`. Complète `categories` ( Matching grossier, 7
+  // valeurs) SANS le remplacer : le dispatch utilise toujours `category`,
+  // puis affine par famille quand le client en a choisi une.
+  // Convention de compatibilité (comme `zoneCoverages` vide) : un tableau
+  // VIDE = pas de préférence déclarée, le filtrage famille ne s'applique
+  // pas. Un tableau NON VIDE = filtrage strict sur ces codes.
+  familyCodes String[] @default([])
+  // ── KYC : identité (page dédiée /technicien/kyc) ───────────────────
+  // Date de naissance : source de vérité du contrôle de majorité (18 ans).
+  // Nullable le temps que les techniciens existants la renseignent.
+  birthDate DateTime? @db.Date
+  // Nationalité : code ISO 3166-1 alpha-2 en MAJUSCULES (ex. « CM »).
+  // Structuré, jamais du texte libre.
+  nationality String?
+  // Nature de la pièce d'identité déclarée (voir KycIdentityDocumentType).
+  kycIdentityDocType KycIdentityDocumentType?
+  // ────────────────────────────────────────────────────────────────────
   kycStatus  KycStatus @default(NOT_SUBMITTED)
   kycRejectionReason String?
   // GPS V1 — dernière position connue transmise explicitement par le
@@ -563,6 +617,10 @@ model KycDocument {
   id           String          @id @default(dbgenerated("gen_random_uuid()"))
   technicianId String
   type         KycDocumentType
+  // Face du document : une CNI produit deux lignes (RECTO + VERSO), un
+  // passeport et la preuve professionnelle en produisent une (SINGLE).
+  // `SINGLE` par défaut : les documents existants restent valides.
+  side         KycDocumentSide @default(SINGLE)
   storagePath  String
   originalName String
   mimeType     String
@@ -572,6 +630,9 @@ model KycDocument {
   technician   User            @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([technicianId])
+  // Une seule pièce par (technicien, type, face) : repasser un recto
+  // remplace le précédent côté service au lieu d'empiler les versions.
+  @@unique([technicianId, type, side])
 }
 
 model KycReview {

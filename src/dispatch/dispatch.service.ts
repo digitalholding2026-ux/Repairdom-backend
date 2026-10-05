@@ -60,6 +60,10 @@ export interface DispatchCandidate {
   city: string;
   cityId: string | null;
   categories: string[];
+  // §8 — familles d'équipement déclarées (codes `EquipmentFamily`).
+  // VIDE = aucune préférence (jamais filtré), NON VIDE = intersection stricte
+  // avec `DispatchDemandeGeo.equipmentFamily` quand celui-ci est renseigné.
+  familyCodes: string[];
   isAvailable: boolean;
   kycStatus: string;
   coverageZoneIds: string[];
@@ -75,6 +79,9 @@ export interface DispatchDemandeGeo {
   cityId: string | null;
   zoneId: string | null;
   category: string;
+  // §8 — famille d'équipement de la demande (nullable) : filtre les candidats
+  // déclarant des `familyCodes` non vides.
+  equipmentFamily?: string | null;
   // GPS V1 — position de la demande (optionnelle).
   latitude?: number | null;
   longitude?: number | null;
@@ -120,6 +127,17 @@ export function selectCandidatesForWave(
       (category) => normalizeValue(category) === normalizeValue(demande.category),
     );
     if (!categoryOk) return false;
+    // §8 — filtrage famille d'équipement : uniquement si la demande en
+    // déclare une ET que le candidat a des préférences (sinon jamais filtré).
+    // Comparaison en majuscules : `EquipmentFamily.code` est normalisé en
+    // base, mais le dispatch ne doit pas dépendre de la casse saisie.
+    const family = demande.equipmentFamily?.trim().toUpperCase();
+    if (family) {
+      const familyOk =
+        candidate.familyCodes.length === 0 ||
+        candidate.familyCodes.some((code) => code.trim().toUpperCase() === family);
+      if (!familyOk) return false;
+    }
     if (wave === DISPATCH_WAVE_1) {
       return isGeoEligible({
         demandeCityId: demande.cityId,
@@ -263,6 +281,7 @@ export class DispatchService {
         city: true,
         cityId: true,
         zoneId: true,
+        equipmentFamily: true,
         latitude: true,
         longitude: true,
         technicianId: true,
@@ -287,7 +306,13 @@ export class DispatchService {
     const candidates = await this.loadCandidates();
     const selected = selectCandidatesForWave(
       candidates,
-      { city: demande.city, cityId: demande.cityId, zoneId: demande.zoneId, category: demande.category },
+      {
+        city: demande.city,
+        cityId: demande.cityId,
+        zoneId: demande.zoneId,
+        category: demande.category,
+        equipmentFamily: demande.equipmentFamily,
+      },
       wave,
       alreadyNotified.map((row) => row.userId),
     );
@@ -437,6 +462,7 @@ export class DispatchService {
             city: true,
             cityId: true,
             categories: true,
+            familyCodes: true,
             isAvailable: true,
             kycStatus: true,
             // GPS V2 — dernière position (même requête, pas de N+1).
@@ -463,6 +489,7 @@ export class DispatchService {
           city: profile.city,
           cityId: profile.cityId,
           categories: profile.categories,
+          familyCodes: profile.familyCodes,
           isAvailable: profile.isAvailable,
           kycStatus: profile.kycStatus,
           lastLatitude: profile.lastLatitude ?? null,

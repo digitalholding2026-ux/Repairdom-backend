@@ -26,6 +26,9 @@ function candidate(overrides: Partial<DispatchCandidate> = {}): DispatchCandidat
     city: 'Douala',
     cityId: CITY_A,
     categories: ['plomberie'],
+    // Vide = aucune préférence de famille déclarée (le filtre famille ne
+    // s'applique pas). Cf. `TechnicianProfile.familyCodes`.
+    familyCodes: [],
     isAvailable: true,
     kycStatus: 'VERIFIED',
     coverageZoneIds: ['z-boko'],
@@ -123,6 +126,68 @@ describe('selectCandidatesForWave — vague 1', () => {
       selectCandidatesForWave(
         [candidate({ categories: ['electricite'] })],
         DEMANDE,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+/* §8 — filtrage par famille d'équipement (arbitrage : `familyCodes String[]`
+ * sur TechnicianProfile, `categories` reste le niveau grossier). */
+describe('selectCandidatesForWave — famille d équipement (§8)', () => {
+  const demandeConsole = { ...DEMANDE, equipmentFamily: 'CONSOLE' };
+
+  it('demande SANS famille → le filtre famille ne s applique jamais', () => {
+    expect(
+      selectCandidatesForWave([candidate({ familyCodes: ['CONSOLE'] })], DEMANDE, DISPATCH_WAVE_1, []),
+    ).toHaveLength(1);
+  });
+
+  it('famille déclarée ET compétence correspondante → sélectionné', () => {
+    expect(
+      selectCandidatesForWave(
+        [candidate({ familyCodes: ['CONSOLE', 'TABLETTE'] })],
+        demandeConsole,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('famille déclarée ET compétence NON correspondante → exclu même si disponible', () => {
+    expect(
+      selectCandidatesForWave(
+        [candidate({ familyCodes: ['TABLETTE'] })],
+        demandeConsole,
+        DISPATCH_WAVE_1,
+        [],
+      ),
+    ).toHaveLength(0);
+    // Vague 2 également : la compatibilité de compétence n'est pas un
+    // critère de distance.
+    expect(
+      selectCandidatesForWave(
+        [candidate({ familyCodes: ['TABLETTE'] })],
+        demandeConsole,
+        DISPATCH_WAVE_2,
+        [],
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('familyCodes VIDE = aucune préférence → jamais filtré (compatibilité)', () => {
+    expect(
+      selectCandidatesForWave([candidate({ familyCodes: [] })], demandeConsole, DISPATCH_WAVE_1, []),
+    ).toHaveLength(1);
+  });
+
+  it('le filtre famille est indépendant du filtre catégorie (les deux s appliquent)', () => {
+    // Catégorie incompatible + famille compatible → exclu par la catégorie.
+    expect(
+      selectCandidatesForWave(
+        [candidate({ categories: ['electricite'], familyCodes: ['CONSOLE'] })],
+        demandeConsole,
         DISPATCH_WAVE_1,
         [],
       ),
