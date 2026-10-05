@@ -518,6 +518,18 @@ model Notification {
   type      NotificationType
   title     String
   message   String
+  // Données STRUCTURÉES de la notification (montants, références, ids cibles).
+  //
+  // RÈGLE FCFA : `title` et `message` restent des textes GÉNÉRIQUES, sans
+  // aucun montant formaté. Les montants vivent ici en XAF ENTIER (jamais
+  // « 15 000 FCFA ») : le formatage en FCFA est une responsabilité frontend
+  // (`formatFCFA`), seule à même de le faire selon la locale. Un montant
+  // pré-formaté en base serait figé pour tous les utilisateurs.
+  //
+  // Shape documenté par type dans `src/notifications/notification-metadata.ts`
+  // (source de vérité côté serveur) et consommé par le centre de notifications
+  // côté frontend. Volontairement non indexé : lu par la seule sérialisation.
+  metadata  Json?
   readAt    DateTime?
   createdAt DateTime        @default(now())
 

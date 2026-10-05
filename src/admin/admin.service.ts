@@ -706,6 +706,10 @@ export class AdminService {
       throw new BadRequestException('Ce compte technicien est désactivé.');
     }
 
+    /* Aucun `metadata` : le message EST le contenu (texte rédigé par l'admin,
+     * borné à 1000 caractères, jamais de montant pré-formaté). La colonne reste
+     * `null` — on ne remplit pas `metadata` avec une donnée qui ferait doublon
+     * avec `message`. */
     const notification = await this.prisma.notification.create({
       data: {
         userId: technician.id,

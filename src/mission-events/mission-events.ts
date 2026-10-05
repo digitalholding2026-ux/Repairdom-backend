@@ -1,4 +1,8 @@
 import { Prisma } from '../generated/prisma/client.js';
+import {
+  buildNotificationMetadata,
+  type NotificationMetadataInput,
+} from '../notifications/notification-metadata.js';
 
 /* Sprint 8.3 — Préparation opérationnelle de la mission.
  * Helpers partagés d'enregistrement des événements métier (DemandeEvent) et
@@ -68,12 +72,17 @@ export interface EventInput {
   metadata?: Prisma.InputJsonObject | null;
 }
 
+/** Métadonnées structurées d'une notification (montants XAF entiers, ids).
+ *  Voir `notifications/notification-metadata.ts` pour le contrat complet. */
 export interface NotificationInput {
   userId: string;
   demandeId?: string | null;
   type: NotificationType;
   title: string;
   message: string;
+  /* `NotificationMetadataInput` (et non `NotificationMetadata`) : une clé
+   * présente mais inapplicable s'écrit `null`, pas `undefined`. */
+  metadata?: NotificationMetadataInput | null;
 }
 
 export async function recordEvent(tx: Tx, input: EventInput) {
@@ -90,6 +99,14 @@ export async function recordEvent(tx: Tx, input: EventInput) {
 }
 
 export async function createNotification(tx: Tx, input: NotificationInput) {
+  /* POINT DE PASSAGE UNIQUE des métadonnées (chantier #2D).
+   *
+   * 14 des 16 sites de création passent par cette fonction : le `metadata` y
+   * est donc garanti conforme au contrat, quel que soit le site appelant.
+   * Les deux sites restants (fan-out admin des litiges, ADMIN_MESSAGE) écrivent
+   * en direct et appellent `buildNotificationMetadata` explicitement.
+   */
+  const metadata = buildNotificationMetadata(input.metadata);
   await tx.notification.create({
     data: {
       userId: input.userId,
@@ -97,6 +114,7 @@ export async function createNotification(tx: Tx, input: NotificationInput) {
       type: input.type,
       title: input.title,
       message: input.message,
+      ...(metadata ? { metadata } : {}),
     },
   });
 }

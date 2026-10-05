@@ -445,10 +445,16 @@ export class CollaborationService {
         actorUserId: user.id,
         metadata: { amount: quote.amount, currency: quote.currency, source: 'MANUAL' },
       });
-      await createNotification(
-        tx,
-        buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
-      );
+      await createNotification(tx, {
+        ...buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
+        /* Montant en XAF ENTIER : le titre et le message restent génériques,
+         * c'est le frontend qui formate en FCFA (`formatFCFA`). */
+        metadata: {
+          quoteId: quote.id,
+          amountXAF: quote.amount,
+          currency: quote.currency,
+        },
+      });
 
       return quote;
     });
@@ -561,15 +567,22 @@ export class CollaborationService {
         metadata: { amount: quote.amount, currency: quote.currency },
       });
       if (demande.technicianId) {
-        await createNotification(
-          tx,
-          buildNotification(
+        await createNotification(tx, {
+          ...buildNotification(
             action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
             demandeId,
             demande.technicianId,
             'TECHNICIAN',
           ),
-        );
+          /* Montant du devis en XAF entier (formaté en FCFA côté frontend).
+           * Utile au technicien pour savoir d'un coup d'œil de quel montant
+           * il s'agit lorsque plusieurs devis se suivent sur une mission. */
+          metadata: {
+            quoteId: quote.id,
+            amountXAF: quote.amount,
+            currency: quote.currency,
+          },
+        });
       }
 
       return quote;
@@ -899,10 +912,16 @@ export class CollaborationService {
           actorUserId: user.id,
           metadata: { amount: quote.amount, currency: quote.currency, source: 'CATALOG' },
         });
-        await createNotification(
-          tx,
-          buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
-        );
+        await createNotification(tx, {
+          ...buildNotification('QUOTE_CREATED', demandeId, demande.clientId, 'CLIENT'),
+          /* Tarif issu du catalogue : même contrat metadata qu'un devis manuel,
+           * le frontend affiche donc « X FCFA » dans les deux cas. */
+          metadata: {
+            quoteId: quote.id,
+            amountXAF: quote.amount,
+            currency: quote.currency,
+          },
+        });
 
         return {
           mode: 'CATALOG',
@@ -986,10 +1005,21 @@ export class CollaborationService {
         actorUserId: user.id,
       });
       if (demande.technicianId) {
-        await createNotification(
-          tx,
-          buildNotification('NEGOTIATION_REQUESTED', demandeId, demande.technicianId, 'TECHNICIAN'),
-        );
+        await createNotification(tx, {
+          ...buildNotification(
+            'NEGOTIATION_REQUESTED',
+            demandeId,
+            demande.technicianId,
+            'TECHNICIAN',
+          ),
+          /* Montant en cours de négociation (XAF entier) : le technicien voit
+           * immédiatement de quel devis il s'agit sans ouvrir la mission. */
+          metadata: {
+            quoteId: quote.id,
+            amountXAF: quote.amount,
+            currency: quote.currency,
+          },
+        });
       }
 
       return request;

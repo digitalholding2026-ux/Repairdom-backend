@@ -14,6 +14,7 @@ import {
   type Tx,
 } from '../mission-events/mission-events.js';
 import type { RequestUser } from '../auth/auth.types.js';
+import { buildNotificationMetadata } from '../notifications/notification-metadata.js';
 import { DISPUTE_CATEGORIES, DISPUTE_OPEN_STATUSES } from './dispute-constants.js';
 import type { OpenDisputeDto } from './dto/open-dispute.dto.js';
 import type { ReviewDisputeDto } from './dto/review-dispute.dto.js';
@@ -117,10 +118,17 @@ export class DisputesService {
         actorUserId: clientId,
         fromStatus: 'COMPLETED',
       });
-      await createNotification(
-        tx,
-        buildNotification('DISPUTE_OPENED', demandeId, demande.technicianId as string, 'TECHNICIAN'),
-      );
+      await createNotification(tx, {
+        ...buildNotification(
+          'DISPUTE_OPENED',
+          demandeId,
+          demande.technicianId as string,
+          'TECHNICIAN',
+        ),
+        /* Identifiant et catégorie du litige : sans eux, l'admin doit ouvrir
+         * chaque mission pour découvrir de quel litige il s'agit. */
+        metadata: { disputeId: dispute.id, disputeCategory: dto.category },
+      });
       return dispute;
     });
     // Fan-out admin best-effort (hors transaction : une notification manquée
@@ -130,6 +138,14 @@ export class DisputesService {
         where: { role: 'ADMIN', isActive: true },
         select: { id: true },
       });
+      /* `metadata` construit par le MÊME contrat que les autres sites
+       * (`buildNotificationMetadata`) : un JSON arbitraire ne doit pas
+       * pouvoir se glisser dans cette écriture directe. `created` est le
+       * litige retourné par la transaction ci-dessus. */
+      const metadata = buildNotificationMetadata({
+        disputeId: created.id,
+        disputeCategory: dto.category,
+      });
       for (const admin of admins) {
         await this.prisma.notification.create({
           data: {
@@ -138,6 +154,7 @@ export class DisputesService {
             type: 'DISPUTE_OPENED',
             title: 'Litige ouvert',
             message: `Un client a ouvert un litige (motif : ${dto.category}). Dossier à examiner.`,
+            ...(metadata ? { metadata } : {}),
           },
         });
       }
@@ -282,15 +299,28 @@ export class DisputesService {
         select: { clientId: true, technicianId: true },
       });
       if (decision !== 'UNDER_REVIEW' && parties) {
-        await createNotification(
-          tx,
-          buildNotification('DISPUTE_RESOLVED', dispute.demandeId, parties.clientId, 'CLIENT'),
-        );
+        /* La décision administrative est la SEULE information que les parties
+         * n'ont pas ailleurs : elle est remontée en donnée structurée (le
+         * message reste générique). */
+        const metadata = buildNotificationMetadata({
+          disputeId: dispute.id,
+          disputeStatus: updated.status,
+          resolution: updated.resolution ?? null,
+        });
+        await createNotification(tx, {
+          ...buildNotification('DISPUTE_RESOLVED', dispute.demandeId, parties.clientId, 'CLIENT'),
+          ...(metadata ? { metadata } : {}),
+        });
         if (parties.technicianId) {
-          await createNotification(
-            tx,
-            buildNotification('DISPUTE_RESOLVED', dispute.demandeId, parties.technicianId, 'TECHNICIAN'),
-          );
+          await createNotification(tx, {
+            ...buildNotification(
+              'DISPUTE_RESOLVED',
+              dispute.demandeId,
+              parties.technicianId,
+              'TECHNICIAN',
+            ),
+            ...(metadata ? { metadata } : {}),
+          });
         }
       }
       return updated;

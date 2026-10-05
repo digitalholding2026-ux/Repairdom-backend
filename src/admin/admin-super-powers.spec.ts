@@ -193,6 +193,10 @@ describe('message ADMIN → TECHNICIEN par email', () => {
       where: { email: 'tech@email.com' },
       select: expect.anything(),
     });
+    /* Chantier #2D : `ADMIN_MESSAGE` n'a volontairement AUCUN `metadata` — le
+     * message EST le contenu, et le dupliquer dans le JSON créerait deux
+     * sources pour la même donnée. L'assertion reste donc stricte sur le
+     * payload (une clé `metadata` apparaissant ici serait une régression). */
     expect(prisma.notification.create).toHaveBeenCalledWith({
       data: {
         userId: 't1',

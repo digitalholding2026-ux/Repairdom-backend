@@ -19,6 +19,7 @@ import {
   buildNotification,
   recordEvent,
 } from '../mission-events/mission-events.js';
+import { buildNotificationMetadata } from '../notifications/notification-metadata.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { TECHNICIAN_AVAILABLE_CHANNEL } from '../realtime/realtime.types.js';
 import { PushService } from '../push/push.service.js';
@@ -360,6 +361,12 @@ export class DispatchService {
         skipDuplicates: true,
       });
       if (selected.length > 0) {
+        /* `createMany` n'accepte pas la même validation que le helper unique :
+         * le `metadata` est donc construit ici, via le contrat partagé
+         * (`buildNotificationMetadata`), puis attaché à chaque ligne.
+         * La RÉFÉRENCE n'y figure pas : elle est déjà exposée par la
+         * sérialisation via `demande.reference` (source unique). */
+        const metadata = buildNotificationMetadata({ city: demande.city });
         await tx.notification.createMany({
           data: ranked.map((candidate) => {
             const built = buildNotification('MISSION_AVAILABLE', demandeId, candidate.userId, 'TECHNICIAN');
@@ -369,6 +376,7 @@ export class DispatchService {
               type: built.type,
               title: built.title,
               message: built.message,
+              ...(metadata ? { metadata } : {}),
             };
           }),
         });

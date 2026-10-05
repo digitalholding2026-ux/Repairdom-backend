@@ -1090,7 +1090,10 @@ export class TechnicianService {
       });
       const account = await tx.user.findUnique({
         where: { id: userId },
-        select: { isActive: true },
+        /* `firstName` est lu ICI (et pas via un requête supplémentaire) parce
+         * que le compte est de toute façon relu dans la transaction pour la
+         * garde `isActive`. */
+        select: { isActive: true, firstName: true },
       });
       if (!account || account.isActive === false) {
         throw new ForbiddenException('Votre compte a été désactivé. Contactez Relio.');
@@ -1175,10 +1178,12 @@ export class TechnicianService {
         fromStatus: current.status,
         toStatus: 'ACCEPTED',
       });
-      await createNotification(
-        tx,
-        buildNotification('TECHNICIAN_ACCEPTED', demandeId, current.clientId, 'CLIENT'),
-      );
+      await createNotification(tx, {
+        ...buildNotification('TECHNICIAN_ACCEPTED', demandeId, current.clientId, 'CLIENT'),
+        /* Prénom du technicien qui a pris la mission : le client sait qui
+         * intervene sans ouvrir la demande. Aucun identifiant exposé. */
+        metadata: { technicianName: account.firstName ?? null },
+      });
 
       return assigned;
     });
@@ -1273,14 +1278,18 @@ export class TechnicianService {
         });
       }
       if (dto.status === 'SCHEDULED') {
-        await createNotification(
-          tx,
-          buildNotification('SCHEDULED', current.id, current.clientId, 'CLIENT'),
-        );
-        await createNotification(
-          tx,
-          buildNotification('SCHEDULED', current.id, userId, 'TECHNICIAN'),
-        );
+        /* La date de rendez-vous est la SEULE information réellement
+         * manquante au client pour organiser sa journée : elle est donc
+         * remontée en donnée structurée. ISO 8601, formatée par le frontend. */
+        const scheduledIso = scheduledAt?.toISOString() ?? null;
+        await createNotification(tx, {
+          ...buildNotification('SCHEDULED', current.id, current.clientId, 'CLIENT'),
+          metadata: { scheduledAt: scheduledIso },
+        });
+        await createNotification(tx, {
+          ...buildNotification('SCHEDULED', current.id, userId, 'TECHNICIAN'),
+          metadata: { scheduledAt: scheduledIso },
+        });
         notifyClientId = current.clientId;
       }
       if (dto.status === 'COMPLETED') {

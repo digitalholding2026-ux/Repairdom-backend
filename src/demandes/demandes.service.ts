@@ -437,10 +437,13 @@ export class DemandesService {
         });
 
         if (type === 'CONFIRMED' && current.technicianId) {
-          await createNotification(
-            tx,
-            buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
-          );
+          await createNotification(tx, {
+            ...buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
+            /* Montant final NET perçu par le technicien (devis + frais de
+             * transport, voir `finalAmount`). XAF entier : le frontend le
+             * formate en FCFA et l'affiche avant le paiement des revenus. */
+            metadata: { finalAmountXAF: current.finalAmount ?? null },
+          });
           notifyTechnicianId = current.technicianId;
         }
       }
