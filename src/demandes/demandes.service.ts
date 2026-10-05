@@ -76,9 +76,15 @@ export class DemandesService {
 
   async create(clientId: string, dto: CreateDemandeDto) {
     const medias = dto.medias ?? [];
-    const description = dto.description?.trim() ? dto.description.trim() : null;
-    // Dépôt de demande : une description textuelle OU au moins un média est
-    // exigé (le technicien doit toujours pouvoir comprendre la panne).
+    /* Le DTO impose déjà une description de 10 caractères minimum. Ce garde
+     * reste une SECONDE LIGNE DE DÉFENSE, à deux titres :
+     *  - `description` est trimée : une saisie de 10 espaces passe le DTO et
+     *    se vide ici ;
+     *  - le service reste appelable en interne (hors pipeline HTTP), où le
+     *    ValidationPipe global ne s'applique pas.
+     * Le message mentionne les médias, car un appelant direct qui n'a pas de
+     * description peut encore en fournir. */
+    const description = dto.description.trim() ? dto.description.trim() : null;
     if (!description && medias.length === 0) {
       throw new BadRequestException(
         'Décrivez votre problème (10 caractères minimum) ou ajoutez un message vocal, une vidéo ou une photo.',

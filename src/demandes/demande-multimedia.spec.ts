@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
+import assert from 'node:assert/strict';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { CreateDemandeDto } from './dto/create-demande.dto.js';
@@ -25,19 +26,66 @@ async function violations(input: CreateDemandeDto) {
   return validate(input);
 }
 
-describe('CreateDemandeDto — description optionnelle, médias IMAGE/VIDEO/AUDIO', () => {
-  it('sans description ni médias : DTO valide (le service exige ≥1 média)', async () => {
-    expect(await violations(validDto())).toEqual([]);
+/* Micro-fix DTO — la description est OBLIGATOIRE (10 caractères minimum).
+ * Avant ce correctif, le DTO laissait passer une demande sans texte et la
+ * décision était déléguée au service (« description OU ≥1 média »). La règle
+ * est désormais portée par le contrat lui-même : c'est ce qui empêche un
+ * appel direct à l'API de produire une demande inexploitable.
+ *
+ * `validDto()` reste SANS description par défaut : les tests du service plus
+ * bas portent précisément sur le cas « ni texte ni média » et « média seul »,
+ * et leur donner une description par défaut les viderait de leur sens. */
+describe('CreateDemandeDto — description obligatoire (10 à 1000 caractères)', () => {
+  it('sans description : DTO INVALIDE', async () => {
+    const errors = await violations(validDto());
+    assert.ok(errors.length > 0, 'une demande sans description doit être refusée');
+    // Le message doit nommer le champ, pour que le client sache quoi corriger.
+    const messages = errors.map((error) => Object.values(error.constraints ?? {}).join(' '));
+    assert.ok(
+      messages.some((message) => message.includes('description')),
+      `message attendu mentionnant la description, obtenu : ${JSON.stringify(messages)}`,
+    );
   });
 
-  it('description courte (<10) refusée, texte historique accepté', async () => {
-    expect(await violations(validDto({ description: 'court' }))).not.toEqual([]);
+  it('description absente MAIS médias présents : DTO INVALIDE quand même', async () => {
+    // Le service autorise encore « média seul » en appel direct, mais le
+    // contrat HTTP l'interdit : les médias ne remplacent pas le texte.
     expect(
-      await violations(validDto({ description: 'Le robinet de la cuisine fuit en continu.' })),
-    ).toEqual([]);
+      await violations(
+        validDto({
+          medias: [
+            { kind: 'IMAGE', name: 'p.jpg', mimeType: 'image/jpeg', sizeBytes: 100 },
+          ],
+        }),
+      ),
+    ).not.toEqual([]);
   });
 
-  it('médias IMAGE/VIDEO/AUDIO + storagePath acceptés', async () => {
+  it('description trop courte (<10) : refusée avec message clair', async () => {
+    const errors = await violations(validDto({ description: 'court' }));
+    assert.ok(errors.length > 0);
+    const messages = errors.map((error) => Object.values(error.constraints ?? {}).join(' '));
+    assert.ok(messages.some((message) => message.includes('10 caractères')));
+  });
+
+  it('description uniquement en espaces : refusée (10 espaces ≠ une description)', async () => {
+    // Cas que `@IsNotEmpty` + `@MinLength` laisseraient passer, et qui
+    // produirait exactement la demande vide que le correctif vise.
+    expect(await violations(validDto({ description: ' '.repeat(12) }))).not.toEqual([]);
+  });
+
+  it('description à 9 caractères : refusée ; à 10 : acceptée', async () => {
+    expect(await violations(validDto({ description: '123456789' }))).not.toEqual([]);
+    expect(await violations(validDto({ description: '1234567890' }))).toEqual([]);
+  });
+
+  it('description > 1000 caractères : refusée ; à 1000 : acceptée', async () => {
+    expect(await violations(validDto({ description: 'a'.repeat(1001) }))).not.toEqual([]);
+    expect(await violations(validDto({ description: 'a'.repeat(1000) }))).toEqual([]);
+  });
+});
+
+describe('CreateDemandeDto — médias IMAGE/VIDEO/AUDIO', () => {  it('médias IMAGE/VIDEO/AUDIO + storagePath acceptés', async () => {
     const dto = validDto({
       medias: [
         { kind: 'AUDIO', name: 'vocal.webm', mimeType: 'audio/webm', sizeBytes: 1200, storagePath: 'demandes/c-1/a.webm' },

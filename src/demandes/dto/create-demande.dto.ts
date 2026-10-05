@@ -9,6 +9,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -87,15 +88,27 @@ export class CreateDemandeDto {
   @MaxLength(80)
   problemId?: string;
 
-  /* Description libre du problème en langage naturel (parcours client :
-   * requise par le wizard, 10 caractères minimum). Le service exige une
-   * description OU au moins un média. Les textes historiques restent
-   * valides (colonne conservée). */
-  @IsOptional()
+  /* Description libre du problème, en langage naturel.
+   *
+   * OBLIGATOIRE (10 caractères minimum, 1000 maximum) : c'est la seule source
+   * de contexte lisible par le dispatch et par le technicien. Le wizard
+   * client l'exige déjà depuis l'étape « Votre panne » ; la règle est donc
+   * portée ici pour que TOUT appelant la respecte, y compris un appel direct
+   * à l'API qui contournerait l'interface.
+   *
+   * Rappel : un dossier sans descriptiontexte ne peut pas être classifié et
+   * arrive vide au technicien.
+   *
+   * `@Matches(/\S/)` : `@IsNotEmpty` et `@MinLength` acceptent une chaîne
+   * entièrement blanches («          » = 10 caractères). Sans ce garde-fou,
+   * la règle serait contournable en une ligne et le problème d'origine
+   * (demande inexploitable) resterait entier. */
   @IsString()
-  @MinLength(10)
-  @MaxLength(1000)
-  description?: string;
+  @IsNotEmpty({ message: 'Décrivez votre problème en quelques mots.' })
+  @MinLength(10, { message: 'La description doit contenir au moins 10 caractères.' })
+  @MaxLength(1000, { message: 'La description ne peut pas dépasser 1000 caractères.' })
+  @Matches(/\S/, { message: 'La description doit contenir au moins un caractère visible.' })
+  description: string;
 
   /* Parcours « Autre appareil » — indice structuré (code de famille, ex.
    * GAME_CONSOLE, UNKNOWN) choisi dans la liste du catalogue. Exigé par le

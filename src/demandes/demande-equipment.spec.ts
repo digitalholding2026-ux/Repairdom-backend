@@ -9,9 +9,13 @@ import { toApiDemande } from './demande-helpers.js';
 /* Parcours « Autre appareil » — indice structuré (code de famille) exigé
  * quand il n'y a pas de domaine catalogue. Prisma simulé, aucun réseau. */
 
+/* `description` est OBLIGATOIRE depuis le micro-fix DTO (10 caractères min).
+ * Elle est fournie par défaut ici pour que ces tests continuent de porter
+ * sur `equipmentFamily`/`domainId`, et non sur la description. */
 function dto(overrides: Record<string, unknown> = {}) {
   return plainToInstance(CreateDemandeDto, {
     categoryId: 'autre',
+    description: 'La console ne démarre plus du tout depuis hier soir.',
     city: 'Douala',
     medias: [{ kind: 'IMAGE', name: 'p.jpg', mimeType: 'image/jpeg', sizeBytes: 100 }],
     ...overrides,
