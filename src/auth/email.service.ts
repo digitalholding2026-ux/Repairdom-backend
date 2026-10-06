@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  buildKycRejectedEmail,
+  buildKycVerifiedEmail,
   buildMissionAvailableEmail,
   buildPasswordResetEmail,
   buildVerificationEmail,
@@ -152,6 +154,61 @@ export class EmailService {
    * par destinataire (In-App conservée) et journalise. */
   async sendMissionAvailable(to: string, input: MissionEmailInput): Promise<void> {
     const content = buildMissionAvailableEmail(input, this.footerLinks());
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  /* ── Chantier #5A — décision KYC ─────────────────────────────────────────
+   *
+   * Même politique d'erreur que `sendMissionAvailable` : l'appelant
+   * (`AdminService`) isole l'échec par canal et journalise, pour qu'un
+   * e-mail non parti n'annule NI la décision KYC déjà enregistrée NI les
+   * autres canaux (in-app, SSE, push).
+   *
+   * AUCUN MONTANT : ces e-mails ne transportent que du texte et un motif de
+   * rejet libre — la règle FCFA (XAF entier en base, formatage frontend) est
+   * donc hors sujet. Le motif est échappé par le gabarit. */
+
+  async sendKycVerifiedEmail(
+    to: string,
+    firstName: string,
+    dashboardUrl: string,
+  ): Promise<void> {
+    /* Resend non configuré : on journalise et on rend la main SANS appeler
+     * l'API (un `fetch` avec `Bearer null` ne ferait qu'ajouter un échec
+     * bruyant et inutile à chaque décision KYC en environnement de dev). */
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] décision KYC « identité vérifiée » pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    const content = buildKycVerifiedEmail(firstName, dashboardUrl, this.footerLinks());
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  async sendKycRejectedEmail(
+    to: string,
+    firstName: string,
+    reason: string,
+    kycUrl: string,
+  ): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] décision KYC « dossier à corriger » pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    const content = buildKycRejectedEmail(firstName, reason, kycUrl, this.footerLinks());
     await this.postEmail({
       to,
       subject: content.subject,

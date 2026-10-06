@@ -54,6 +54,16 @@ export interface NotificationMetadata {
   disputeStatus?: string;
   /** Texte de la décision administrative (DISPUTE_RESOLVED). */
   resolution?: string;
+  /** Statut KYC après décision administrative (KYC_VERIFIED / KYC_REJECTED).
+   *  Valeurs : `VERIFIED` | `REJECTED`. */
+  kycStatus?: string;
+  /** Motif de rejet littéral saisi par l'admin (KYC_REJECTED). Affiché tel
+   *  quel dans l'item de notification : c'est la seule information qui permet
+   *  au technicien de corriger son dossier. */
+  kycRejectionReason?: string;
+  /** Action attendue côté technicien (KYC_VERIFIED / KYC_REJECTED) :
+   *  `view_missions` (dossier validé) ou `fix_kyc` (dossier à corriger). */
+  kycAction?: string;
 }
 
 /**
@@ -90,6 +100,9 @@ const METADATA_KEYS: Array<keyof NotificationMetadata> = [
   'disputeCategory',
   'disputeStatus',
   'resolution',
+  'kycStatus',
+  'kycRejectionReason',
+  'kycAction',
 ];
 
 /**

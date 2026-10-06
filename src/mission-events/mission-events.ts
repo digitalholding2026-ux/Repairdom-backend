@@ -61,7 +61,10 @@ export type NotificationType =
   | 'TECHNICIAN_EN_ROUTE'
   // Litige : ouverture (admin + technicien) / décision (client + technicien).
   | 'DISPUTE_OPENED'
-  | 'DISPUTE_RESOLVED';
+  | 'DISPUTE_RESOLVED'
+  // Chantier #5A : décision KYC — notifiée au technicien concerné uniquement.
+  | 'KYC_VERIFIED'
+  | 'KYC_REJECTED';
 
 export interface EventInput {
   demandeId: string;
@@ -249,6 +252,17 @@ export function buildNotification(
     DISPUTE_RESOLVED: {
       title: 'Litige clôturé',
       message: 'L’administration a tranché le litige. Consultez la décision sur le dossier.',
+    },
+    // Chantier #5A. Le `message` reste volontairement SANS le motif : celui-ci
+    // voyage dans `metadata.kycRejectionReason` (jamais dans un texte figé),
+    // ce qui permet à l'app de l'afficher séparément sans dupliquer la donnée.
+    KYC_VERIFIED: {
+      title: 'Identité vérifiée',
+      message: 'Vous pouvez maintenant accepter des missions.',
+    },
+    KYC_REJECTED: {
+      title: 'Vérification à compléter',
+      message: 'Votre dossier doit être corrigé pour être validé.',
     },
   };
   const { title, message } = content[type];

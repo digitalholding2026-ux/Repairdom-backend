@@ -83,6 +83,11 @@ enum NotificationType {
   // décision notifiée au client (+ technicien assigné).
   DISPUTE_OPENED
   DISPUTE_RESOLVED
+  // Chantier #5A : décision KYC prise par un admin — notifiée au TECHNICIEN
+  // concerné uniquement. `KYC_REJECTED` est une ACTION (il doit corriger) ;
+  // `KYC_VERIFIED` un SUIVI (déblocage de l'acceptation de missions).
+  KYC_VERIFIED
+  KYC_REJECTED
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.

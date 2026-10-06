@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -15,6 +16,11 @@ import { Role } from '../generated/prisma/enums.js';
 import type { KycStatus } from '../generated/prisma/enums.js';
 import type { UpdateKycStatusDto } from './dto/update-kyc-status.dto.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
+import { RealtimeService } from '../realtime/realtime.service.js';
+import { PushService } from '../push/push.service.js';
+import { EmailService } from '../auth/email.service.js';
+import { ConfigService } from '@nestjs/config';
+import { buildNotificationMetadata } from '../notifications/notification-metadata.js';
 import {
   TECHNICIAN_MINIMUM_AGE,
   computeAge,
@@ -31,10 +37,30 @@ export const KYC_SIGNED_URL_TTL_SECONDS = 300;
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: SupabaseStorageService,
+    /* Chantier #5A : la décision KYC notifie le technicien sur 4 canaux.
+     * Les 4 paramètres sont OPTIONNELS au sens TypeScript (`?`) afin que les
+     * tests unitaires puissent n'instancier qu'(PRISMA, storage) — même
+     * convention que `TechnicianService`. Côté Nest, la résolution est
+     * effective : `AdminModule` importe `RealtimeModule` + `PushModule`, et
+     * `AuthModule` exporte `EmailService` (`ConfigModule` est global). */
+    private readonly realtime?: RealtimeService,
+    private readonly push?: PushService,
+    private readonly email?: EmailService,
+    private readonly config?: ConfigService,
   ) {}
+
+  /* Base publique du frontend, pour les liens des e-mails KYC. Repli
+   * identique à celui d'`EmailService` : un env Railway sans FRONTEND_URL ne
+   * doit pas produire un lien relatif dans un e-mail. */
+  private frontendUrl(): string {
+    const configured = this.config?.get<string>('FRONTEND_URL')?.trim().replace(/\/+$/, '');
+    return configured || 'https://relioo.space';
+  }
 
   async listKycFolders(status?: string) {
     const resolvedStatus = status ?? 'PENDING';
@@ -214,6 +240,9 @@ export class AdminService {
   ) {
     const profile = await this.prisma.technicianProfile.findUnique({
       where: { userId: technicianId },
+      /* Chantier #5A : l'e-mail de décision se personalize (prénom) et
+       * s'adresse au bon destinataire → on joint le compte. */
+      include: { user: { select: { email: true, firstName: true } } },
     });
     if (!profile) throw new NotFoundException('Dossier KYC introuvable.');
     if (profile.kycStatus !== 'PENDING') {
@@ -247,7 +276,134 @@ export class AdminService {
       }),
     ]);
 
+    /* Chantier #5A — la décision est ENREGISTRÉE. On notifie maintenant le
+     * technicien sur 4 canaux (in-app, SSE, push, e-mail).
+     *
+     * Deux règles absolues :
+     *  1. AUCUN canal ne peut faire échouer la décision déjà commitée : chaque
+     *     envoi est isolé, l'échec est journalisé sans donnée sensible, et
+     *     l'admin reçoit toujours son 200 + le dossier à jour ;
+     *  2. AUCUNE duplication possible : la garde `kycStatus !== 'PENDING'`
+     *     ci-dessus rend un second appel impossible (409), donc un seul
+     *     envoi par décision.
+     *
+     * Le `metadata` passe par `buildNotificationMetadata` (contrat #2D) :
+     * les clés KYC y sont désormais déclarées, sinon elles seraient
+     * silencieusement écartées.
+     */
+    const verdict = dto.status;
+    const isVerified = verdict === 'VERIFIED';
+    const title = isVerified ? 'Identité vérifiée' : 'Vérification à compléter';
+    const message = isVerified
+      ? 'Vous pouvez maintenant accepter des missions.'
+      : 'Votre dossier doit être corrigé pour être validé.';
+
+    /* ── Canal 1 : notification in-app (persistée) ── */
+    let notificationId: string | null = null;
+    try {
+      const notification = await this.prisma.notification.create({
+        data: {
+          userId: technicianId,
+          /* KYC ≠ mission : `demandeId` reste `null`, donc l'app affiche la
+           * notification à plat (jamais regroupée par mission). */
+          demandeId: null,
+          type: isVerified ? 'KYC_VERIFIED' : 'KYC_REJECTED',
+          title,
+          message,
+          metadata: buildNotificationMetadata({
+            kycStatus: verdict,
+            kycRejectionReason: isVerified ? null : reason,
+            kycAction: isVerified ? 'view_missions' : 'fix_kyc',
+          }),
+        },
+      });
+      notificationId = notification.id;
+    } catch (error) {
+      this.logKycChannelFailure('notification in-app', technicianId, error);
+    }
+
+    /* ── Canal 2 : SSE (signal temps réel + notification) ── */
+    if (this.realtime) {
+      try {
+        if (notificationId) {
+          this.realtime.publishToUser(technicianId, 'notification.created', {
+            notificationId,
+            kind: isVerified ? 'KYC_VERIFIED' : 'KYC_REJECTED',
+          });
+        }
+        this.realtime.publishToUser(
+          technicianId,
+          isVerified ? 'technician.kyc_verified' : 'technician.kyc_rejected',
+          {
+            technicianId,
+            kycStatus: verdict,
+            reason: isVerified ? null : reason,
+          },
+        );
+      } catch (error) {
+        this.logKycChannelFailure('SSE', technicianId, error);
+      }
+    }
+
+    /* ── Canal 3 : push web VAPID (onglet fermé) ── */
+    if (this.push) {
+      try {
+        /* `sendToUser` ne lève jamais (il retourne `{failed}`) et SUPPRIME
+         * l'envoi si une connexion SSE est active : c'est voulu, pas de
+         * doublon. `tag` par dossier : un push KYC écrase le précédent. */
+        await this.push.sendToUser(technicianId, {
+          title: isVerified ? 'Identité vérifiée' : 'Dossier à compléter',
+          body: isVerified
+            ? 'Vous pouvez maintenant accepter des missions.'
+            : 'Corrigez votre dossier pour être validé.',
+          tag: `kyc-${technicianId}`,
+          url: isVerified ? '/technicien/demandes' : '/technicien/kyc',
+          type: isVerified ? 'kyc_verified' : 'kyc_rejected',
+        });
+      } catch (error) {
+        this.logKycChannelFailure('push', technicianId, error);
+      }
+    }
+
+    /* ── Canal 4 : e-mail (Resend) ── */
+    const recipient = profile.user;
+    if (this.email && recipient?.email) {
+      try {
+        const base = this.frontendUrl();
+        if (isVerified) {
+          await this.email.sendKycVerifiedEmail(
+            recipient.email,
+            recipient.firstName,
+            `${base}/technicien/demandes`,
+          );
+        } else {
+          await this.email.sendKycRejectedEmail(
+            recipient.email,
+            recipient.firstName,
+            reason ?? '',
+            `${base}/technicien/kyc`,
+          );
+        }
+      } catch (error) {
+        this.logKycChannelFailure('e-mail', technicianId, error);
+      }
+    }
+
     return this.getKycFolder(technicianId);
+  }
+
+  /* Journalise l'échec d'un canal de notification KYC. Aucun secret, aucune
+   * donnée personnelle : uniquement l'identifiant technique du technicien. */
+  private logKycChannelFailure(
+    channel: string,
+    technicianId: string,
+    error: unknown,
+  ): void {
+    const reason = error instanceof Error ? error.message : 'erreur inconnue';
+    this.logger.warn(
+      `Canal KYC « ${channel} » en échec pour ${technicianId} : ${reason}. ` +
+        'La décision reste enregistrée.',
+    );
   }
 
   /* ── Supervision des missions (Sprint 8.6.5) ────────────────── */

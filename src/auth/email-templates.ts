@@ -28,6 +28,10 @@ export const PASSWORD_RESET_EMAIL_SUBJECT = 'Réinitialisez votre mot de passe �
 /** Durée réelle du lien (backend TTL reset = 1 heure par défaut). */
 export const PASSWORD_RESET_LINK_VALIDITY_LABEL = '1 heure';
 
+export const KYC_VERIFIED_EMAIL_SUBJECT = 'Votre identité est vérifiée — Relio';
+export const KYC_REJECTED_EMAIL_SUBJECT =
+  'Votre dossier de vérification nécessite une correction — Relio';
+
 export interface EmailFooterLinks {
   siteUrl: string;
   cguUrl: string;
@@ -261,4 +265,98 @@ export function buildMissionAvailableEmail(
     links,
   });
   return { subject: `Nouvelle mission disponible — Relio (${reference})`, text, html };
+}
+
+/* ── Chantier #5A — décision KYC (technicien) ───────────────────────────── */
+
+export interface KycEmailContent {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/** E-mail « identité vérifiée ». Ton rassurant, non technique : le technicien
+ *  n'a rien à faire, c'est une bonne nouvelle qui débloque les missions. */
+export function buildKycVerifiedEmail(
+  firstName: string,
+  dashboardUrl: string,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = firstName.trim() || 'Bonjour';
+  const text = [
+    `${name},`,
+    '',
+    'Félicitations, votre identité a été vérifiée par Relio.',
+    'Vous pouvez maintenant accepter des missions dans vos zones.',
+    '',
+    'Consulter les missions disponibles :',
+    '',
+    dashboardUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+  const html = emailLayout({
+    preheader: 'Votre identité est vérifiée : vous pouvez accepter des missions.',
+    title: 'Votre identité est vérifiée',
+    bodyHtml: [
+      paragraph(
+        `${escapeHtml(name)}, <strong>votre identité a été vérifiée par Relio.</strong> Vous pouvez maintenant accepter des missions dans vos zones.`,
+      ),
+      paragraph(
+        "Aucune autre démarche n'est nécessaire de votre côté : consultez les missions proposées dans votre secteur et acceptez celles qui vous conviennent.",
+        true,
+      ),
+    ].join(''),
+    ctaLabel: 'Voir les missions disponibles',
+    ctaUrl: dashboardUrl,
+    links,
+  });
+  return { subject: KYC_VERIFIED_EMAIL_SUBJECT, text, html };
+}
+
+/** E-mail « dossier à compléter ». Ton empathique et factuel : le motif est
+ *  cité tel quel (décision humaine, pas une formule), jamais une sanction. */
+export function buildKycRejectedEmail(
+  firstName: string,
+  reason: string,
+  kycUrl: string,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = firstName.trim() || 'Bonjour';
+  /* Le motif vient d'un saisie admin : on le borne pour ne pas déformer le
+   * gabarit (le DTO backend limite déjà à 500 caractères). */
+  const motif = reason.trim().slice(0, 500) || 'aucun motif renseigné';
+  const text = [
+    `${name},`,
+    '',
+    'Votre dossier de vérification n’a pas pu être validé pour le moment.',
+    `Motif : ${motif}`,
+    '',
+    'Vous pouvez corriger et renvoyer votre dossier depuis votre espace :',
+    '',
+    kycUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+  const html = emailLayout({
+    preheader: 'Votre dossier de vérification nécessite une correction.',
+    title: 'Votre dossier de vérification nécessite une correction',
+    bodyHtml: [
+      paragraph(
+        `${escapeHtml(name)}, votre dossier de vérification n’a pas pu être validé. Vous pouvez le corriger et le renvoyer : rien n’est perdu, vos accès restent actifs.`,
+      ),
+      infoBox([`Motif : <strong>${escapeHtml(motif)}</strong>`]),
+      paragraph('Corrigez le point indiqué, puis renvoyez votre dossier.', true),
+    ].join(''),
+    ctaLabel: 'Corriger mon dossier',
+    ctaUrl: kycUrl,
+    links,
+  });
+  return { subject: KYC_REJECTED_EMAIL_SUBJECT, text, html };
 }

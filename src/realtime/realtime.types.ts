@@ -16,6 +16,11 @@ export type RealtimeEventType =
   // Demandes technicien
   | 'technician.new_mission_available'
   | 'technician.mission_taken'
+  // Chantier #5A : décision KYC prise par un admin, émise sur le channel
+  // personnel du technicien (`user:<id>`). Permet à l'UI de rafraîchir son
+  // statut KYC sans rechargement de page.
+  | 'technician.kyc_verified'
+  | 'technician.kyc_rejected'
   // Devis
   | 'mission.quote_created'
   | 'mission.quote_accepted'
