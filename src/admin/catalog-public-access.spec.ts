@@ -74,16 +74,19 @@ describe('CatalogPublicController (frontière public / privé)', () => {
     });
   }
 
-  void test('GET /api/catalog/domains reste accessible AVEC cookie (inchangé)', async () => {
-    /* Le correctif ne doit rien casser pour un utilisateur connecté : la route
-     * reste la même, elle est simplement atteinte aussi sans cookie. */
+  void test('GET /api/catalog/domains : le cookie ne change rien au résultat', async () => {
+    /* Même assertion que les lectures anonymes, mais en Momentum d'y déposer
+     * un cookie : la route doit répondre EXACTEMENT pareil.
+     *
+     * La version précédente de ce test affirmait `not 200`, ce qui passait
+     * uniquement parce qu'aucune base n'est jointe en local (500). Against
+     * un vrai backend, un `200` est la réponse CORRECTE : l'assertion était
+     * donc fausse et vacuous — elle documentait le test, pas le comportement. */
     await request(app.getHttpServer())
       .get('/api/catalog/domains')
       .set('Cookie', 'repairdom_token=jeton-inexistant')
       .expect((res) => {
-        /* 401 ici signifierait que le guard est STILL appliqué — le token bogus
-         * est refusé par JwtAuthGuard. */
-        expect(res.status).not.toBe(200);
+        expect(res.status).not.toBe(401);
       });
   });
 
