@@ -7,3 +7,9 @@
 - [ ] Vérifier `assertPasswordStrong` aussi appliquée sur /auth/register
 - [ ] Supprimer routes temporaires /health/db et /health/migrations (post-diagnostic)
 - [ ] Nettoyer test demande-multimedia.spec.ts "média seul → SUCCESS" : décrit un état devenu inatteignable via HTTP depuis la validation DTO
+- [ ] Nettoyer toute référence à `api.relioo.space` (n'existe pas).
+      Chercher dans `.env.example`, README, commentaires.
+      Emplacements connus : `backend/.env.example`, `backend/src/saspay/saspay.config.ts`,
+      `backend/src/saspay/saspay-api.client.spec.ts`,
+      `frontend/src/lib/no-middleware.test.ts` (message d'un test).
+- [ ] Clarifier dans les docs que le backend Relio tourne sur Railway, pas sur le VPS (le VPS est un autre service).
