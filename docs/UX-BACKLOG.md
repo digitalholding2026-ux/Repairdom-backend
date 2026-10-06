@@ -95,3 +95,29 @@ qui est le niveau de garantie suffisant ici. Pas de bibliothèque de rendu React
       et de compteur de relances. C'est compact mais couplé : ajouter une 4e
       fenêtre exigerait de migrer les comptes existants. Acceptable tant qu'il
       n'y a que 3 relances ; à revoir si le périmètre s'élargit.
+
+## FIX catalogue anonyme — suivis (post-D2.5)
+
+- [ ] **Monitoring : aucun système n'alerte si un endpoint public retourne
+      401/403.** À instrumenter dans un chantier infra futur.
+      Contexte : le tunnel `/demande` est resté bloqué plusieurs cycles parce
+      que les routes `/catalog/*` étaient encore protégées, et **rien ne
+      l'avait signalé**. Les deux `catch` du wizard absorbaient l'erreur, donc
+      un 401 et une panne réseau donnaient la même image, sans trace. Le
+      correctif a depuis ajouté un `console.warn` (statut HTTP seul), ce qui
+      rend le diagnostic possible à la main — mais ne remplace pas une alerte :
+      il faut une remontée sur les 401/403 des routes censées être publiques.
+      Piste : compter les statuts par route dans `HttpExceptionFilter` et
+      exposer un compteur sur `/api/health`, à alerter depuis Railway.
+- [ ] **Point 7.1 : le retrait du `@UseGuards` de classe rend toute nouvelle
+      route GET publique par défaut.** Réévaluer dans 6 mois s'il faut
+      repasser à des guards méthode par méthode.
+      Contexte : `CatalogPublicController` a perdu ses guards de classe pour
+      rendre les référentiels lisibles par un visiteur anonyme ; `nationalities`
+      garde les siens au niveau méthode. Le risque est asymétrique et silencieux :
+      un futur `GET` portant une donnée de compte y échapperait sans erreur.
+      Garde-fous actuels : l'en-tête du controller, et un test qui interdit
+      l'introduction d'un verbe d'écriture. **Ce test ne couvre pas un GET.**
+      Arbitrage à réexaminer quand le volume de routes du controller aura
+      assez grandi pour que la liste explicite devienne plus sûre que le
+      défaut « public ».
