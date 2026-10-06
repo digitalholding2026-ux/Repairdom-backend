@@ -49,3 +49,24 @@ acceptée — ces tests verrouillent la chaîne formulaire → service → paylo
 (`signUp` relaie bien `cityId` dans le corps HTTP, bug à l'origine du 400), ce
 qui est le niveau de garantie suffisant ici. Pas de bibliothèque de rendu React
 à introduire pour ce chantier.
+
+## Chantier D1 — brouillon de demande (suivis)
+
+- [ ] **Cleanup des `DemandeDraft` orphelins (7 j+)** : la purge est
+      **paresseuse** (`deleteMany` déclenché à la création d'un nouveau
+      brouillon, `DemandeDraftService.create`), sans cron — le dépôt n'a pas de
+      `@nestjs/schedule`. Une table qui ne reçoit plus de créations ne se purge
+      donc plus. Surveiller `SELECT count(*) FROM "DemandeDraft"` en prod après
+      3 mois ; si la table grossit sans que la purge suive (faible trafic sur
+      `/demandes/drafts`), basculer sur un job planifié.
+      Rappel : seuls les brouillons **non convertis** sont purgés — un brouillon
+      converti est conservé au-delà de l'expiration (trace du rattachement et
+      preuve anti-rejeu du `token`).
+- [ ] `deleteMany` de purge n'est pas borné (`deleteMany` ne supporte pas
+      `take`). Le filtre s'appuie sur `@@index([expiresAt])`. À surveiller en
+      même temps que le point ci-dessus.
+- [ ] `DemandeDraftService.conversions` (sérialisation in-process des
+      conversions concurrentes d'un même `token`) n'est valable que sur une
+      instance unique. En cas de passage multi-instance Railway, remplacer par
+      une colonne d'état en base (`convertingAt`) — l'index unique sur
+      `convertedToDemandeId` reste, lui, la vraie barrière.

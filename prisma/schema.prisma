@@ -599,6 +599,60 @@ model Demande {
   @@index([equipmentFamily])
 }
 
+// Chantier D1 — brouillon de demande non authentifié.
+//
+// PRINCIPE : ne JAMAIS créer une `Demande` sans client. Un visiteur non
+// connecté décrit sa panne dans une ligne de cette table, protégée par un
+// `token` UUID v4 qui sert de lien magique. La `Demande` (statut SUBMITTED,
+// client_id renseigné, dispatch déclenché) n'est créée qu'au moment du
+// `convert`, une fois le compte créé et le cookie posé.
+//
+// Le `token` est un secret au même titre qu'un lien de réinitialisation :
+// il n'est jamais journalisé et n'est jamais exposé dans un journal applicatif.
+// `id` reste interne ; c'est `token` qui apparaît dans les URLs.
+//
+// PAS de relation Prisma vers `Demande` ni vers `User` : la conversion est un
+// point dans le temps, et garder `convertedToDemandeId` en simple colonne
+// évite d'imposer une contrainte d'intégrité sur une donnée historique
+// (une Demande supprimée en cascade ne doit pas faire disparaître la trace
+// de la conversion ni faire échouer la purge par expiration).
+model DemandeDraft {
+  id     String @id @default(dbgenerated("gen_random_uuid()"))
+  token  String @unique
+
+  // Champs du wizard — structure identique à `CreateDemandeDto`, SANS
+  // `medias` : les médias sont volontairement reportés après inscription
+  // (upload authentifié), donc absents du brouillon.
+  categoryId      String
+  domainId        String?
+  brandId         String?
+  equipmentFamily String?
+  description     String
+  city            String
+  neighborhood    String?
+  address         String?
+  landmark        String?
+  contactPhone    String?
+  latitude        Float?
+  longitude       Float?
+  requestedMode   String    @default("ASAP")
+  requestedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  // Rétention 7 jours (décision D1-4). Purge paresseuse à la création d'un
+  // nouveau brouillon — cf. `DemandeDraftService.create`.
+  expiresAt DateTime
+
+  // Rattachement — renseignés par `POST /demandes/drafts/:token/convert`.
+  convertedToDemandeId String?   @unique
+  convertedAt          DateTime?
+  convertedByUserId    String?
+
+  @@index([expiresAt])
+  @@index([convertedAt])
+}
+
 model DemandeEvent {
   id          String           @id @default(dbgenerated("gen_random_uuid()"))
   demandeId   String
