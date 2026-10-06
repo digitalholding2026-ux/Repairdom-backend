@@ -12,4 +12,8 @@
       Emplacements connus : `backend/.env.example`, `backend/src/saspay/saspay.config.ts`,
       `backend/src/saspay/saspay-api.client.spec.ts`,
       `frontend/src/lib/no-middleware.test.ts` (message d'un test).
+      → À traiter dans un chantier SasPay DÉDIÉ, avec le WIP SasPay/MSISDN déjà
+      en attente (extraction du normaliseur MSISDN dans `src/common/msisdn.ts`,
+      encore non commité). Volontairement hors #5A : le relay payout est un
+      composant séparé, sans rapport avec les notifications KYC.
 - [ ] Clarifier dans les docs que le backend Relio tourne sur Railway, pas sur le VPS (le VPS est un autre service).
