@@ -41,7 +41,18 @@ describe('Auth & Demandes (e2e)', () => {
     await app.close();
   });
 
-  it('POST /api/auth/register crée un client et pose un cookie HttpOnly', async () => {
+  /* Chantier D2.5 — le cookie est posé SYSTÉMATIQUEMENT, même pour un CLIENT
+   * dont l'e-mail n'est pas vérifié (`emailVerified: false`). Ce test
+   * l'attendait DÉJÀ avant D2.5 alors que le code conditionnait la pose à
+   * `user.emailVerified` : l'audit du flux avait signalé cette contradiction
+   * (elle était donc en échec sur `main`). Le comportement et le test sont
+   * désormais alignés.
+   *
+   * Ce que le cookie donne : l'IDENTITÉ (accès à `GET /auth/me`,
+   * `POST /demandes/drafts/:token/convert`). Ce qu'il ne donne pas :
+   * l'ACCÈS au dashboard, qui reste conditionné à la vérification e-mail
+   * côté frontend (`guard-decision.ts` → `/client/verification`). */
+  it('POST /api/auth/register crée un client et pose un cookie HttpOnly même non vérifié', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send(client)

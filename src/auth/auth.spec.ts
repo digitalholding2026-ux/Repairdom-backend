@@ -144,6 +144,68 @@ describe('register — validation métier', () => {
   });
 });
 
+/* Chantier D2.5 — le cookie de session est posé SYSTÉMATIQUEMENT à
+ * l'inscription, y compris pour un CLIENT dont l'e-mail n'est pas vérifié.
+ *
+ * C'est ce qui débloque le tunnel public « demande d'abord, inscription à la
+ * fin » : sans cookie, `POST /demandes/drafts/:token/convert` répondait 401
+ * et la demande ne pouvait jamais partir.
+ *
+ * La vérification d'e-mail reste obligatoire pour ACCÉDER au dashboard, mais
+ * elle est appliquée côté frontend (`guard-decision.ts`), pas par l'absence de
+ * cookie. Les deux contrôles sont distincts. */
+describe('register (controller) — cookie systématique', () => {
+  function registerWith(emailVerified: boolean) {
+    const user = { ...BASE_USER, emailVerified };
+    const service = {
+      register: vi.fn(async () => user),
+      verifyEmail: vi.fn(async () => ({ ...user, emailVerified: true })),
+      signToken: vi.fn(() => 'jwt.signe.test'),
+      setAuthCookie: vi.fn(),
+      clearAuthCookie: vi.fn(),
+    } as unknown as AuthService;
+    const controller = new AuthController(service);
+    const res = { cookie: vi.fn(), clearCookie: vi.fn() } as never;
+    return { controller, service, res, user };
+  }
+
+  it('CLIENT non vérifié : le cookie est QUAND MÊME posé', async () => {
+    const { controller, service, res, user } = registerWith(false);
+    await controller.register({} as never, res);
+    expect(service.setAuthCookie).toHaveBeenCalledTimes(1);
+    /* La preuve du bug corrigé : le conditionnel `if (user.emailVerified)`
+     * делаait échouer cette assertion. */
+    expect(user.emailVerified).toBe(false);
+  });
+
+  it('TECHNICIAN vérifié : le cookie est posé aussi', async () => {
+    const { controller, service, res } = registerWith(true);
+    await controller.register({} as never, res);
+    expect(service.setAuthCookie).toHaveBeenCalledTimes(1);
+  });
+
+  it("le token provient de AuthService (JWT signé, pas opaque)", async () => {
+    const { controller, service, res } = registerWith(false);
+    await controller.register({} as never, res);
+    expect(service.signToken).toHaveBeenCalledTimes(1);
+    expect(service.setAuthCookie).toHaveBeenCalledWith(res, 'jwt.signe.test');
+  });
+
+  it('verify-email pose toujours le cookie', async () => {
+    const { controller, service, res } = registerWith(true);
+    await controller.verifyEmail({ token: 't' } as never, res);
+    expect(service.setAuthCookie).toHaveBeenCalledTimes(1);
+  });
+
+  it('la réponse reste { user, mode } et ne divulgue aucun hash', async () => {
+    const { controller, res } = registerWith(false);
+    const body = await controller.register({} as never, res);
+    expect(body).toHaveProperty('user');
+    expect(body).toHaveProperty('mode', 'real');
+    expect(body.user.passwordHash).toBeUndefined();
+  });
+});
+
 describe('login — identifiants, état du compte, vérification', () => {
   it('email inconnu → 401 sans détail', async () => {
     const { service } = authService([]);

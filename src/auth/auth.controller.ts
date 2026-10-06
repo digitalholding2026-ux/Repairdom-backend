@@ -37,12 +37,23 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const user = await this.authService.register(dto);
-    // Comptes CLIENT : pas de session tant que l'email n'est pas vérifié.
-    // L'utilisateur est redirigé vers /client/verification puis se connecte
-    // après confirmation.
-    if (user.emailVerified) {
-      this.authService.setAuthCookie(res, this.authService.signToken(user));
-    }
+    /* Chantier D2.5 — la session est posée SYSTÉMATIQUEMENT, y compris pour
+     * un CLIENT dont l'e-mail n'est pas encore vérifié.
+     *
+     * POURQUOI CE CHANGEMENT (le conditionnel précédent était `if
+     * (user.emailVerified)`) : le cookie est une identité de session, pas un
+     * badge de vérification. Tant qu'il était conditionnel, le tunnel public
+     * « demande d'abord, inscription à la fin » était mort-né : après
+     * inscription, le visiteur n'avait aucun cookie, donc
+     * `POST /demandes/drafts/:token/convert` répondait 401 et la demande
+     * être envoyée.
+     *
+     * CE QUI N'A PAS CHANGÉ : la vérification d'e-mail reste obligatoire pour
+     * ACCÉDER au dashboard. `guard-decision.ts` (frontend) redirige un CLIENT
+     * `emailVerified === false` vers `/client/verification`, quelle que soit
+     * la présence du cookie. Le cookie donne donc l'identité, la vérification
+     * donne l'accès — les deux contrôles restent séparés. */
+    this.authService.setAuthCookie(res, this.authService.signToken(user));
     return { user, mode: 'real' };
   }
 

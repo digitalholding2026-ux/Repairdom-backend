@@ -7,6 +7,7 @@ import {
   buildPasswordResetEmail,
   buildRewardTierReachedEmail,
   buildVerificationEmail,
+  buildVerificationReminderEmail,
 } from './email-templates.js';
 
 /**
@@ -254,6 +255,47 @@ export class EmailService {
       text: content.text,
       html: content.html,
     });
+  }
+
+  /* ── Chantier D2.5 — relance de vérification d'e-mail ───────────────
+   *
+   * Mêmes conventions que `sendVerificationEmail` : jamais de throw (le
+   * scheduler doit pouvoir envoyer à tous les comptes même si l'un échoue),
+   * jamais de secret journalisé — le lien qui embarque le token n'apparaît
+   * jamais dans un log.
+   *
+   * `daysSinceCreation` est arrondi ici plutôt que dans le template : l'appelant
+   * calcule une durée, pas un nombre de jours « métier ». */
+  async sendVerificationReminderEmail(
+    to: string,
+    firstName: string,
+    verificationLink: string,
+    daysSinceCreation: number,
+  ): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] relance de vérification pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    try {
+      const content = buildVerificationReminderEmail(
+        firstName,
+        verificationLink,
+        daysSinceCreation,
+        this.footerLinks(),
+      );
+      await this.postEmail({
+        to,
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+      });
+      this.logger.log(`E-mail de relance de vérification envoyé à ${to}.`);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'erreur inconnue';
+      this.logger.error(`Échec d'envoi Resend (relance) pour ${to} : ${reason}.`);
+    }
   }
 
   /** Résumé d'erreur Resend (nom + message uniquement : jamais la clé ni le corps brut). */

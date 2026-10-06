@@ -430,3 +430,100 @@ export function buildRewardTierReachedEmail(
   });
   return { subject: REWARD_TIER_REACHED_EMAIL_SUBJECT, text, html };
 }
+
+/* ── Chantier D2.5 — relances de vérification d'e-mail ────────────────
+ *
+ * Ton VOLONTAIREMENT non culpabilisant : l'utilisateur n'a rien fait de mal,
+ * il a juste créé un compte et peut-être changé d'avis. Menacer ou
+ * dramatiser (« votre compte sera supprimé ») ferait fuir ; on rappelle
+ * l'intérêt de l'action et on laisse le choix.
+ *
+ * Trois variantes selon le jour : J+1 (trivial), J+3 (douce relance),
+ * J+7 (dernier rappel, sans ultimatum). */
+
+export interface VerificationReminderEmailContent {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/** Nombre maximal de relances envoyées par compte (jamais de 4e e-mail). */
+export const MAX_VERIFICATION_REMINDERS = 3;
+
+/* Sujets par jour. Un `switch` plutôt qu'un tableau indexé : un jour hors
+ * liste ne doit surtout pas produire un `undefined` en sujet d'e-mail. */
+export function verificationReminderSubject(daysSinceCreation: number): string {
+  if (daysSinceCreation >= 7) return 'Dernier rappel : activez votre compte Relio';
+  if (daysSinceCreation >= 3) return 'Toujours là ? Finalisez votre inscription Relio';
+  return 'Rappel : vérifiez votre email pour activer votre compte Relio';
+}
+
+/* Paragraphes d'introduction, par palier. */
+function reminderIntro(daysSinceCreation: number): string {
+  if (daysSinceCreation >= 7) {
+    return 'C’est le dernier rappel concernant la confirmation de votre adresse email sur Relio. Vous pouvez continuer à utiliser Relio uniquement avec une adresse vérifiée — c’est ce qui nous permet de vous prévenir en cas de mouvement sur vos demandes.';
+  }
+  if (daysSinceCreation >= 3) {
+    return 'Vous avez créé un compte Relio il y a quelques jours. Il ne reste qu’un détail pour qu’il soit pleinement opérationnel : confirmer votre adresse email.';
+  }
+  return 'Bienvenue sur Relio ! Il vous reste une petite étape pour que votre compte soit opérationnel : confirmer votre adresse email.';
+}
+
+/* Ce que l'utilisateur perd s'il ne vérifie pas — honnête, sans menace. */
+function reminderStakes(daysSinceCreation: number): string {
+  if (daysSinceCreation >= 7) {
+    return 'Sans confirmation, vous ne pourrez plus déposer ni suivre de demande de dépannage depuis ce compte. Vous pouvez aussi nous demander de supprimer votre compte à tout moment.';
+  }
+  return 'Sans confirmation, vous ne pourrez pas encore déposer de demande de dépannage ni suivre vos interventions.';
+}
+
+export function buildVerificationReminderEmail(
+  firstName: string,
+  link: string,
+  daysSinceCreation: number,
+  links: EmailFooterLinks,
+): VerificationReminderEmailContent {
+  const safeName = escapeHtml(firstName);
+  const safeDays = Math.max(0, Math.round(daysSinceCreation));
+  const subject = verificationReminderSubject(safeDays);
+  const text = [
+    `Bonjour ${firstName},`,
+    '',
+    reminderIntro(safeDays),
+    '',
+    `Pour confirmer votre adresse, cliquez sur le lien ci-dessous :`,
+    '',
+    link,
+    '',
+    reminderStakes(safeDays),
+    '',
+    "Si vous n'êtes pas à l'origine de cette inscription, ignorez cet e-mail.",
+    '',
+    'À bientôt,',
+    "L’équipe Relio",
+    '',
+    `Relio — ${links.siteUrl} — Conditions : ${links.cguUrl}`,
+  ].join('\n');
+  const html = emailLayout({
+    preheader: reminderIntro(safeDays),
+    title: 'Confirmez votre adresse email',
+    bodyHtml: [
+      paragraph(
+        `Bonjour ${safeName}, ${escapeHtml(reminderIntro(safeDays))}`,
+      ),
+      infoBox([
+        `Validité du lien : <strong>${VERIFICATION_LINK_VALIDITY_LABEL}</strong>`,
+        `Compte créé il y a <strong>${safeDays} jour${safeDays > 1 ? 's' : ''}</strong>`,
+      ]),
+      paragraph(escapeHtml(reminderStakes(safeDays))),
+      paragraph(
+        "Si vous n'êtes pas à l'origine de cette inscription, ignorez cet e-mail.",
+        true,
+      ),
+    ].join(''),
+    ctaLabel: 'Je vérifie mon adresse email',
+    ctaUrl: link,
+    links,
+  });
+  return { subject, text, html };
+}

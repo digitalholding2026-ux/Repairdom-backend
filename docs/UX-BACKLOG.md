@@ -70,3 +70,28 @@ qui est le niveau de garantie suffisant ici. Pas de bibliothèque de rendu React
       instance unique. En cas de passage multi-instance Railway, remplacer par
       une colonne d'état en base (`convertingAt`) — l'index unique sur
       `convertedToDemandeId` reste, lui, la vraie barrière.
+
+## Chantier D2.5 — relances de vérification e-mail (suivis)
+
+- [ ] **Vérifier que le scheduler de relances ne tourne pas en double si
+      plusieurs instances backend (Railway scale)** : le balayage est
+     horaire (`VerificationReminderScheduler.sweep`) et l'idempotence repose sur
+      `verificationReminderCount` + `lastVerificationReminderAt`. Ces garde-fous
+      sont efficaces en base, donc même deux instances convergent n'enverraient
+      au plus une relance par compte et par fenêtre — mais deux envois
+      simultanés restent possibles sur la fenêtre exacte (la relecture
+      « juste avant l'envoi » n'est pas atomique). Si Railway passe à
+      plusieurs réplicas, ajouter une colonne `verificationReminderClaimedAt`
+      et un `updateMany` conditionnel pour revendiquer la relance.
+      → Vérifier le nombre de réplicas réellement alloués après 3 mois.
+- [ ] **Si un utilisateur vérifie son email entre J+2 et J+3, le scheduler ne
+      doit PAS lui envoyer le rappel J+3** : c'est couvert par le filtre
+      `emailVerified: false` en base ET par la re-vérification juste avant
+      l'envoi (`sendReminder`). Le test unitaire « un compte déjà vérifié entre
+      la sélection et l'envoi ne reçoit rien » le verrouille, mais **rien ne
+      l'a vérifié contre un vrai Resend** : à confirmer en prod au premier
+      balayage réel.
+- [ ] Le compteur `verificationReminderCount` sert à la fois d'index de fenêtre
+      et de compteur de relances. C'est compact mais couplé : ajouter une 4e
+      fenêtre exigerait de migrer les comptes existants. Acceptable tant qu'il
+      n'y a que 3 relances ; à revoir si le périmètre s'élargit.
