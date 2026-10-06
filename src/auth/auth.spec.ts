@@ -252,22 +252,65 @@ describe('login — identifiants, état du compte, vérification', () => {
 });
 
 describe('verifyEmail / resend — sans oracle', () => {
-  it('token valide → vérifié + nettoyé', async () => {
+  /* Chantier FIX — le contrat a changé : le token n'est PLUS remis à `null`,
+   * et un rejeu sur un compte déjà vérifié est un SUCCÈS idempotent, pas un
+   * 400. Le motif est détaillé dans `AuthService.verifyEmail`. */
+  it('token valide → vérifié', async () => {
     const { service } = authService([
       { ...BASE_USER, emailVerified: false, emailVerificationToken: 'tok-1', emailVerificationExpiresAt: new Date(Date.now() + 3600_000) },
     ]);
-    const result = await service.verifyEmail('tok-1');
-    expect(result.emailVerified).toBe(true);
+    const { user, alreadyVerified } = await service.verifyEmail('tok-1');
+    expect(user.emailVerified).toBe(true);
+    expect(alreadyVerified).toBe(false);
   });
 
-  it('token expiré / inconnu / déjà vérifié → 400', async () => {
+  it('rejeu d’un token DÉJÀ VÉRIFIÉ → succès idempotent (plus un 400 trompeur)', async () => {
+    /* C'est le bug corrigé : le token étant mis à `null`, un rejeu ne
+     * trouvait aucun compte et renvoyait « lien invalide ou expiré », alors que
+     * tout allait bien. Le token reste donc une clé de recherche. */
+    const { service } = authService([
+      { ...BASE_USER, emailVerified: true, emailVerificationToken: 'tok-2', emailVerificationExpiresAt: new Date(Date.now() + 3600_000) },
+    ]);
+    const { user, alreadyVerified } = await service.verifyEmail('tok-2');
+    expect(alreadyVerified).toBe(true);
+    expect(user.emailVerified).toBe(true);
+  });
+
+  it('rejeu tardif : token expiré MAIS compte déjà vérifié → déjà vérifié', async () => {
+    /* Le cas le plus fréquent en pratique : on reclique le lien plusieurs jours
+     * après. Tester l'expiration AVANT « déjà vérifié » renverrait vers le
+     * message trompeur — l'ordre des vérifications compte. */
+    const { service } = authService([
+      { ...BASE_USER, emailVerified: true, emailVerificationToken: 'tok-3', emailVerificationExpiresAt: new Date(Date.now() - 1000) },
+    ]);
+    const { alreadyVerified } = await service.verifyEmail('tok-3');
+    expect(alreadyVerified).toBe(true);
+  });
+
+  it('token expiré / inconnu → 400', async () => {
     const { service } = authService([
       { ...BASE_USER, emailVerified: false, emailVerificationToken: 'tok-old', emailVerificationExpiresAt: new Date(Date.now() - 1000) },
     ]);
     await expect(service.verifyEmail('tok-old')).rejects.toMatchObject({ status: 400 });
     await expect(service.verifyEmail('tok-unknown')).rejects.toMatchObject({ status: 400 });
-    const used = authService([{ ...BASE_USER, emailVerified: true, emailVerificationToken: 'tok-2', emailVerificationExpiresAt: new Date(Date.now() + 3600_000) }]);
-    await expect(used.service.verifyEmail('tok-2')).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('la vérification n’efface PAS le token (sinon le rejeu ne trouve plus rien)', async () => {
+    /* L'invariant central du correctif. Le token n'est PAS réécrit : il garde
+     * sa valeur en base, ce qui le rend à nouveau trouvable au rejeu. Écrire
+     * `emailVerificationToken: null` ici — l'ancien comportement — ferait
+     * repasser le test « déjà vérifié » en échec et renverrait l'utilisateur au
+     * message d'erreur trompeur. */
+    const { service } = authService([
+      { ...BASE_USER, emailVerified: false, emailVerificationToken: 'tok-keep', emailVerificationExpiresAt: new Date(Date.now() + 3600_000) },
+    ]);
+    const update = vi.fn(async () => ({ ...BASE_USER, emailVerified: true }));
+    (service as any).prisma.user.update = update;
+    await service.verifyEmail('tok-keep');
+    const data = update.mock.calls[0][0].data;
+    expect(data.emailVerified).toBe(true);
+    expect(data.emailVerificationToken).toBeUndefined();
+    expect(data.emailVerificationExpiresAt).toBeUndefined();
   });
 
   it('resend → toujours { ok:true }, envoi seul si client non vérifié', async () => {

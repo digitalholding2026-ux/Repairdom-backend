@@ -301,26 +301,53 @@ export class AuthService {
     return this.toAuthUser(found);
   }
 
-  async verifyEmail(token: string): Promise<AuthUser> {
+  /* CHANTIER FIX — token rejouable, vérification idempotente.
+   *
+   * LE PROBLÈME : le token était mis à `null` dès la première vérification.
+   * Un rejeu du même lien (préchargement par un scanner e-mail, double
+   * navigateur, utilisateur qui reclique) ne trouvait donc PLUS aucun compte et
+   * tombait sur « lien invalide ou expiré » — un message FASSE, alors que le
+   * compte était parfaitement vérifié. Le branche `if (found.emailVerified)`
+   * sous le `null` était donc du code mort : inatteignable en pratique.
+   *
+   * LE CORRECTIF : le token est CONSERVÉ après vérification. Il ne sert plus à
+   * rien une fois l'adresse vérifiée — la ligne `emailVerified` ci-dessous est
+   * la seule qui autorise quoi que ce soit — mais il reste une clé de
+   * recherche, ce qui permet de répondre honnêtement « déjà vérifiée » au
+   * lieu d'un 400 trompeur.
+   *
+   * SÉCURITÉ : conserver le token n'ouvre rien. Il n'accorde aucun droit une
+   * fois `emailVerified === true`, il ne permet ni connexion ni accès. Un
+   * nouveau lien (renvoi ou relance) écrase l'ancien, donc un token fuite ne
+   * reste pas exploitable indéfiniment.
+   *
+   * ORDRE DES VÉRIFICATIONS : « déjà vérifiée » est testé AVANT l'expiration.
+   * Le cas le plus fréquent est un lien rejoué des jours plus tard : exiger
+   * une expiration valide renverrait à nouveau vers le message trompeur.
+   */
+  async verifyEmail(token: string): Promise<{ user: AuthUser; alreadyVerified: boolean }> {
     const trimmed = token.trim();
     const found = await this.prisma.user.findFirst({
       where: { emailVerificationToken: trimmed },
     });
+    if (!found) {
+      throw new BadRequestException(EMAIL_INVALID_OR_EXPIRED);
+    }
+    /* Idempotent : rien à réécrire, la session est rétablie normalement. */
+    if (found.emailVerified) {
+      return { user: this.toAuthUser(found), alreadyVerified: true };
+    }
     if (
-      !found ||
       !found.emailVerificationExpiresAt ||
       found.emailVerificationExpiresAt.getTime() < Date.now()
     ) {
       throw new BadRequestException(EMAIL_INVALID_OR_EXPIRED);
     }
-    if (found.emailVerified) {
-      throw new BadRequestException('Cette adresse email est déjà vérifiée.');
-    }
     const updated = await this.prisma.user.update({
       where: { id: found.id },
-      data: { emailVerified: true, emailVerificationToken: null, emailVerificationExpiresAt: null },
+      data: { emailVerified: true },
     });
-    return this.toAuthUser(updated);
+    return { user: this.toAuthUser(updated), alreadyVerified: false };
   }
 
   /** Renvoie le lien de validation sans jamais révéler si l'adresse existe. */

@@ -60,9 +60,14 @@ export class AuthController {
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   async verifyEmail(@Body() dto: VerifyEmailDto, @Res({ passthrough: true }) res: Response) {
-    const user = await this.authService.verifyEmail(dto.token);
+    const { user, alreadyVerified } = await this.authService.verifyEmail(dto.token);
+    /* La session est (re)posée dans les deux cas : un rejeu de lien après
+     * vérification doit rendre service, pas renvoyer vers une erreur. */
     this.authService.setAuthCookie(res, this.authService.signToken(user));
-    return { user, mode: 'real' };
+    /* `alreadyVerified` n'est PAS une erreur : c'est un 200 qui dit « rien à
+     * faire, c'est bon ». Le frontend affiche alors une confirmation au lieu
+     * d'alerter l'utilisateur à tort. */
+    return { user, mode: 'real', alreadyVerified };
   }
 
   @Post('resend-verification')
