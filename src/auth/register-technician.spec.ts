@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth.service.js';
+import { ALLOWED_CATEGORIES } from '../demandes/categories.js';
 
 /* Chantier #5B — la ville devient une RÉFÉRENCE obligatoire à l'inscription
  * du technicien.
@@ -181,6 +182,41 @@ describe('register TECHNICIAN — ville de référence obligatoire (chantier #5B
 
     await expect(service.register(payload as never)).rejects.toThrow(/téléphone/i);
     expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+});
+
+/* Contrat de catégories partagées : le frontend n'affiche que des ids de
+ * `REQUEST_CATEGORIES`, mais c'est l'API qui les filtre via
+ * `@IsIn(ALLOWED_CATEGORIES)`. Toute divergence ferait échouer l'inscription
+ * avec une catégorie pourtant sélectionnable à l'écran. */
+describe('register TECHNICIAN — catégories partagées avec le frontend', () => {
+  it('chaque catégorie de REQUEST_CATEGORIES est acceptée par ALLOWED_CATEGORIES', () => {
+    expect([...ALLOWED_CATEGORIES]).toEqual([
+      'electricite',
+      'plomberie',
+      'climatisation',
+      'electromenager',
+      'serrurerie',
+      'informatique',
+      'autre',
+    ]);
+  });
+
+  it('les catégories réellement envoyées par le formulaire passent sans rejet', async () => {
+    const { service, createdUsers, createdProfiles } = harness();
+    const categories = ['climatisation', 'electromenager'];
+
+    await service.register(technicianPayload({ categories }) as never);
+
+    expect(createdUsers).toHaveLength(1);
+    expect(createdProfiles).toHaveLength(1);
+    expect(createdProfiles[0]).toMatchObject({ categories });
+  });
+
+  it('une catégorie hors ALLOWED_CATEGORIES est refusée (garde @IsIn)', () => {
+    expect((ALLOWED_CATEGORIES as readonly string[]).includes('climatisation_installation')).toBe(
+      false,
+    );
   });
 });
 
