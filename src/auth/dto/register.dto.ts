@@ -5,6 +5,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -51,6 +52,24 @@ export class RegisterDto {
   @IsIn(['CLIENT', 'TECHNICIAN'])
   role?: 'CLIENT' | 'TECHNICIAN';
 
+  /* ── Ville ──────────────────────────────────────────────────────────────
+   *
+   * Chantier #5B — la ville devient une RÉFÉRENCE structurée, plus un texte.
+   *
+   * `cityId` reste OPTIONNEL dans le DTO : celui-ci ne connaît pas le rôle,
+   * or l'obligation est propre au TECHNICIAN (c'est lui qu'on doit géolocaliser
+   * pour le dispatch). C'est `AuthService.register` qui l'exige pour ce seul
+   * rôle — un CLIENT s'inscrit sans ville de référence. existence + activité
+   * sont vérifiées côté service, sur la table : la source de vérité est
+   * `ServiceCity`, jamais cette classe.
+   */
+  @IsOptional()
+  @IsUUID()
+  cityId?: string;
+
+  /* Ville en texte libre : conservé (CLIENT, et repli d'historique). Pour un
+   * technicien furnished avec `cityId`, c'est le service qui renseigne ce
+   * champ depuis `ServiceCity.name` : le frontend ne l'envoie donc plus. */
   @IsOptional()
   @IsString()
   @MaxLength(120)

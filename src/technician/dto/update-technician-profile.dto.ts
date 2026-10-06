@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -43,6 +44,24 @@ const MIN_EXPERIENCE_YEARS = 0;
 const MAX_EXPERIENCE_YEARS = 70;
 
 export class UpdateTechnicianProfileDto {
+  /* ── Chantier #5B — ville de référence ────────────────────────────────
+   *
+   * `cityId` est le nouveau chemin STRUCTURÉ : c'est lui qui débloque la
+   * gestion des zones (/technicien/zones n'offre plus de renvoyer vers le
+   * profil) et qui permet de filtrer les missions par ville.
+   *
+   * `city` (texte) reste accepté pour les appelants historiques, mais il ne
+   * peut PLUS-alone résoudre : sans matching fiable il produisait des
+   * comptes sans rattachement. Si les deux sont fournis, `cityId` l'emporte :
+   * c'est la donnée de référence, le texte ne fait qu'afficher.
+   *
+   * Existence + activité de la ville sont vérifiées côté service sur
+   * `ServiceCity` (source de vérité), pas ici.
+   */
+  @IsOptional()
+  @IsUUID()
+  cityId?: string;
+
   @IsOptional()
   @IsString()
   @IsNotEmpty()

@@ -134,6 +134,14 @@ interface ServiceCityReader {
   };
 }
 
+/** Lecteur par identifiant : `findFirst` est requis (lecture d'une ville
+ *  choisie, pas d'une liste). */
+interface ServiceCityByIdReader {
+  serviceCity: {
+    findFirst(args: unknown): Promise<CityCandidate | null>;
+  };
+}
+
 /**
  * Résolution non bloquante adossée à la base (villes actives uniquement).
  * Ne rejette jamais : retourne null quand rien ne correspond sans ambiguïté.
@@ -150,6 +158,30 @@ export async function resolveCityId(
     select: { id: true, name: true, slug: true, isActive: true },
   });
   return resolveCityIdFromCandidates(cities, cityText);
+}
+
+/**
+ * Chantier #5B — lecture d'une ville par son IDENTIFIATEUR, sans matching.
+ *
+ * Contrairement à `resolveCityId`, il n'y a ici ni ambiguïté ni tolérance :
+ * l'appelant a déjà choisi la ville dans un `Select` alimenté par
+ * `GET /cities`. Il faut donc une réponse NETTE — la ville existe-t-elle et
+ * est-elle encore active ? — parce que le nom fait foi pour l'affichage.
+ *
+ * Une ville désactivée est traitée comme INTROUVABLE : rattacher un compte à
+ * une ville retirée du service la ferait disparaître des listes sans aucune
+ * action humaine. `null` = à refuser par l'appelant (400), jamais à deviner.
+ */
+export async function findActiveCityById(
+  prisma: ServiceCityByIdReader,
+  cityId: string | null | undefined,
+): Promise<CityCandidate | null> {
+  if (!cityId) return null;
+  const city = await prisma.serviceCity.findFirst({
+    where: { id: cityId, isActive: true },
+    select: { id: true, name: true, slug: true, isActive: true },
+  });
+  return city ?? null;
 }
 
 export interface ResolvedGeo {

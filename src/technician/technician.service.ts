@@ -19,7 +19,7 @@ import {
 } from '../mission-events/mission-events.js';
 import type { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto.js';
 import type { TechnicianUpdateStatusDto } from './dto/update-status.dto.js';
-import { resolveCityId } from '../geo/city-reference.js';
+import { resolveCityId, findActiveCityById } from '../geo/city-reference.js';
 import { filterActiveCoverageZoneIdsForCity } from '../geo/geo-matching.js';
 import {
   GPS_FRESHNESS_MS,
@@ -287,18 +287,28 @@ export class TechnicianService {
     this.assertAdultWhenActivating(effectiveBirthDate, dto.isAvailable === true);
 
     if (!existing) {
-      if (!dto.city || !dto.categories || dto.categories.length === 0) {
+      /* Chantier #5B — `cityId` satisfait l'exigence de ville au même titre que
+       * le texte : la ville de référence est ce qui compte, pas sa saisie. */
+      if ((!dto.city && !dto.cityId) || !dto.categories || dto.categories.length === 0) {
         throw new BadRequestException(
           'Profil technicien incomplet. Veuillez compléter votre profil.',
         );
       }
-      // Sprint 8.8.2 (règle D) — résolution non bloquante : correspondance
-      // unique active → cityId, sinon null, sans modifier le texte saisi.
-      const cityId = await resolveCityId(this.prisma, dto.city.trim());
+      /* Même arbitrage que sur le chemin `existing` : `cityId` l'emporte,
+       * sinon on retombe sur la résolution non bloquante du texte
+       * (règle D 8.8.2 — correspondance unique active, sinon null sans
+       * modifier le texte saisi). */
+      const referenceCity =
+        dto.cityId !== undefined ? await findActiveCityById(this.prisma, dto.cityId) : null;
+      if (dto.cityId !== undefined && !referenceCity) {
+        throw new BadRequestException('Ville introuvable.');
+      }
+      const cityId = referenceCity ? referenceCity.id : await resolveCityId(this.prisma, dto.city!.trim());
+      const cityName = referenceCity ? referenceCity.name : dto.city!.trim();
       profile = await this.prisma.technicianProfile.create({
         data: {
           userId,
-          city: dto.city.trim(),
+          city: cityName,
           cityId,
           categories: dto.categories,
           isAvailable: dto.isAvailable ?? false,
@@ -317,14 +327,51 @@ export class TechnicianService {
         include: { user: { select: { firstName: true, lastName: true, phone: true, whatsapp: true, email: true, role: true } } },
       });
     } else {
-      // Un texte de ville modifié invalide le `cityId` précédent : il est
-      // re-résolu (ou remis à null) au lieu d'être conservé tel quel.
-      const cityId =
-        dto.city !== undefined ? await resolveCityId(this.prisma, dto.city.trim()) : undefined;
+      /* ── Chantier #5B — ville de référence ──
+       *
+       * Deux chemins, et UN SEUL registre source de vérité :
+       *  - `cityId` fourni : la ville est ASSERTÉE (existe + active). Le nom
+       *    vient de `ServiceCity`, jamais du client : l'affichage et le
+       *    référentiel ne peuvent pas diverger. Une ville inconnue ou
+       *    désactivée est REFUSÉE (400), jamais devinée ni tolérée ;
+       *  - sinon, `city` texte fourni : comportement historique — résolution
+       *    non bloquante (règle D 8.8.2), qui peut laisser `cityId` à null.
+       *
+       * Si les deux arrivent, `cityId` l'emporte : c'est la référence, le
+       * texte ne sert qu'à l'affichage.
+       *
+       * `User.city` / `User.cityId` sont alignés sur la même ville : le
+       * dispatch et les listes lisent le compte, pas seulement le profil.
+       * Sans cet alignement, un technicien verrait ses zones calculées depuis
+       * une ville et ses missions filtrées depuis une autre.
+       */
+      let cityData: { city: string; cityId: string | null } | undefined;
+      let syncUserCity = false;
+      if (dto.cityId !== undefined) {
+        const reference = await findActiveCityById(this.prisma, dto.cityId);
+        if (!reference) {
+          throw new BadRequestException('Ville introuvable.');
+        }
+        cityData = { city: reference.name, cityId: reference.id };
+        syncUserCity = true;
+      } else if (dto.city !== undefined) {
+        // Un texte de ville modifié invalide le `cityId` précédent : il est
+        // re-résolu (ou remis à null) au lieu d'être conservé tel quel.
+        cityData = {
+          city: dto.city.trim(),
+          cityId: await resolveCityId(this.prisma, dto.city.trim()),
+        };
+      }
+      if (cityData && syncUserCity) {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { city: cityData.city, cityId: cityData.cityId },
+        });
+      }
       profile = await this.prisma.technicianProfile.update({
         where: { userId },
         data: {
-          ...(dto.city !== undefined ? { city: dto.city.trim(), cityId } : {}),
+          ...(cityData ? { city: cityData.city, cityId: cityData.cityId } : {}),
           ...(dto.categories !== undefined ? { categories: dto.categories } : {}),
           ...(dto.isAvailable !== undefined ? { isAvailable: dto.isAvailable } : {}),
           ...(dto.bio !== undefined ? { bio: dto.bio } : {}),

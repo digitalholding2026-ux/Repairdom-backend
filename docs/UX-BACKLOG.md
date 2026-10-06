@@ -17,3 +17,8 @@
       encore non commité). Volontairement hors #5A : le relay payout est un
       composant séparé, sans rapport avec les notifications KYC.
 - [ ] Clarifier dans les docs que le backend Relio tourne sur Railway, pas sur le VPS (le VPS est un autre service).
+- [ ] Commit séparé pour saspay-networks.ts + msisdn.ts (WIP hors #5B).
+      `src/saspay/saspay-networks.ts` (ré-export du normaliseur) et
+      `src/common/msisdn.ts` (nouveau module) sont en attente sur l'arbre de
+      travail depuis #5A/#5B, volontairement exclus des commits de ces
+      chantiers. Chantier SasPay à ouvrir séparément.

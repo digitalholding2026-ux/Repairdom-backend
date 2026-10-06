@@ -90,7 +90,18 @@ const fakePrisma = {
     }),
   },
   technicianProfile: { create: vi.fn(async ({ data }: any) => ({ id: 'tp-1', ...data })) },
-  serviceCity: { findMany: vi.fn(async () => []) },
+  serviceCity: {
+    findMany: vi.fn(async () => []),
+    /* Chantier #5B — l'inscription d'un TECHNICIAN exige désormais une ville
+     * de RÉFÉRENCE (`cityId` : un UUID, validé et actif dans `ServiceCity`) et
+     * non un texte libre. Ce test porte sur le reset de mot de passe : sa
+     * fixture doit respecter le contrat d'inscription courant. */
+    findFirst: vi.fn(async ({ where }: any) =>
+      where?.id === '11111111-1111-4111-8111-111111111111'
+        ? { id: '11111111-1111-4111-8111-111111111111', name: 'Douala', slug: 'douala', isActive: true }
+        : null,
+    ),
+  },
   passwordResetAttempt: {
     deleteMany: vi.fn(async ({ where }: any) => {
       const lt = where.createdAt?.lt as Date | undefined;
@@ -181,6 +192,9 @@ describe('flow HTTP : login → reset → login → dashboard', () => {
         email: 'tech@example.com',
         password: 'OldPass123',
         role: 'TECHNICIAN',
+        /* Chantier #5B : ville de référence structurée. Un texte libre ne
+         * rattache plus le compte au référentiel des villes. */
+        cityId: '11111111-1111-4111-8111-111111111111',
         city: 'Douala',
         categories: ['plomberie'],
       })

@@ -26,7 +26,7 @@ import {
 import type { RegisterDto } from './dto/register.dto.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { UpdateMeDto } from './dto/update-me.dto.js';
-import { resolveCityId } from '../geo/city-reference.js';
+import { findActiveCityById, resolveCityId } from '../geo/city-reference.js';
 import { EmailService } from './email.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
@@ -160,8 +160,13 @@ export class AuthService {
       if (!dto.phone?.trim()) {
         throw new BadRequestException('Le téléphone est requis pour un compte technicien.');
       }
-      if (!dto.city?.trim()) {
-        throw new BadRequestException("La ville d'intervention est requise.");
+      /* Chantier #5B — la ville n'est plus un texte : c'est une RÉFÉRENCE
+       * obligatoire. Sans elle, le technicien n'apparaît dans aucun filtre
+       * ville et ne peut couvrant aucune zone : il ne recevrait jamais de
+       * mission. Le texte libre ne suffisait pas (cf. Problème 1 de l'audit :
+       * ville non rattachée au référentiel). */
+      if (!dto.cityId) {
+        throw new BadRequestException('Ville obligatoire pour un compte technicien.');
       }
       if (!dto.categories || dto.categories.length === 0) {
         throw new BadRequestException('Sélectionnez au moins une catégorie de réparation.');
@@ -179,11 +184,32 @@ export class AuthService {
 
     const passwordHash = await hashPassword(dto.password);
 
-    // Sprint 8.8.2 (règle D) — résolution non bloquante du texte de ville vers
-    // le référentiel actif. Correspondance unique → cityId ; sinon null, sans
-    // rejeter l'inscription et sans modifier le texte saisi.
-    const cityText = dto.city?.trim() || null;
-    const cityId = await resolveCityId(this.prisma, cityText);
+    /* ── Ville : deux régimes distincts, jamais mélangés ──
+     *
+     * TECHNICIAN (#5B) : la ville est une référence ASSERTÉE. `cityId` est
+     * obligatoire (garde ci-dessus) et DOIT exister et être active : on
+     * refuse l'inscription plutôt que d'enregistrer un compte que le dispatch
+     * ne pourra jamais géolocaliser. Le texte `city` n'est plus une saisie :
+     * il est dérivé du `ServiceCity.name`, ce qui garantit que l'affichage et
+     * le référentiel ne peuvent pas diverger (« Douala » vs « douala »).
+     *
+     * CLIENT : comportement INCHANGÉ. Le texte reste saisi librement et n'est
+     * rattaché au référentiel que si la correspondance est unique (règle D
+     * du sprint 8.8.2, non bloquante) — sinon `cityId` reste null.
+     */
+    let cityText: string | null;
+    let cityId: string | null;
+    if (isTechnician) {
+      const reference = await findActiveCityById(this.prisma, dto.cityId);
+      if (!reference) {
+        throw new BadRequestException('Ville introuvable.');
+      }
+      cityId = reference.id;
+      cityText = reference.name;
+    } else {
+      cityText = dto.city?.trim() || null;
+      cityId = await resolveCityId(this.prisma, cityText);
+    }
 
     // Comptes CLIENT : vérification email obligatoire avant premier accès.
     // Les techniciens sont vérifiés d'office (parcours approuvé par l'admin).
@@ -218,7 +244,9 @@ export class AuthService {
           await tx.technicianProfile.create({
             data: {
               userId: created.id,
-              city: dto.city!.trim(),
+              /* `cityText` vient de `ServiceCity.name` (cf. bloc ville) :
+               * plus de `dto.city!`, qui n'est plus envoyé par le frontend. */
+              city: cityText!,
               cityId,
               categories: dto.categories!,
             },
