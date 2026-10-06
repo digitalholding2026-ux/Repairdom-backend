@@ -22,3 +22,30 @@
       `src/common/msisdn.ts` (nouveau module) sont en attente sur l'arbre de
       travail depuis #5A/#5B, volontairement exclus des commits de ces
       chantiers. Chantier SasPay à ouvrir séparément.
+- [ ] `package-lock.json` désynchronisé de `package.json`.
+      `npm ci` échoue en `EUSAGE` (`Missing: typescript@5.9.3 from lock file`) :
+      `package.json` demande `typescript@^6.0.2`, le lock résout `6.0.3`, et
+      `@nestjs/cli` réclame `~6.0.2` en dépendance dure sans entrée correspondante.
+      → Vérifier si le builder Nixpacks de Railway exécute réellement `npm ci`.
+      Les déploiements #5A et #5B sont passés, donc le build n'est pas cassé en
+      pratique, mais le lock reste inutilisable en local et le serait en CI.
+      Traiter dans un commit dédié (`npm install` pour régénérer le lock), sans
+      le mélanger à un chantier fonctionnel.
+- [ ] Échec de test pré-existant FRONTEND : `design-system.test.ts`
+      (« logo : le pin est posé sur la ligne de base du texte »).
+      Vérifié en échec sur `main` sans modification locale (au moment du commit
+      `21ee3c7`). Sans rapport avec l'inscription technicien.
+- [ ] Échecs de tests pré-existants BACKEND : `demande-multimedia.spec.ts`
+      (3 tests sur `description` / médias).
+      Idem vérifiés en échec sur `main` au commit `b907455`. Le même fichier est
+      déjà listé plus haut pour un état devenu inatteignable via HTTP : à traiter
+      dans la même passe.
+
+Note sur la couverture des tests d'inscription technicien (`21ee3c7`) :
+les tests frontend du chantier #5B sont des CONTRATS par lecture statique des
+sources (convention du dépôt, cf. `no-middleware.test.ts`), pas du rendu React :
+l'alias `@/` interdit d'importer le composant dans `node --test`. Limitation
+acceptée — ces tests verrouillent la chaîne formulaire → service → payload
+(`signUp` relaie bien `cityId` dans le corps HTTP, bug à l'origine du 400), ce
+qui est le niveau de garantie suffisant ici. Pas de bibliothèque de rendu React
+à introduire pour ce chantier.
