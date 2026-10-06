@@ -5,6 +5,7 @@ import {
   buildKycVerifiedEmail,
   buildMissionAvailableEmail,
   buildPasswordResetEmail,
+  buildRewardTierReachedEmail,
   buildVerificationEmail,
 } from './email-templates.js';
 
@@ -209,6 +210,44 @@ export class EmailService {
       return;
     }
     const content = buildKycRejectedEmail(firstName, reason, kycUrl, this.footerLinks());
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  /* ── Chantier #4A — récompenses client ──
+   *
+   * AUCUN MONTANT dans le contenu : le gabarit affiche le libellé du palier
+   * et le nombre de missions restantes, pas une valeur en FCFA (règle FCFA :
+   * formatage à l'affichage, par `formatFCFA` côté frontend).
+   *
+   * Comme pour le KYC : Resend non configuré = simple journalisation, l'envoi
+   * n'échoue jamais et le flux récompenses n'est jamais bloqué par l'e-mail. */
+  async sendRewardTierReachedEmail(
+    to: string,
+    firstName: string,
+    tierLabel: string,
+    rewardLabel: string,
+    rewardsUrl: string,
+    nextTier: { label: string; remaining: number } | null,
+  ): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] palier de récompense atteint pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    const content = buildRewardTierReachedEmail(
+      firstName,
+      tierLabel,
+      rewardLabel,
+      rewardsUrl,
+      nextTier,
+      this.footerLinks(),
+    );
     await this.postEmail({
       to,
       subject: content.subject,

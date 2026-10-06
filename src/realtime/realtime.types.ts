@@ -27,7 +27,11 @@ export type RealtimeEventType =
   | 'mission.quote_rejected'
   | 'mission.negotiation_requested'
   // Notifications
-  | 'notification.created';
+  | 'notification.created'
+  // Chantier #4A : la progression du programme de récompenses a changé
+  // (palier franchi, mission validée ou écartée par un admin). Permet à
+  // `/client/recompenses` de se rafraîchir sans rechargement de page.
+  | 'client.rewards_updated';
 
 export interface RealtimeEvent {
   type: RealtimeEventType;

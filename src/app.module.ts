@@ -17,6 +17,7 @@ import { SasPayModule } from './saspay/saspay.module.js';
 import { BackofficeAgentModule } from './backoffice-agent/backoffice-agent.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { PushModule } from './push/push.module.js';
+import { RewardsModule } from './rewards/rewards.module.js';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { PushModule } from './push/push.module.js';
     BackofficeAgentModule,
     RealtimeModule,
     PushModule,
+    RewardsModule,
   ],
 })
 export class AppModule {}

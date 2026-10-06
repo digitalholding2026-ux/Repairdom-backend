@@ -10,6 +10,7 @@ import { DisputesService } from '../disputes/disputes.service.js';
 import { DispatchService } from '../dispatch/dispatch.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
+import { RewardsService } from '../rewards/rewards.service.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
 // module feuille `./demande-helpers.js` (aucune dépendance de service).
 // Ré-exportés ici pour compatibilité des imports existants.
@@ -72,6 +73,14 @@ export class DemandesService {
     private readonly disputes: DisputesService,
     // Temps réel (socle SSE) : injection optionnelle (tests sans module).
     private readonly realtime?: RealtimeService,
+    /* Chantier #4A — programme de récompenses client. OPTIONNEL au sens
+     * TypeScript (`?`) comme `realtime` ci-dessus : les tests unitaires de
+     * `DemandesService` n'instancient pas `RewardsModule` et le comptage des
+     * récompenses est alors simplement sauté. Déclaré EN DERNIER pour ne pas
+     * décaler les positions des paramètres optionnels existants.
+     * Côté Nest la résolution est effective (`DemandesModule` importe
+     * `RewardsModule`). */
+    private readonly rewards?: RewardsService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -511,6 +520,29 @@ export class DemandesService {
         demandeId: id,
         kind: 'CONFIRMED',
       });
+    }
+
+    /* Chantier #4A — PROGRESSION DU PROGRAMME DE RÉCOMPENSES.
+     *
+     * Appelé APRÈS la transaction (et après le règlement financier, qui est
+     * donc déjà commité). Le compteur n'avance que sur une mission CONFIRMED
+     * payée ≥ 1 500 XAF et sans signalement anti-fraude — voir
+     * `RewardsService.onMissionConfirmed`.
+     *
+     * Le `try/catch` est INDISPENSABLE : le règlement est un fait acquis, on
+     * ne doit pas le faire échouer parce qu'un compteur ou une notification de
+     * récompense est en erreur. Le seul effet d'un échec ici est un compteur
+     * non mis à jour, rattrapable et sans impact financier. */
+    if (dto.status === 'CONFIRMED') {
+      try {
+        await this.rewards?.onMissionConfirmed(id);
+      } catch (error) {
+        this.logger.error(
+          `Comptage des récompenses en échec pour la mission ${id} : ${
+            error instanceof Error ? error.message : 'erreur inconnue'
+          }. La mission reste confirmée et réglée.`,
+        );
+      }
     }
 
     return toApiDemande(this.withTechnician(result));

@@ -64,7 +64,11 @@ export type NotificationType =
   | 'DISPUTE_RESOLVED'
   // Chantier #5A : décision KYC — notifiée au technicien concerné uniquement.
   | 'KYC_VERIFIED'
-  | 'KYC_REJECTED';
+  | 'KYC_REJECTED'
+  // Chantier #4A : récompenses client — palier franchi (client) et mission
+  // écartée après décision anti-fraude (client).
+  | 'REWARD_TIER_REACHED'
+  | 'REWARD_MISSION_NOT_COUNTED';
 
 export interface EventInput {
   demandeId: string;
@@ -108,9 +112,13 @@ export async function createNotification(tx: Tx, input: NotificationInput) {
    * est donc garanti conforme au contrat, quel que soit le site appelant.
    * Les deux sites restants (fan-out admin des litiges, ADMIN_MESSAGE) écrivent
    * en direct et appellent `buildNotificationMetadata` explicitement.
-   */
+   *
+   * La notification créée est RETOURNÉE (chantier #4A) : les diffuseurs qui
+   * doivent ensuite émettre un SSE `notification.created` ont besoin de son id.
+   * Aucun appelant antérieur n'utilisait la valeur de retour (il n'y en avait
+   * pas) : le changement est rétro-compatible. */
   const metadata = buildNotificationMetadata(input.metadata);
-  await tx.notification.create({
+  return tx.notification.create({
     data: {
       userId: input.userId,
       demandeId: input.demandeId ?? null,
@@ -119,6 +127,7 @@ export async function createNotification(tx: Tx, input: NotificationInput) {
       message: input.message,
       ...(metadata ? { metadata } : {}),
     },
+    select: { id: true },
   });
 }
 
@@ -263,6 +272,17 @@ export function buildNotification(
     KYC_REJECTED: {
       title: 'Vérification à compléter',
       message: 'Votre dossier doit être corrigé pour être validé.',
+    },
+    // Chantier #4A. `message` reste SANS MONTANT : la valeur de la récompense
+    // voyage en `metadata.rewardValueXAF` (XAF entier) et le libellé du
+    // palier en `metadata.rewardLabel`, que l'app affiche via `formatFCFA`.
+    REWARD_TIER_REACHED: {
+      title: 'Palier de récompenses atteint',
+      message: 'Vous avez débloqué une nouvelle récompense Relio.',
+    },
+    REWARD_MISSION_NOT_COUNTED: {
+      title: 'Mission non comptabilisée',
+      message: 'Cette mission n’a pas été retenue dans votre programme de récompenses.',
     },
   };
   const { title, message } = content[type];

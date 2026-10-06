@@ -64,6 +64,23 @@ export interface NotificationMetadata {
   /** Action attendue côté technicien (KYC_VERIFIED / KYC_REJECTED) :
    *  `view_missions` (dossier validé) ou `fix_kyc` (dossier à corriger). */
   kycAction?: string;
+  /** Palier de récompenses franchi, littéral (REWARD_TIER_REACHED) :
+   *  `BRONZE` | `ARGENT` | `OR` | `PLATINE`. */
+  rewardTier?: string;
+  /** Libellé du palier (« Bronze », « Platine »…). */
+  rewardLabel?: string;
+  /** Nom de missions requis pour le palier (permet d'afficher « 15 missions »). */
+  rewardMissions?: number;
+  /** Valeur de la récompense, XAF ENTIER (REWARD_TIER_REACHED). Jamais
+   *  formatée ici : `formatFCFA` côté frontend. */
+  rewardValueXAF?: NotificationAmountXAF;
+  /** Action attendue côté client : `view_rewards` (REWARD_TIER_REACHED) ou
+   *  `contact_support` (REWARD_MISSION_NOT_COUNTED). */
+  rewardAction?: string;
+  /** Motif littéral du signalement anti-fraude (REWARD_MISSION_NOT_COUNTED) :
+   *  `SAME_TECHNICIAN_48H`. Sert à l'app pour expliquer la décision ; le
+   *  commentaire libre de l'admin n'est JAMAIS exposé au client. */
+  rewardFraudReason?: string;
 }
 
 /**
@@ -103,6 +120,12 @@ const METADATA_KEYS: Array<keyof NotificationMetadata> = [
   'kycStatus',
   'kycRejectionReason',
   'kycAction',
+  'rewardTier',
+  'rewardLabel',
+  'rewardMissions',
+  'rewardValueXAF',
+  'rewardAction',
+  'rewardFraudReason',
 ];
 
 /**

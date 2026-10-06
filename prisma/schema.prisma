@@ -88,6 +88,25 @@ enum NotificationType {
   // `KYC_VERIFIED` un SUIVI (déblocage de l'acceptation de missions).
   KYC_VERIFIED
   KYC_REJECTED
+  // Chantier #4A — récompenses client : palier atteint (SUIVI, rien à faire
+  // côté client : la récompense est à utiliser depuis /client/recompenses).
+  REWARD_TIER_REACHED
+  // Chantier #4A — une mission n'a PAS été comptabilisée dans le programme
+  // de récompenses après décision administrative sur un signalement
+  // anti-fraude. `ACTION` côté client (il doit contacter l'app pour comprendre).
+  REWARD_MISSION_NOT_COUNTED
+}
+
+// Chantier #4A — paliers du programme de récompenses client.
+// `NONE` = aucun palier atteint (état initial, et état d'un compte dont le
+// compteur est à zéro). Les seuils sont dans `src/rewards/rewards.config.ts`
+// (REWARD_TIERS), seule source de vérité : l'enum ne porte que l'ordre.
+enum RewardTier {
+  NONE
+  BRONZE
+  ARGENT
+  OR
+  PLATINE
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -229,76 +248,154 @@ enum TechnicianActivityType {
 }
 
 model User {
-  id                  String              @id @default(dbgenerated("gen_random_uuid()"))
-  role                Role                @default(CLIENT)
-  firstName           String
-  lastName            String?
-  phone               String?
+  id                           String                 @id @default(dbgenerated("gen_random_uuid()"))
+  role                         Role                   @default(CLIENT)
+  firstName                    String
+  lastName                     String?
+  phone                        String?
   // Sprint 8.7 — `city` texte libre conservé (affichage/transition) ;
   // `cityId` référence structurée nullable pendant la transition.
-  city                String?
-  cityId              String?
-  cityRef             ServiceCity? @relation("CityClients", fields: [cityId], references: [id], onDelete: SetNull)
-  address             String?
-  whatsapp            String?
-  avatarUrl           String?
-  email               String              @unique
-  emailVerified       Boolean             @default(true)
-  emailVerificationToken String?
-  emailVerificationExpiresAt DateTime?
-  passwordHash        String
+  city                         String?
+  cityId                       String?
+  cityRef                      ServiceCity?           @relation("CityClients", fields: [cityId], references: [id], onDelete: SetNull)
+  address                      String?
+  whatsapp                     String?
+  avatarUrl                    String?
+  email                        String                 @unique
+  emailVerified                Boolean                @default(true)
+  emailVerificationToken       String?
+  emailVerificationExpiresAt   DateTime?
+  passwordHash                 String
   // Reset password — token à usage unique (convention identique à la
   // vérification e-mail : token opaque stocké en base, expiration courte,
   // effacé après usage). `tokenVersion` invalide tous les JWT émis avant
   // un reset (comparée dans `verifyToken`, incrémentée à chaque reset).
-  passwordResetToken String?
-  passwordResetExpiresAt DateTime?
-  tokenVersion        Int                 @default(0)
+  passwordResetToken           String?
+  passwordResetExpiresAt       DateTime?
+  tokenVersion                 Int                    @default(0)
   // Sprint ADMIN SUPER POWERS — désactivation logique d'un compte par
   // l'admin (alternative à la suppression physique quand l'historique
   // métier/financier doit être conservé). Un compte désactivé ne peut plus
   // se connecter ; ses missions, devis et écritures restent lisibles.
-  isActive            Boolean             @default(true)
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
-  demandes            Demande[]           @relation("ClientDemandes")
-  technicianDemandes  Demande[]           @relation("TechnicianDemandes")
-  technicianProfile   TechnicianProfile?
-  kycDocuments        KycDocument[]
-  kycReviewsMade      KycReview[]      @relation("KycReviewReviewer")
-  kycReviews          KycReview[]      @relation("KycReviewTechnician")
-  messages            Message[]
-  diagnostics         Diagnostic[]
-  quotes              Quote[]
+  isActive                     Boolean                @default(true)
+  createdAt                    DateTime               @default(now())
+  updatedAt                    DateTime               @updatedAt
+  demandes                     Demande[]              @relation("ClientDemandes")
+  technicianDemandes           Demande[]              @relation("TechnicianDemandes")
+  technicianProfile            TechnicianProfile?
+  kycDocuments                 KycDocument[]
+  kycReviewsMade               KycReview[]            @relation("KycReviewReviewer")
+  kycReviews                   KycReview[]            @relation("KycReviewTechnician")
+  messages                     Message[]
+  diagnostics                  Diagnostic[]
+  quotes                       Quote[]
   // IA-7 — avertissements reçus (technicien) et revues effectuées (admin).
-  aiWarnings          AiWarning[] @relation("AiWarningTechnician")
-  aiWarningReviews    AiWarning[] @relation("AiWarningReviewer")
+  aiWarnings                   AiWarning[]            @relation("AiWarningTechnician")
+  aiWarningReviews             AiWarning[]            @relation("AiWarningReviewer")
   // IA-8 — messages envoyés pouvant porter un signal + revues effectuées.
-  conversationFlagsSent     AiConversationFlag[] @relation("ConversationFlagSender")
-  conversationFlagReviews   AiConversationFlag[] @relation("ConversationFlagReviewer")
-  reviewsAuthored     Review[]     @relation("ReviewAuthor")
-  reviewsReceived     Review[]     @relation("ReviewTarget")
+  conversationFlagsSent        AiConversationFlag[]   @relation("ConversationFlagSender")
+  conversationFlagReviews      AiConversationFlag[]   @relation("ConversationFlagReviewer")
+  reviewsAuthored              Review[]               @relation("ReviewAuthor")
+  reviewsReceived              Review[]               @relation("ReviewTarget")
   // Litiges : ouverts (client) et tranchés (admin), historique immuable.
-  disputesOpened      DemandeDispute[] @relation("DisputeOpener")
-  disputesDecided     DemandeDispute[] @relation("DisputeDecider")
-  pricingHistories    PricingHistory[] @relation("PricingHistoryAuthor")
-  demandeEvents       DemandeEvent[]
-  notifications       Notification[]
-  dispatchWaves       DispatchWave[]
-  financialTransactions FinancialTransaction[] @relation("FinancialTransactionOwner")
+  disputesOpened               DemandeDispute[]       @relation("DisputeOpener")
+  disputesDecided              DemandeDispute[]       @relation("DisputeDecider")
+  pricingHistories             PricingHistory[]       @relation("PricingHistoryAuthor")
+  demandeEvents                DemandeEvent[]
+  notifications                Notification[]
+  dispatchWaves                DispatchWave[]
+  financialTransactions        FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
-  relioWithdrawals RelioWithdrawal[] @relation("RelioWithdrawalRequester")
+  relioWithdrawals             RelioWithdrawal[]      @relation("RelioWithdrawalRequester")
   // Sprint SASPAY-01 (fondations) : intentions de recharge, demandes de
   // retrait et réservations de fonds (verrous logiques, jamais un solde).
-  topupIntents TopupIntent[] @relation("TopupIntentOwner")
-  topupIntentsCreated TopupIntent[] @relation("TopupIntentCreator")
-  withdrawalRequests WithdrawalRequest[] @relation("WithdrawalRequestOwner")
-  withdrawalRequestsCreated WithdrawalRequest[] @relation("WithdrawalRequestCreator")
-  fundsHolds FundsHold[] @relation("FundsHoldOwner")
-  fundsHoldsCreated FundsHold[] @relation("FundsHoldCreator")
+  topupIntents                 TopupIntent[]          @relation("TopupIntentOwner")
+  topupIntentsCreated          TopupIntent[]          @relation("TopupIntentCreator")
+  withdrawalRequests           WithdrawalRequest[]    @relation("WithdrawalRequestOwner")
+  withdrawalRequestsCreated    WithdrawalRequest[]    @relation("WithdrawalRequestCreator")
+  fundsHolds                   FundsHold[]            @relation("FundsHoldOwner")
+  fundsHoldsCreated            FundsHold[]            @relation("FundsHoldCreator")
   // Push web (chantier #2B) : abonnements navigateur de l'utilisateur
   // (supprimés avec le compte, ON DELETE CASCADE).
-  pushSubscriptions PushSubscription[]
+  pushSubscriptions            PushSubscription[]
+  // Chantier #4A — programme de récompenses client : progression (1 ligne par
+  // client) et signalements anti-fraude. `ClientRewardProgress` est en
+  // `Cascade` comme le reste des données d'un compte : il ne vaut rien sans
+  // lui. `RewardFraudFlag` suit la même règle, dans les deux sens (client
+  // signalé ET technicien mis en cause) — d'où les deux relations nommées.
+  clientRewardProgress         ClientRewardProgress?
+  rewardFraudFlags             RewardFraudFlag[]      @relation("RewardFraudFlagClient")
+  rewardFraudFlagsAsTechnician RewardFraudFlag[]      @relation("RewardFraudFlagTechnician")
+}
+
+// Chantier #4A — PROGRESSION DU PROGRAMME DE RÉCOMPENSES (cumulatif à vie,
+// jamais de remise à zéro annuelle).
+//
+// UNE SEULE LIGNE PAR CLIENT (`userId @unique`) : le comptage est un compteur
+//pur, jamais un journal. L'historique des missions reste dans `Demande`, et le
+// journal des événements dans `DemandeEvent` / `Notification`.
+//
+// `missionCount` est INCRÉMENTÉ de façon atomique (`updateMany` / `$queryRaw`
+// côté service) : deux confirmations concurrentes ne peuvent pas s'écraser.
+model ClientRewardProgress {
+  id            String       @id @default(dbgenerated("gen_random_uuid()"))
+  userId        String       @unique
+  missionCount  Int          @default(0)
+  currentTier   RewardTier   @default(NONE)
+  // Paliers FRANCHIS (jamais retirés : un palier atteint ne se reperd pas).
+  reachedTiers  RewardTier[] @default([])
+  // Paliers dont le client a DEMANDÉ l'usage (« Utiliser ma récompense »).
+  // L'usage effectif reste manuel (admin) : ici on mémorise la demande seule.
+  claimedTiers  RewardTier[] @default([])
+  // Dernière mission COMPTABILISÉE : garde-fou anti-double comptage.
+  lastMissionAt DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Chantier #4A — SIGNALEMENT ANTI-FRAUDE du programme de récompenses.
+//
+// Détecté automatiquement à la confirmation d'une mission : 2 missions
+// CONFIRMED consécutives du MÊME client avec le MÊME technicien, séparées de
+// moins de 48 h. Tant que le signalement n'est pas résolu, la mission
+//concernée n'est PAS comptabilisée (le compteur est gelé, pas la mission).
+//
+// Modèle volontairement minimaliste et SANS clé d'idempotence : la détection
+// est protégée par l'atomicité de la confirmation de mission et par le fait
+// qu'une mission CONFIRMED ne repasse jamais par ce chemin.
+model RewardFraudFlag {
+  id           String    @id @default(dbgenerated("gen_random_uuid()"))
+  userId       String
+  // UNIQUE : une mission ne peut être signalée qu'une fois. C'est la garantie
+  // même au niveau base que le compteur du client ne peut pas être gelé deux
+  // fois pour la même confirmation (défense en profondeur, le service est
+  // lui-même idempotent sur `status: null`).
+  demandeId    String    @unique
+  technicianId String
+  // Motif littéral, extensible : 'SAME_TECHNICIAN_48H' (seul motif émis en
+  // V1). Stocké en texte et non en enum pour qu'un nouveau motif n'exige pas
+  // une migration.
+  reason       String
+  detectedAt   DateTime  @default(now())
+  resolvedAt   DateTime?
+  // Identifiant de l'admin ayant tranché (User.id). PAS de relation : la
+  // piste d'audit doit survivre à la suppression d'un compte admin, et un
+  // `Restrict` ici empêcherait de supprimer un admin ayant arbitré.
+  resolvedBy   String?
+  // 'VALIDATED' (mission comptée) | 'REJECTED' (mission non comptée). NULL tant
+  // que le signalement est ouvert.
+  decision     String?
+  // Commentaire libre de l'admin, jamais affiché tel quel au client.
+  note         String?
+
+  user       User    @relation("RewardFraudFlagClient", fields: [userId], references: [id], onDelete: Cascade)
+  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  technician User    @relation("RewardFraudFlagTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([resolvedAt])
 }
 
 // Push web VAPID (chantier #2B, complément du SSE pour app fermée).
@@ -334,10 +431,10 @@ model ServiceCity {
   // Sprint 8.7 — références structurées vers les entités qui utilisent la ville.
   // ON DELETE SET NULL : la suppression d'une ville casse la FK mais JAMAIS les
   // chaînes textuelles historiques (User.city / Demande.city restent intactes).
-  zones       Zone[]               @relation("CityZones")
-  clients     User[]               @relation("CityClients")
-  technicians TechnicianProfile[]  @relation("CityTechnicians")
-  demandes    Demande[]            @relation("CityDemandes")
+  zones       Zone[]              @relation("CityZones")
+  clients     User[]              @relation("CityClients")
+  technicians TechnicianProfile[] @relation("CityTechnicians")
+  demandes    Demande[]           @relation("CityDemandes")
 }
 
 // Sprint 8.7 — Zones (quartiers/secteurs) rattachées à une ServiceCity.
@@ -354,12 +451,12 @@ model Zone {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  city     ServiceCity @relation("CityZones", fields: [cityId], references: [id], onDelete: Cascade)
+  city      ServiceCity              @relation("CityZones", fields: [cityId], references: [id], onDelete: Cascade)
   coverages TechnicianZoneCoverage[]
   // Sprint 8.8.2 — rattachement structuré optionnel des demandes à une zone.
   // Nullable + SetNull : les demandes historiques restent lisibles avec
   // `zoneId = null`, aucun backfill depuis `neighborhood` (texte conservé).
-  demandes  Demande[]              @relation("ZoneDemandes")
+  demandes  Demande[]                @relation("ZoneDemandes")
 
   @@unique([cityId, slug])
   @@index([cityId])
@@ -378,58 +475,58 @@ model TechnicianZoneCoverage {
   createdAt           DateTime @default(now())
 
   technicianProfile TechnicianProfile @relation(fields: [technicianProfileId], references: [id], onDelete: Cascade)
-  zone              Zone               @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  zone              Zone              @relation(fields: [zoneId], references: [id], onDelete: Cascade)
 
   @@unique([technicianProfileId, zoneId])
   @@index([zoneId])
 }
 
 model Demande {
-  id          String        @id @default(dbgenerated("gen_random_uuid()"))
-  reference   String        @unique
-  status      DemandeStatus @default(SUBMITTED)
-  category    String
+  id                      String                 @id @default(dbgenerated("gen_random_uuid()"))
+  reference               String                 @unique
+  status                  DemandeStatus          @default(SUBMITTED)
+  category                String
   // Dépôt multimédia — description textuelle OPTIONNELLE depuis le dépôt
   // multimédia (vocal/vidéo/photos). Nullable : les demandes historiques
   // gardent leur texte ; les nouvelles demandes multimédia ont NULL (le
   // technicien lit les pièces jointes). Colonne conservée (compatibilité).
-  description String?
+  description             String?
   // IA-4.1 — équipement déclaré par le client en texte libre (« réfrigérateur »,
   // « portail électrique »…), obligatoire quand `category` vaut `autre`
   // (validation backend). Identifie L'OBJET à réparer, pas la panne (les
   // médias expliquent la panne). Nullable : demandes historiques et domaines
   // catalogue connus. Signal principal d'IA-4, affiché au technicien comme
   // information client (jamais un diagnostic).
-  equipmentType String?
+  equipmentType           String?
   // Parcours « Autre appareil » : indice structuré choisi par le client
   // (code de famille, ex. GAME_CONSOLE, UNKNOWN). Remplace le texte libre
   // pour les nouvelles demandes : le dispatch utilise `category` (dérivée
   // de la famille, voir EquipmentFamily.category) via le matching existant.
   // `equipmentType` (texte libre) est conservé pour l'historique uniquement.
-  equipmentFamily String?
+  equipmentFamily         String?
   // Sprint 8.7 — `city` reste le snapshot texte historique de la mission
   // (JAMAIS supprimé ni rendu optionnel) ; `cityId` est une référence
   // optionnelle vers ServiceCity. Un ON DELETE SET NULL garantit qu'une ville
   // supprimée/modifiée du référentiel ne casse jamais l'historique.
-  city        String
-  cityId      String?
-  cityRef     ServiceCity?     @relation("CityDemandes", fields: [cityId], references: [id], onDelete: SetNull)
+  city                    String
+  cityId                  String?
+  cityRef                 ServiceCity?           @relation("CityDemandes", fields: [cityId], references: [id], onDelete: SetNull)
   // Sprint 8.8.2 — `zoneId` référence optionnelle vers Zone (quartier/secteur
   // structuré). Nullable pendant la transition : les demandes créées sans zone
   // ou avant ce sprint ont `zoneId = null` et suivent le parcours historique.
   // ON DELETE SET NULL : la suppression d'une zone ne casse jamais l'historique
   // (`city` / `neighborhood` textes restant intacts).
-  zoneId      String?
-  zoneRef     Zone?            @relation("ZoneDemandes", fields: [zoneId], references: [id], onDelete: SetNull)
-  neighborhood String?
-  address     String?
-  landmark    String?
-  contactPhone String?
+  zoneId                  String?
+  zoneRef                 Zone?                  @relation("ZoneDemandes", fields: [zoneId], references: [id], onDelete: SetNull)
+  neighborhood            String?
+  address                 String?
+  landmark                String?
+  contactPhone            String?
   // GPS V1 — position de la demande (nullable : demandes historiques sans
   // GPS). Complète city/cityId/zone/adresse (jamais remplacés). Bornes
   // validées côté API (-90..90 / -180..180).
-  latitude    Float?
-  longitude   Float?
+  latitude                Float?
+  longitude               Float?
   // GPS V3 — localisation TEMPORAIRE de déplacement liée à la mission
   // (« technicien en route ») : position transmise explicitement par le
   // technicien assigné lors de l'action « Je suis en route » (puis
@@ -443,50 +540,53 @@ model Demande {
   travelLocationUpdatedAt DateTime?
   technicianEnRouteAt     DateTime?
   technicianArrivedAt     DateTime?
-  client      User          @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
-  clientId    String
-  technician  User?         @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
-  technicianId String?
-  scheduledAt DateTime?
-  requestedMode RequestTiming @default(ASAP)
-  requestedAt   DateTime?
+  client                  User                   @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
+  clientId                String
+  technician              User?                  @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
+  technicianId            String?
+  scheduledAt             DateTime?
+  requestedMode           RequestTiming          @default(ASAP)
+  requestedAt             DateTime?
   // Contexte matériel issu du catalogue (Sprint 8.1) — optionnel pour rester
   // compatible avec les demandes créées avant l'arrivée du catalogue.
-  domain ServiceDomain? @relation(fields: [domainId], references: [id], onDelete: SetNull)
-  domainId String?
-  brand   DeviceBrand?   @relation(fields: [brandId], references: [id], onDelete: SetNull)
-  brandId String?
-  model   DeviceModel?   @relation(fields: [modelId], references: [id], onDelete: SetNull)
-  modelId String?
-  problem Problem?       @relation(fields: [problemId], references: [id], onDelete: SetNull)
-  problemId String?
+  domain                  ServiceDomain?         @relation(fields: [domainId], references: [id], onDelete: SetNull)
+  domainId                String?
+  brand                   DeviceBrand?           @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  brandId                 String?
+  model                   DeviceModel?           @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  modelId                 String?
+  problem                 Problem?               @relation(fields: [problemId], references: [id], onDelete: SetNull)
+  problemId               String?
   // Négociation (Sprint 8.1) : le chat de négociation n'est ouvert qu'après
   // la demande explicite du client (negotiationRequestedAt).
-  negotiationRequestedAt DateTime?
+  negotiationRequestedAt  DateTime?
   // Traçabilité : montant final accepté (quote ACCEPTED) de la mission.
-  finalAmount Int?
-  medias      DemandeMedia[]
+  finalAmount             Int?
+  medias                  DemandeMedia[]
   // IA-7 — avertissements tarifaires de la mission (consultation admin).
-  aiWarnings  AiWarning[]
+  aiWarnings              AiWarning[]
   // IA-8 — signaux de surveillance conversationnelle (consultation admin).
-  conversationFlags AiConversationFlag[]
+  conversationFlags       AiConversationFlag[]
   // IA-4 — classification « Autre » (proposition IA auditable, donnée
   // client jamais écrasée). Optionnelle : la plupart des demandes
   // (domaine connu) n'en ont pas.
-  classification DemandeClassification?
-  messages    Message[]
-  diagnostics Diagnostic[]
-  quotes      Quote[]
-  reviews     Review[]
+  classification          DemandeClassification?
+  messages                Message[]
+  diagnostics             Diagnostic[]
+  quotes                  Quote[]
+  reviews                 Review[]
   // Litige post-intervention (au plus un par mission, `demandeId` unique).
-  dispute     DemandeDispute?
-  events      DemandeEvent[]
-  notifications Notification[]
-  dispatchWaves DispatchWave[]
-  financialTransactions FinancialTransaction[]
-  fundsHolds FundsHold[]
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  dispute                 DemandeDispute?
+  events                  DemandeEvent[]
+  notifications           Notification[]
+  dispatchWaves           DispatchWave[]
+  financialTransactions   FinancialTransaction[]
+  fundsHolds              FundsHold[]
+  // Chantier #4A : signalement anti-fraude portant sur CETTE mission
+  // (au plus un : la détection est unique par mission).
+  rewardFraudFlag         RewardFraudFlag?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
 
   @@index([clientId])
   @@index([technicianId])
@@ -500,14 +600,14 @@ model Demande {
 }
 
 model DemandeEvent {
-  id          String          @id @default(dbgenerated("gen_random_uuid()"))
+  id          String           @id @default(dbgenerated("gen_random_uuid()"))
   demandeId   String
   actorUserId String?
   type        DemandeEventType
   fromStatus  DemandeStatus?
   toStatus    DemandeStatus?
   metadata    Json?
-  createdAt   DateTime        @default(now())
+  createdAt   DateTime         @default(now())
 
   demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   actor   User?   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -517,7 +617,7 @@ model DemandeEvent {
 }
 
 model Notification {
-  id        String          @id @default(dbgenerated("gen_random_uuid()"))
+  id        String           @id @default(dbgenerated("gen_random_uuid()"))
   userId    String
   demandeId String?
   type      NotificationType
@@ -536,7 +636,7 @@ model Notification {
   // côté frontend. Volontairement non indexé : lu par la seule sérialisation.
   metadata  Json?
   readAt    DateTime?
-  createdAt DateTime        @default(now())
+  createdAt DateTime         @default(now())
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   demande Demande? @relation(fields: [demandeId], references: [id], onDelete: SetNull)
@@ -574,29 +674,29 @@ model DispatchWave {
 }
 
 model TechnicianProfile {
-  id         String   @id @default(dbgenerated("gen_random_uuid()"))
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String                   @id @default(dbgenerated("gen_random_uuid()"))
+  userId             String                   @unique
+  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   // Sprint 8.7 — `city` texte libre conservé (donnée existante/affichable) ;
   // `cityId` référence structurée nullable. `zoneCoverages` = couverture N↔N.
-  city       String
-  cityId     String?
-  cityRef    ServiceCity? @relation("CityTechnicians", fields: [cityId], references: [id], onDelete: SetNull)
-  categories String[]
-  isAvailable Boolean @default(false)
-  avatarUrl  String?
-  bio        String?
-  experience String?
+  city               String
+  cityId             String?
+  cityRef            ServiceCity?             @relation("CityTechnicians", fields: [cityId], references: [id], onDelete: SetNull)
+  categories         String[]
+  isAvailable        Boolean                  @default(false)
+  avatarUrl          String?
+  bio                String?
+  experience         String?
   serviceDescription String?
-  specialties String[] @default([])
+  specialties        String[]                 @default([])
   // ── Chantier « Profil technicien complet + KYC dédié » ──────────────
   // Activité professionnelle : structurée (voir TechnicianActivityType),
   // jamais du texte libre. Nullable pour ne pas casser les profils existants.
-  activityType TechnicianActivityType?
+  activityType       TechnicianActivityType?
   // Expérience : nombre d'ANNÉES (structuré). Le champ texte historique
   // `experience` est conservé tel quel pour l'historique et l'affichage
   // libre ; `experienceYears` est la valeur exploitable/filtrable.
-  experienceYears Int?
+  experienceYears    Int?
   // Compétences par famille d'équipement structurée (§8) : codes de
   // `EquipmentFamily`. Complète `categories` ( Matching grossier, 7
   // valeurs) SANS le remplacer : le dispatch utilise toujours `category`,
@@ -604,30 +704,30 @@ model TechnicianProfile {
   // Convention de compatibilité (comme `zoneCoverages` vide) : un tableau
   // VIDE = pas de préférence déclarée, le filtrage famille ne s'applique
   // pas. Un tableau NON VIDE = filtrage strict sur ces codes.
-  familyCodes String[] @default([])
+  familyCodes        String[]                 @default([])
   // ── KYC : identité (page dédiée /technicien/kyc) ───────────────────
   // Date de naissance : source de vérité du contrôle de majorité (18 ans).
   // Nullable le temps que les techniciens existants la renseignent.
-  birthDate DateTime? @db.Date
+  birthDate          DateTime?                @db.Date
   // Nationalité : code ISO 3166-1 alpha-2 en MAJUSCULES (ex. « CM »).
   // Structuré, jamais du texte libre.
-  nationality String?
+  nationality        String?
   // Nature de la pièce d'identité déclarée (voir KycIdentityDocumentType).
   kycIdentityDocType KycIdentityDocumentType?
   // ────────────────────────────────────────────────────────────────────
-  kycStatus  KycStatus @default(NOT_SUBMITTED)
+  kycStatus          KycStatus                @default(NOT_SUBMITTED)
   kycRejectionReason String?
   // GPS V1 — dernière position connue transmise explicitement par le
   // technicien (pas d'historique, pas de tracking). Nullable : aucune
   // position tant que le technicien ne l'a jamais envoyée.
   // `locationUpdatedAt` = horodatage de la dernière transmission (distinct
   // de `updatedAt` qui suit toute modification du profil).
-  lastLatitude     Float?
-  lastLongitude    Float?
-  locationUpdatedAt DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  zoneCoverages TechnicianZoneCoverage[]
+  lastLatitude       Float?
+  lastLongitude      Float?
+  locationUpdatedAt  DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  zoneCoverages      TechnicianZoneCoverage[]
 }
 
 model KycDocument {
@@ -644,12 +744,12 @@ model KycDocument {
   size         Int
   createdAt    DateTime        @default(now())
 
-  technician   User            @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  technician User @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
-  @@index([technicianId])
   // Une seule pièce par (technicien, type, face) : repasser un recto
   // remplace le précédent côté service au lieu d'empiler les versions.
   @@unique([technicianId, type, side])
+  @@index([technicianId])
 }
 
 model KycReview {
@@ -683,22 +783,22 @@ model PasswordResetAttempt {
 }
 
 model DemandeMedia {
-  id        String    @id @default(dbgenerated("gen_random_uuid()"))
-  kind      MediaKind
-  fileName  String
-  mimeType  String
-  sizeBytes Int
-  stored    Boolean   @default(false)
-  url       String?
+  id          String    @id @default(dbgenerated("gen_random_uuid()"))
+  kind        MediaKind
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  stored      Boolean   @default(false)
+  url         String?
   // Dépôt multimédia — chemin d'objet dans le bucket privé
   // `relio-demande-medias` (`demandes/{userId}/{uuid}-...`). Renseigné dès
   // l'upload (avant création de la Demande) puis lié en transaction à la
   // création : le technicien assigné y accède immédiatement via des URLs
   // signées éphémères (jamais d'URL publique persistée).
   storagePath String?
-  demande   Demande   @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  demandeId String
-  createdAt DateTime  @default(now())
+  demande     Demande   @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  demandeId   String
+  createdAt   DateTime  @default(now())
 
   @@index([demandeId])
 }
@@ -737,8 +837,8 @@ model Message {
   content   String
   createdAt DateTime @default(now())
 
-  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  sender  User    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  demande           Demande              @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  sender            User                 @relation(fields: [senderId], references: [id], onDelete: Cascade)
   // IA-8 — signaux de surveillance (un par message, jamais une mutation).
   conversationFlags AiConversationFlag[]
 
@@ -747,19 +847,19 @@ model Message {
 }
 
 model Diagnostic {
-  id             String   @id @default(dbgenerated("gen_random_uuid()"))
-  demandeId      String
-  technicianId   String
-  content        String
-  recommendation String?
+  id                    String         @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId             String
+  technicianId          String
+  content               String
+  recommendation        String?
   // Sprint 8.4 — Gouvernance du diagnostic : mode explicite d'origine du
   // diagnostic (CATALOG = catalogue RepairDom, MANUAL = non référencé).
-  mode DiagnosticMode @default(MANUAL)
+  mode                  DiagnosticMode @default(MANUAL)
   // Sprint 8.4 — diagnostic non référencé : intervention proposée, justification
   // du diagnostic et note fréquemment libre. NULL pour les diagnostics catalogue.
-  proposedIntervention String?
-  justification        String?
-  notes                String?
+  proposedIntervention  String?
+  justification         String?
+  notes                 String?
   // Lien optionnel vers le catalogue (Sprint 8.1) : diagnostic sélectionné
   // par le technicien + intervention correspondante. NULL = anomalie libre.
   catalogDiagnosticId   String?
@@ -769,18 +869,18 @@ model Diagnostic {
   // uploadé AVANT création puis lié en transaction. Lecture via URLs
   // signées éphémères (jamais d'URL publique). NULL = sans audio.
   // Immuable avec le diagnostic (source conservée pour IA-5).
-  audioStoragePath String?
-  createdAt      DateTime @default(now())
+  audioStoragePath      String?
+  createdAt             DateTime       @default(now())
 
-  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
-  catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
-  quotes      Quote[]
+  demande             Demande                 @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  technician          User                    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  catalogDiagnostic   CatalogDiagnostic?      @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
+  catalogIntervention CatalogIntervention?    @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
+  quotes              Quote[]
   // IA-5 — correspondance catalogue ANALYTIQUE du diagnostic libre
   // (jamais une réécriture : le texte/audio source reste la vérité métier,
   // `mode` reste MANUAL). Une ligne max (rejouée sans doublon).
-  catalogMatch DiagnosticCatalogMatch?
+  catalogMatch        DiagnosticCatalogMatch?
 
   @@index([demandeId])
   @@index([catalogDiagnosticId])
@@ -855,29 +955,29 @@ model QuotePricingCheck {
 // Expiration LAZY : `status` stocké ∈ {PENDING, JUSTIFIED, REVIEWED} ;
 // EXPIRED est dérivé (PENDING + dueAt dépassé), sans timer ni réécriture.
 model AiWarning {
-  id              String   @id @default(dbgenerated("gen_random_uuid()"))
-  technicianId    String
-  demandeId       String
-  quoteId         String
-  diagnosticId    String?
-  pricingCheckId  String   @unique
-  warningType     AiWarningType @default(PRICE_ABOVE_MAX)
-  status          AiWarningStatus @default(PENDING)
+  id                  String          @id @default(dbgenerated("gen_random_uuid()"))
+  technicianId        String
+  demandeId           String
+  quoteId             String
+  diagnosticId        String?
+  pricingCheckId      String          @unique
+  warningType         AiWarningType   @default(PRICE_ABOVE_MAX)
+  status              AiWarningStatus @default(PENDING)
   // Échéance calculée backend (createdAt + 48 h), jamais d'horloge frontend.
-  dueAt           DateTime
-  justification   String?
-  justifiedAt     DateTime?
+  dueAt               DateTime
+  justification       String?
+  justifiedAt         DateTime?
   // Justification arrivée après l'échéance (conservée, décision à l'admin).
-  isLateJustification Boolean @default(false)
-  reviewedAt      DateTime?
-  reviewedBy      String?
-  reviewNote      String?
-  createdAt       DateTime @default(now())
+  isLateJustification Boolean         @default(false)
+  reviewedAt          DateTime?
+  reviewedBy          String?
+  reviewNote          String?
+  createdAt           DateTime        @default(now())
 
-  technician User             @relation("AiWarningTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
-  demande    Demande          @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  quote      Quote            @relation(fields: [quoteId], references: [id], onDelete: Cascade)
-  reviewer   User?            @relation("AiWarningReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  technician User    @relation("AiWarningTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
+  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  quote      Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  reviewer   User?   @relation("AiWarningReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
 
   @@index([technicianId, status])
   @@index([demandeId])
@@ -905,23 +1005,23 @@ enum AiWarningStatus {
 // stockée ici). Historique immuable (revue/dismiss s'ajoutent, rien
 // n'est supprimé). Aucun appel provider IA hors AiGatewayService.
 model AiConversationFlag {
-  id              String   @id @default(dbgenerated("gen_random_uuid()"))
-  demandeId       String
-  messageId       String   @unique
-  senderId        String
-  senderRole      String
-  category        AiConversationCategory
-  confidence      Float
-  severity        AiConversationSeverity
+  id            String                   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId     String
+  messageId     String                   @unique
+  senderId      String
+  senderRole    String
+  category      AiConversationCategory
+  confidence    Float
+  severity      AiConversationSeverity
   // Synthèse factuelle courte du modèle (jamais une conclusion de culpabilité).
-  reason          String?
-  model           String?
-  promptVersion   Int      @default(1)
-  status          AiConversationFlagStatus @default(OPEN)
-  reviewedAt      DateTime?
-  reviewedBy      String?
-  reviewNote      String?
-  createdAt       DateTime @default(now())
+  reason        String?
+  model         String?
+  promptVersion Int                      @default(1)
+  status        AiConversationFlagStatus @default(OPEN)
+  reviewedAt    DateTime?
+  reviewedBy    String?
+  reviewNote    String?
+  createdAt     DateTime                 @default(now())
 
   demande  Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   message  Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
@@ -987,13 +1087,13 @@ enum DisputeCategory {
 }
 
 model Quote {
-  id           String      @id @default(dbgenerated("gen_random_uuid()"))
-  demandeId    String
-  technicianId String
-  amount       Int
-  currency     String      @default("XAF")
-  description  String
-  status       QuoteStatus @default(PENDING)
+  id                    String      @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId             String
+  technicianId          String
+  amount                Int
+  currency              String      @default("XAF")
+  description           String
+  status                QuoteStatus @default(PENDING)
   // Origine du prix (Sprint 8.1).
   // MANUAL : saisi par le technicien (fallback contrôlé) — comportement historique.
   // CATALOG : généré automatiquement par RepairDom depuis le Pricing catalogue
@@ -1015,18 +1115,18 @@ model Quote {
   //   repairAmount = Quote.amount - travelAmount ; travelAmount >= 0.
   // Le transport appartient à 100 % au technicien et n'est jamais soumis aux
   // frais RepairDom.
-  travelAmount  Int?
-  createdAt    DateTime    @default(now())
+  travelAmount          Int?
+  createdAt             DateTime    @default(now())
 
-  demande    Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  technician User    @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  diagnostic Diagnostic?       @relation(fields: [diagnosticId], references: [id], onDelete: SetNull)
+  demande             Demande              @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  technician          User                 @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  diagnostic          Diagnostic?          @relation(fields: [diagnosticId], references: [id], onDelete: SetNull)
   catalogDiagnostic   CatalogDiagnostic?   @relation(fields: [catalogDiagnosticId], references: [id], onDelete: SetNull)
   catalogIntervention CatalogIntervention? @relation(fields: [catalogInterventionId], references: [id], onDelete: SetNull)
   // IA-6 — contrôle tarifaire immuable (un par devis, jamais réécrit).
-  pricingCheck QuotePricingCheck?
+  pricingCheck        QuotePricingCheck?
   // IA-7 — avertissements issus du contrôle (historique immuable).
-  aiWarnings AiWarning[]
+  aiWarnings          AiWarning[]
 
   @@index([demandeId])
   @@index([diagnosticId])
@@ -1057,18 +1157,18 @@ model Review {
 // une mission COMPLETED avec technicien assigné. Règlé uniquement par
 // l'administration (jamais auto-clôturé, jamais de règlement par délai).
 model DemandeDispute {
-  id          String         @id @default(dbgenerated("gen_random_uuid()"))
-  demandeId   String         @unique
+  id          String          @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId   String          @unique
   openedById  String
   category    DisputeCategory
   description String
-  status      DisputeStatus  @default(OPEN)
+  status      DisputeStatus   @default(OPEN)
   // Décision administrative (exigée pour RESOLVED/REJECTED).
   resolution  String?
   decidedById String?
   decidedAt   DateTime?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   demande  Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
   openedBy User    @relation("DisputeOpener", fields: [openedById], references: [id], onDelete: Cascade)
@@ -1077,7 +1177,9 @@ model DemandeDispute {
   @@index([status, createdAt])
 }
 
-/* ── Catalogue RepairDom ────────────────────────────────────────── */
+/**
+ * ── Catalogue RepairDom ──────────────────────────────────────────
+ */
 
 // Familles d'équipements du parcours « Autre appareil » — source de vérité
 // unique des indices structurés (familles compréhensibles + « Je ne sais
@@ -1134,8 +1236,8 @@ model DeviceBrand {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  domain  ServiceDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
-  models  DeviceModel[]
+  domain   ServiceDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  models   DeviceModel[]
   problems Problem[]
   demandes Demande[]
 
@@ -1181,9 +1283,9 @@ model Problem {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  domain      ServiceDomain     @relation(fields: [domainId], references: [id], onDelete: Cascade)
-  brand       DeviceBrand?      @relation(fields: [brandId], references: [id], onDelete: SetNull)
-  model       DeviceModel?      @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  domain      ServiceDomain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  brand       DeviceBrand?        @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  model       DeviceModel?        @relation(fields: [modelId], references: [id], onDelete: SetNull)
   diagnostics CatalogDiagnostic[]
   demandes    Demande[]
 
@@ -1201,27 +1303,27 @@ model Problem {
 }
 
 model CatalogDiagnostic {
-  id             String   @id @default(dbgenerated("gen_random_uuid()"))
-  problemId      String
-  name           String
-  slug           String
-  description    String?
-  confidence     String?
-  difficulty     String?
-  estimatedTime  String?
-  internalNotes  String?
-  isActive       Boolean  @default(true)
-  sortOrder      Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(dbgenerated("gen_random_uuid()"))
+  problemId     String
+  name          String
+  slug          String
+  description   String?
+  confidence    String?
+  difficulty    String?
+  estimatedTime String?
+  internalNotes String?
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  problem       Problem             @relation(fields: [problemId], references: [id], onDelete: Cascade)
-  interventions CatalogIntervention[]
+  problem            Problem                  @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  interventions      CatalogIntervention[]
   missionDiagnostics Diagnostic[]
   // IA-5 — correspondances analytiques des diagnostics libres (lecture
   // seule pour IA-6/IA-9 ; ne modifie jamais le catalogue).
-  catalogMatches DiagnosticCatalogMatch[]
-  quotes         Quote[]
+  catalogMatches     DiagnosticCatalogMatch[]
+  quotes             Quote[]
 
   @@unique([problemId, slug])
   @@index([problemId])
@@ -1229,24 +1331,24 @@ model CatalogDiagnostic {
 }
 
 model CatalogIntervention {
-  id              String   @id @default(dbgenerated("gen_random_uuid()"))
-  diagnosticId    String
-  name            String
-  slug            String
-  description     String?
-  difficulty      String?
-  estimatedTime   String?
-  needsParts      Boolean  @default(false)
-  partsNote       String?
-  isActive        Boolean  @default(true)
-  sortOrder       Int      @default(0)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id            String   @id @default(dbgenerated("gen_random_uuid()"))
+  diagnosticId  String
+  name          String
+  slug          String
+  description   String?
+  difficulty    String?
+  estimatedTime String?
+  needsParts    Boolean  @default(false)
+  partsNote     String?
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  diagnostic CatalogDiagnostic @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
-pricing Pricing?
-missionDiagnostics Diagnostic[]
-quotes         Quote[]
+  diagnostic         CatalogDiagnostic @relation(fields: [diagnosticId], references: [id], onDelete: Cascade)
+  pricing            Pricing?
+  missionDiagnostics Diagnostic[]
+  quotes             Quote[]
 
   @@unique([diagnosticId, slug])
   @@index([diagnosticId])
@@ -1254,18 +1356,18 @@ quotes         Quote[]
 }
 
 model Pricing {
-  id              String   @id @default(dbgenerated("gen_random_uuid()"))
-  interventionId  String
-  minPrice        Int?
-  referencePrice  Int?
-  maxPrice        Int?
-  travelFee       Int?
-  serviceFee      Int?
-  currency        String   @default("XAF")
-  priceMode       String   @default("fixed")
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  interventionId String
+  minPrice       Int?
+  referencePrice Int?
+  maxPrice       Int?
+  travelFee      Int?
+  serviceFee     Int?
+  currency       String   @default("XAF")
+  priceMode      String   @default("fixed")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   intervention CatalogIntervention @relation(fields: [interventionId], references: [id], onDelete: Cascade)
   history      PricingHistory[]
@@ -1275,16 +1377,16 @@ model Pricing {
 }
 
 model PricingHistory {
-  id              String   @id @default(dbgenerated("gen_random_uuid()"))
-  pricingId       String
-  adminId         String
-  previousValues  Json
-  newValues       Json
-  reason          String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  pricingId      String
+  adminId        String
+  previousValues Json
+  newValues      Json
+  reason         String?
+  createdAt      DateTime @default(now())
 
-  pricing Pricing   @relation(fields: [pricingId], references: [id], onDelete: Cascade)
-  user    User      @relation("PricingHistoryAuthor", fields: [adminId], references: [id], onDelete: Restrict)
+  pricing Pricing @relation(fields: [pricingId], references: [id], onDelete: Cascade)
+  user    User    @relation("PricingHistoryAuthor", fields: [adminId], references: [id], onDelete: Restrict)
 
   @@index([pricingId])
   @@index([adminId])
@@ -1306,28 +1408,28 @@ model PricingHistory {
 //  - Le solde n'est jamais stocké : il se calcule par somme des montants
 //    (CREDIT − DEBIT) des écritures VALIDATED d'un mode donné.
 model FinancialTransaction {
-  id            String                        @id @default(dbgenerated("gen_random_uuid()"))
-  userId        String
-  demandeId     String?
-  type          FinancialTransactionType
-  direction     FinancialTransactionDirection
-  amount        Int
-  status        FinancialTransactionStatus @default(VALIDATED)
-  mode          FinancialTransactionMode   @default(SIMULATION)
-  reference     String                        @unique
-  reversalOfId  String?
-  metadata      Json?
-  createdById   String?
-  createdAt     DateTime                      @default(now())
+  id           String                        @id @default(dbgenerated("gen_random_uuid()"))
+  userId       String
+  demandeId    String?
+  type         FinancialTransactionType
+  direction    FinancialTransactionDirection
+  amount       Int
+  status       FinancialTransactionStatus    @default(VALIDATED)
+  mode         FinancialTransactionMode      @default(SIMULATION)
+  reference    String                        @unique
+  reversalOfId String?
+  metadata     Json?
+  createdById  String?
+  createdAt    DateTime                      @default(now())
 
-  user        User                   @relation("FinancialTransactionOwner", fields: [userId], references: [id], onDelete: Restrict)
-  demande     Demande?               @relation(fields: [demandeId], references: [id], onDelete: SetNull)
-  reversalOf  FinancialTransaction?  @relation("FinancialTransactionReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
-  reversals   FinancialTransaction[] @relation("FinancialTransactionReversal")
-  createdBy   User?                  @relation("FinancialTransactionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  user                 User                   @relation("FinancialTransactionOwner", fields: [userId], references: [id], onDelete: Restrict)
+  demande              Demande?               @relation(fields: [demandeId], references: [id], onDelete: SetNull)
+  reversalOf           FinancialTransaction?  @relation("FinancialTransactionReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversals            FinancialTransaction[] @relation("FinancialTransactionReversal")
+  createdBy            User?                  @relation("FinancialTransactionCreator", fields: [createdById], references: [id], onDelete: SetNull)
   // Sprint SASPAY-01 : intentions de recharge créditées par cette écriture
   // CLIENT_TOPUP (lien traçabilité, SetNull : l'historique ledger survit).
-  topupIntentsCredited TopupIntent[] @relation("TopupIntentCredit")
+  topupIntentsCredited TopupIntent[]          @relation("TopupIntentCredit")
 
   @@index([userId, createdAt])
   @@index([demandeId, createdAt])
@@ -1355,22 +1457,22 @@ model FinancialTransaction {
 // webhook. `status` (FinancialTransactionStatus) est conservé inchangé pour
 // ne casser aucune lecture existante.
 model RelioWithdrawal {
-  id          String                        @id @default(dbgenerated("gen_random_uuid()"))
-  reference   String                        @unique
-  amount      Int
-  note        String?
-  mode        FinancialTransactionMode      @default(SIMULATION)
-  status      FinancialTransactionStatus    @default(VALIDATED)
-  payoutStatus SasPayOperationStatus        @default(SUCCESS)
+  id                  String                     @id @default(dbgenerated("gen_random_uuid()"))
+  reference           String                     @unique
+  amount              Int
+  note                String?
+  mode                FinancialTransactionMode   @default(SIMULATION)
+  status              FinancialTransactionStatus @default(VALIDATED)
+  payoutStatus        SasPayOperationStatus      @default(SUCCESS)
   saspayTransactionId String?
   saspayReference     String?
   externalReference   String?
-  idempotencyKey      String?               @unique
+  idempotencyKey      String?                    @unique
   errorMessage        String?
-  requestedById String
-  requestedBy User                          @relation("RelioWithdrawalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
-  createdAt   DateTime                      @default(now())
-  updatedAt   DateTime                      @updatedAt
+  requestedById       String
+  requestedBy         User                       @relation("RelioWithdrawalRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
 
   @@index([mode, createdAt])
   @@index([payoutStatus])
@@ -1391,39 +1493,39 @@ model RelioWithdrawal {
 // le prestataire les communique.
 // ON DELETE RESTRICT sur userId : l'historique des intentions est préservé.
 model TopupIntent {
-  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
+  id                    String                   @id @default(dbgenerated("gen_random_uuid()"))
   // Référence interne Relio UNIQUE (TOPUP-…) : idempotence niveau Relio.
-  reference     String                  @unique
+  reference             String                   @unique
   // Clé d'idempotence UNIQUE (fournie par l'appelant ou générée) : une même
   // demande rejouée retourne l'intention existante, sans doublon.
-  idempotencyKey String                 @unique
-  userId        String
-  user          User                    @relation("TopupIntentOwner", fields: [userId], references: [id], onDelete: Restrict)
-  amount        Int
-  currency      String                  @default("XAF")
-  mode          FinancialTransactionMode @default(SIMULATION)
-  status        SasPayOperationStatus   @default(PENDING)
+  idempotencyKey        String                   @unique
+  userId                String
+  user                  User                     @relation("TopupIntentOwner", fields: [userId], references: [id], onDelete: Restrict)
+  amount                Int
+  currency              String                   @default("XAF")
+  mode                  FinancialTransactionMode @default(SIMULATION)
+  status                SasPayOperationStatus    @default(PENDING)
   // Références prestataire (idempotence niveau SasPay + réconciliation).
-  saspayTransactionId String?
-  saspayReference     String?
-  externalReference   String?
-  network             String?
-  country             String?
+  saspayTransactionId   String?
+  saspayReference       String?
+  externalReference     String?
+  network               String?
+  country               String?
   // Montants de réconciliation (le `netAmount` constaté fait foi, jamais le
   // seul montant demandé).
-  requestedAmount Int?
-  fee             Int?
-  chargedAmount   Int?
-  netAmount       Int?
+  requestedAmount       Int?
+  fee                   Int?
+  chargedAmount         Int?
+  netAmount             Int?
   // Écriture ledger créée au SUCCESS (NULL tant que PENDING/FAILED).
   creditedTransactionId String?
-  creditedTransaction FinancialTransaction? @relation("TopupIntentCredit", fields: [creditedTransactionId], references: [id], onDelete: SetNull)
-  errorMessage  String?
-  metadata      Json?
-  createdById   String?
-  createdBy     User?                   @relation("TopupIntentCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
+  creditedTransaction   FinancialTransaction?    @relation("TopupIntentCredit", fields: [creditedTransactionId], references: [id], onDelete: SetNull)
+  errorMessage          String?
+  metadata              Json?
+  createdById           String?
+  createdBy             User?                    @relation("TopupIntentCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
   @@index([userId, createdAt])
   @@index([status])
@@ -1440,35 +1542,35 @@ model TopupIntent {
 // `reference` + `idempotencyKey` UNIQUE + référence ledger déterministe.
 // ON DELETE RESTRICT sur userId : audit préservé.
 model WithdrawalRequest {
-  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
-  reference     String                  @unique
-  idempotencyKey String                 @unique
-  userId        String
-  user          User                    @relation("WithdrawalRequestOwner", fields: [userId], references: [id], onDelete: Restrict)
-  amount        Int
-  currency      String                  @default("XAF")
-  mode          FinancialTransactionMode @default(SIMULATION)
-  status        SasPayOperationStatus   @default(PENDING)
+  id                  String                   @id @default(dbgenerated("gen_random_uuid()"))
+  reference           String                   @unique
+  idempotencyKey      String                   @unique
+  userId              String
+  user                User                     @relation("WithdrawalRequestOwner", fields: [userId], references: [id], onDelete: Restrict)
+  amount              Int
+  currency            String                   @default("XAF")
+  mode                FinancialTransactionMode @default(SIMULATION)
+  status              SasPayOperationStatus    @default(PENDING)
   // Verrou logique adossé (fonds gelés tant que PENDING).
-  holdId        String?
-  hold          FundsHold?              @relation("WithdrawalRequestHold", fields: [holdId], references: [id], onDelete: SetNull)
+  holdId              String?
+  hold                FundsHold?               @relation("WithdrawalRequestHold", fields: [holdId], references: [id], onDelete: SetNull)
   // Référence de l'écriture ledger créée au SUCCESS (NULL avant).
-  ledgerReference String?
+  ledgerReference     String?
   saspayTransactionId String?
   saspayReference     String?
   externalReference   String?
   network             String?
   country             String?
-  requestedAmount Int?
-  fee             Int?
-  chargedAmount   Int?
-  netAmount       Int?
-  errorMessage  String?
-  metadata      Json?
-  createdById   String?
-  createdBy     User?                   @relation("WithdrawalRequestCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
+  requestedAmount     Int?
+  fee                 Int?
+  chargedAmount       Int?
+  netAmount           Int?
+  errorMessage        String?
+  metadata            Json?
+  createdById         String?
+  createdBy           User?                    @relation("WithdrawalRequestCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
 
   @@index([userId, createdAt])
   @@index([status])
@@ -1486,22 +1588,22 @@ model WithdrawalRequest {
 // sous verrou consultatif PostgreSQL (voir FinancialService).
 // ON DELETE RESTRICT sur userId ; SET NULL vers Demande (historique survit).
 model FundsHold {
-  id            String                  @id @default(dbgenerated("gen_random_uuid()"))
-  reference     String                  @unique
-  userId        String
-  user          User                    @relation("FundsHoldOwner", fields: [userId], references: [id], onDelete: Restrict)
-  demandeId     String?
-  demande       Demande?                @relation(fields: [demandeId], references: [id], onDelete: SetNull)
-  amount        Int
-  currency      String                  @default("XAF")
-  mode          FinancialTransactionMode @default(SIMULATION)
-  status        FundsHoldStatus         @default(ACTIVE)
-  metadata      Json?
-  createdById   String?
-  createdBy     User?                   @relation("FundsHoldCreator", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt     DateTime                @default(now())
-  releasedAt    DateTime?
-  withdrawals WithdrawalRequest[]       @relation("WithdrawalRequestHold")
+  id          String                   @id @default(dbgenerated("gen_random_uuid()"))
+  reference   String                   @unique
+  userId      String
+  user        User                     @relation("FundsHoldOwner", fields: [userId], references: [id], onDelete: Restrict)
+  demandeId   String?
+  demande     Demande?                 @relation(fields: [demandeId], references: [id], onDelete: SetNull)
+  amount      Int
+  currency    String                   @default("XAF")
+  mode        FinancialTransactionMode @default(SIMULATION)
+  status      FundsHoldStatus          @default(ACTIVE)
+  metadata    Json?
+  createdById String?
+  createdBy   User?                    @relation("FundsHoldCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime                 @default(now())
+  releasedAt  DateTime?
+  withdrawals WithdrawalRequest[]      @relation("WithdrawalRequestHold")
 
   @@index([userId, status])
   @@index([demandeId])

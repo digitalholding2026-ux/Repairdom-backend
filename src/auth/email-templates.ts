@@ -32,6 +32,12 @@ export const KYC_VERIFIED_EMAIL_SUBJECT = 'Votre identité est vérifiée — Re
 export const KYC_REJECTED_EMAIL_SUBJECT =
   'Votre dossier de vérification nécessite une correction — Relio';
 
+/* Chantier #4A — récompenses client. Le sujet est générique : il ne contient
+ * NI le nom du palier ni un montant, pour ne pas être coûteux en dollars pour
+ * une notification qu'un push et l'in-app ont déjà délivrée. */
+export const REWARD_TIER_REACHED_EMAIL_SUBJECT =
+  'Vous avez débloqué une nouvelle récompense — Relio';
+
 export interface EmailFooterLinks {
   siteUrl: string;
   cguUrl: string;
@@ -359,4 +365,68 @@ export function buildKycRejectedEmail(
     links,
   });
   return { subject: KYC_REJECTED_EMAIL_SUBJECT, text, html };
+}
+
+/* ── Chantier #4A — récompenses client ─────────────────────────────────
+ *
+ * E-mail « palier atteint ». Ton congratulatoire et factuel.
+ *
+ * RÈGLE FCFA : le montant N'EST PAS formaté ici. Il arrive en XAF entier
+ * (`rewardValueXAF`) et n'apparaît donc pas dans ce gabarit : seule la ligne
+ * « Prochain palier : … missions restantes » est affichée. La valeur de la
+ * récompense dépend de la mécanique d'attribution (admin) et peut être
+ * amenée à changer sans que l'e-mail déjà envoyé mente. Le label du palier
+ * (`rewardLabel`) et le libellé de la récompense (`reward`) sont échappés.
+ */
+export function buildRewardTierReachedEmail(
+  firstName: string,
+  tierLabel: string,
+  rewardLabel: string,
+  rewardsUrl: string,
+  nextTier: { label: string; remaining: number } | null,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = firstName.trim() || 'Bonjour';
+  const tier = tierLabel.trim() || 'palier';
+  const reward = rewardLabel.trim() || 'votre récompense';
+  const suite = nextTier
+    ? `Encore ${Math.max(nextTier.remaining, 0)} mission${nextTier.remaining !== 1 ? 's' : ''} pour atteindre le palier ${nextTier.label}.`
+    : 'Vous avez atteint le dernier palier du programme. Bravo.';
+
+  const text = [
+    `${name},`,
+    '',
+    `Vous avez atteint le palier ${tier} du programme de récompenses Relio.`,
+    `Récompense débloquée : ${reward}.`,
+    suite,
+    '',
+    'Utiliser ma récompense :',
+    '',
+    rewardsUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+
+  const html = emailLayout({
+    preheader: `Vous avez atteint le palier ${tier} de vos récompenses Relio.`,
+    title: `Vous avez atteint le palier ${tier}`,
+    bodyHtml: [
+      paragraph(
+        `${escapeHtml(name)}, <strong>vous avez atteint le palier ${escapeHtml(tier)}</strong> du programme de récompenses Relio.`,
+      ),
+      infoBox([`Récompense débloquée : <strong>${escapeHtml(reward)}</strong>`]),
+      paragraph(escapeHtml(suite), true),
+      paragraph(
+        "L'utilisation de la récompense se fait avec un conseiller Relio : indiquez-lui le palier concerné, il l'applique sur votre prochaine mission.",
+        true,
+      ),
+    ].join(''),
+    ctaLabel: 'Voir mes récompenses',
+    ctaUrl: rewardsUrl,
+    links,
+  });
+  return { subject: REWARD_TIER_REACHED_EMAIL_SUBJECT, text, html };
 }
