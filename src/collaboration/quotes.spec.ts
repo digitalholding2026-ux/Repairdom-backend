@@ -121,6 +121,15 @@ function quoteService(options: {
         }
         return null;
       }),
+      /* `listQuotes` filtre réellement par mission et trie par date : le double
+       * applique le `where` (et pas seulement sa forme) pour que le test
+       * « le client ne voit pas la commission » exerce la vraie logique. */
+      findMany: vi.fn(async ({ where }: any = {}) =>
+        [...quotes.values()]
+          .filter((q) => where.demandeId === undefined || q.demandeId === where.demandeId)
+          .map((q) => ({ ...q }))
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+      ),
     },
     demandeEvent: tx.demandeEvent,
     notification: tx.notification,
@@ -214,6 +223,164 @@ describe('respondToQuote — acceptation / rejet', () => {
     const world = quoteService({ quotes: [fullQuote({})] });
     await expect(world.service.respondToQuote(TECH, 'm1', 'q1', 'accept')).rejects.toMatchObject({ status: 403 });
     await expect(world.service.respondToQuote(CLIENT, 'm1', 'nope', 'accept')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('createQuote — seuil minimum 5 000 (chantier 4-FONDATIONS-A)', () => {
+  it('4 000 → 400 avec le message métier, AUCUNE écriture', async () => {
+    const world = quoteService();
+    await expect(
+      world.service.createQuote(TECH, 'm1', { amount: 4000, description: 'Petite réparation' } as never),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: "Le montant minimum d'une intervention est de 5 000 FCFA.",
+    });
+    expect(world.tx.quote.create).not.toHaveBeenCalled();
+  });
+
+  it('3 000 → 400 (scénario de test production)', async () => {
+    const world = quoteService();
+    await expect(
+      world.service.createQuote(TECH, 'm1', { amount: 3000, description: 'Intervention' } as never),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(world.tx.quote.create).not.toHaveBeenCalled();
+  });
+
+  it('4 999 → 400, 5 000 → accepté (la borne est inclusive)', async () => {
+    const below = quoteService();
+    await expect(
+      below.service.createQuote(TECH, 'm1', { amount: 4999, description: 'Intervention' } as never),
+    ).rejects.toMatchObject({ status: 400 });
+
+    const ok = quoteService();
+    const created = await ok.service.createQuote(TECH, 'm1', { amount: 5000, description: 'Intervention' } as never);
+    expect(created.status).toBe('PENDING');
+    expect(created.amount).toBe(5000);
+  });
+
+  it('le seuil ne bloque QUE la création : un devis existant < 5 000 reste acceptable', async () => {
+    // Mission en cours au moment du déploiement : le devis de 3 000 a été
+    // créé avant. Il doit pouvoir être accepté puis confirmé (scénario Test 4).
+    const legacy = quoteService({ quotes: [fullQuote({ amount: 3000, status: 'PENDING' })] });
+    const accepted = await legacy.service.respondToQuote(CLIENT, 'm1', 'q1', 'accept');
+    expect(accepted.status).toBe('ACCEPTED');
+    expect(legacy.financial.holdClientAtAcceptance).toHaveBeenCalledTimes(1);
+  });
+
+  it('transparence : commission et net exposés au technicien, jamais au client', async () => {
+    const world = quoteService();
+    const forTech = await world.service.createQuote(TECH, 'm1', {
+      amount: 25000,
+      description: 'Remplacement écran',
+    } as never);
+    // 500 + 4 % de 25 000 = 1 500 ; net = 25 000 + 2 000 − 1 500 = 25 500.
+    expect(forTech.commission).toBe(1500);
+    expect(forTech.netTechnician).toBe(25500);
+    expect(forTech.totalToDebit).toBe(27000);
+
+    const forClient = await world.service.listQuotes(CLIENT, 'm1');
+    expect(forClient[0]).not.toHaveProperty('commission');
+    expect(forClient[0]).not.toHaveProperty('netTechnician');
+  });
+});
+
+describe('selectCatalogDiagnostic — le devis auto ne contourne pas le seuil', () => {
+  /* Le devis automatique est créé dans `selectCatalogDiagnostic`, chemin
+   * distinct de `createQuote` : sans garde dédié, une intervention de
+   * catalogue sous 5 000 produirait un devis hors barème. AUCUN `Pricing`
+   * n'est modifié — c'est une règle applicative qui renvoie vers le
+   * diagnostic libre. */
+  function catalogPrisma(referencePrice: number | null) {
+    const quotes: Array<Record<string, unknown>> = [];
+    const tx = {
+      quote: {
+        findFirst: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+        create: vi.fn(async ({ data }: any) => {
+          quotes.push(data);
+          return { id: 'q-auto', createdAt: new Date(), ...data };
+        }),
+      },
+      diagnostic: {
+        create: vi.fn(async ({ data }: any) => ({
+          id: 'dg-auto',
+          createdAt: new Date(),
+          technician: { id: 't1', firstName: 'A', lastName: null },
+          ...data,
+        })),
+      },
+      demandeEvent: { create: vi.fn(async (args: unknown) => args) },
+      notification: { create: vi.fn(async (args: unknown) => args) },
+    };
+    const prisma: any = {
+      demande: {
+        findUnique: vi.fn(async () => ({
+          ...DEMANDE,
+          domainId: null,
+          brandId: null,
+          modelId: null,
+        })),
+      },
+      technicianProfile: { findUnique: vi.fn(async () => ({ kycStatus: 'VERIFIED' })) },
+      catalogDiagnostic: {
+        findUnique: vi.fn(async () => ({
+          id: 'cd-1',
+          name: 'Diagnostic démarrage',
+          isActive: true,
+          problem: { domainId: null, brandId: null, modelId: null },
+          interventions: [{ id: 'ci-1', name: 'Reset forcé', isActive: true }],
+        })),
+      },
+      pricing: {
+        findUnique: vi.fn(async () => ({
+          interventionId: 'ci-1',
+          isActive: true,
+          referencePrice,
+          travelFee: 2_000,
+          serviceFee: 3_000,
+          currency: 'XAF',
+        })),
+      },
+      $transaction: vi.fn(async (cb: (t: unknown) => Promise<unknown>) => cb(tx)),
+    };
+    return { prisma, quotes, tx };
+  }
+
+  const CATALOG_DTO = {
+    mode: 'CATALOG',
+    catalogDiagnosticId: 'cd-1',
+    catalogInterventionId: 'ci-1',
+  } as never;
+
+  it('prix de référence < 5 000 → 400 renvoyant vers le diagnostic libre', async () => {
+    const world = catalogPrisma(3_000);
+    await expect(
+      new CollaborationService(world.prisma, {} as never).selectCatalogDiagnostic(
+        TECH,
+        'm1',
+        CATALOG_DTO,
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      new CollaborationService(world.prisma, {} as never).selectCatalogDiagnostic(
+        TECH,
+        'm1',
+        CATALOG_DTO,
+      ),
+    ).rejects.toThrow(/diagnostic libre/i);
+    expect(world.tx.quote.create).not.toHaveBeenCalled();
+  });
+
+  it('prix de référence = 5 000 → devis automatique accepté', async () => {
+    const world = catalogPrisma(5_000);
+    const result = await new CollaborationService(world.prisma, {} as never).selectCatalogDiagnostic(
+      TECH,
+      'm1',
+      CATALOG_DTO,
+    );
+    expect(result.mode).toBe('CATALOG');
+    expect(result.quote.amount).toBe(5000);
+    expect(result.quote.commission).toBe(700);
   });
 });
 

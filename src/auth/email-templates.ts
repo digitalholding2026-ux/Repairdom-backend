@@ -431,6 +431,100 @@ export function buildRewardTierReachedEmail(
   return { subject: REWARD_TIER_REACHED_EMAIL_SUBJECT, text, html };
 }
 
+/* ── Chantier 4-FONDATIONS-A — nouveau barème de commission technicien ────
+ *
+ * Ton VOLONTAIREMENT positif et non défensif : la commission augmente, mais
+ * elle est TRÈS compensée par un plancher de 5 000 FCFA qui écarte les
+ * interventions à perte. Annoncer le changement par un e-mail qui commence par
+ * « nous augmentons vos frais » ferait partir des techniciens ; l'e-mail
+ * commence donc par ce qui s'améliore pour eux.
+ *
+ * AUCUN MONTANT PRÉ-FORMATÉ : le barème est écrit EN TOUTES LETTRES (« 500
+ * FCFA + 4 % »), conformément à la règle FCFA (XAF entier en base,
+ * formatage par `formatFCFA` à l'affichage). Le message ne contient aucun
+ * token ni secret.
+ */
+export const FEE_CHANGE_EMAIL_SUBJECT = 'Nouveau barème Relio : plus simple, plus équitable';
+
+/** Libellé public du barème, réutilisé dans le corps de l'e-mail. */
+export const FEE_CHANGE_SCHEDULE_LABEL = '500 FCFA + 4 % par mission';
+/** Seuil minimum de devis, en toutes lettres (jamais de montant formaté). */
+export const FEE_CHANGE_MIN_QUOTE_LABEL = '5 000 FCFA';
+
+export function buildFeeChangeEmail(
+  firstName: string,
+  missionsUrl: string,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = firstName.trim() || 'Bonjour';
+
+  const text = [
+    `${name},`,
+    '',
+    `À partir d'aujourd'hui, la commission Relio est de ${FEE_CHANGE_SCHEDULE_LABEL}.`,
+    '',
+    'Concrètement, pour chaque mission confirmée par le client :',
+    '- une part fixe de 500 FCFA, quelle que soit l\'intervention ;',
+    '- 4 % du montant que vous avez proposé dans votre devis.',
+    '',
+    'Ce qui change pour le meilleur :',
+    '- chaque intervention porte sur un devis d\'au moins 5 000 FCFA :',
+    '  plus aucune intervention à perte pour vous ;',
+    '- votre commission est affichée dans le récapitulatif de chaque devis,',
+    '  vous voyez donc exactement ce que vous gagnez et ce que vous recevez ;',
+    '- le programme de fidélité côté client se renforce, ce qui doit relancer',
+    '  le volume de missions disponibles.',
+    '',
+    'Vos frais de déplacement (2 000 FCFA) ne sont pas concernés : ils vous',
+    'sont intégralement reversés, en plus de votre devis.',
+    '',
+    'Le nouveau barème s\'applique immédiatement, y compris aux missions en cours.',
+    '',
+    'Voir mes missions :',
+    '',
+    missionsUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+
+  const html = emailLayout({
+    preheader: `Nouveau barème Relio : ${FEE_CHANGE_SCHEDULE_LABEL}, et un minimum de ${FEE_CHANGE_MIN_QUOTE_LABEL} par intervention.`,
+    title: 'Nouveau barème Relio : plus simple, plus équitable',
+    bodyHtml: [
+      paragraph(
+        `${escapeHtml(name)}, à partir d'aujourd'hui la commission Relio est de <strong>${escapeHtml(FEE_CHANGE_SCHEDULE_LABEL)}</strong>.`,
+      ),
+      infoBox([
+        'Pour chaque mission confirmée par le client :',
+        `une part fixe de 500 FCFA, quelle que soit l'intervention ;`,
+        `4 % du montant que vous avez proposé dans votre devis.`,
+      ]),
+      paragraph('Ce qui change pour le meilleur :'),
+      infoBox([
+        `chaque intervention porte sur un devis d'au moins ${escapeHtml(FEE_CHANGE_MIN_QUOTE_LABEL)} : plus aucune intervention à perte pour vous ;`,
+        'votre commission est affichée dans le récapitulatif de chaque devis ;',
+        'le programme de fidélité côté client se renforce, ce qui doit relancer le volume de missions disponibles.',
+      ]),
+      paragraph(
+        "Vos frais de déplacement (2 000 FCFA) ne sont pas concernés : ils vous sont intégralement reversés, en plus de votre devis.",
+        true,
+      ),
+      paragraph(
+        "Le nouveau barème s'applique immédiatement, y compris aux missions en cours.",
+        true,
+      ),
+    ].join(''),
+    ctaLabel: 'Voir mes missions',
+    ctaUrl: missionsUrl,
+    links,
+  });
+
+  return { subject: FEE_CHANGE_EMAIL_SUBJECT, text, html };
+}
+
 /* ── Chantier D2.5 — relances de vérification d'e-mail ────────────────
  *
  * Ton VOLONTAIREMENT non culpabilisant : l'utilisateur n'a rien fait de mal,

@@ -3,11 +3,17 @@
  * Pour chaque mission validée comme accomplie :
  *   - le client paie : montant réparation + 2 000 XAF de transport ;
  *   - le client ne paie AUCUNE commission Relio supplémentaire ;
- *   - brut technicien = réparation + 2 000 ;
- *   - commission Relio = 2 % du brut, prélevée auprès du technicien ;
- *   - net technicien = brut − commission.
+ *   - le transport est intégralement reversé au technicien (pass-through) ;
+ *   - commission Relio = 500 XAF + 4 % du montant du devis (réparation seule,
+ *     JAMAIS du brut qui inclut le transport) ;
+ *   - net technicien = réparation + transport − commission.
  *
- * Exemple : réparation 20 000 → brut 22 000 → commission 440 → net 21 560.
+ * Exemple : réparation 25 000 → client paie 27 000 → commission 1 500 →
+ * technicien reçoit 25 000 + 2 000 − 1 500 = 25 500.
+ *
+ * Le BARÈME lui-même (part fixe, taux, seuil minimum) vit dans
+ * `./fee-calculator.ts`, importé ci-dessous puis ré-exporté : il est la source
+ * unique du barème, ce fichier celle du transport et des bornes de montants.
  *
  * Montants entiers en XAF. Interdiction de disperser les valeurs dans les
  * services ou le frontend : tout calcul importe depuis ce module.
@@ -16,11 +22,19 @@
  * `Pricing.travelFee` (snapshot historique) sont des données DISTINCTES et ne
  * doivent jamais être réinterprétées comme le transport standard (2 000).
  */
-export const STANDARD_TRANSPORT_FEE = 2_000;
+import { calculateTechnicianFee } from './fee-calculator.js';
 
-/** Taux de commission Relio prélevée sur le brut technicien (2 %). */
-export const RELIO_COMMISSION_RATE_NUMERATOR = 2;
-export const RELIO_COMMISSION_RATE_DENOMINATOR = 100;
+export { calculateTechnicianFee } from './fee-calculator.js';
+export {
+  MIN_QUOTE_AMOUNT_ERROR_MESSAGE,
+  MIN_QUOTE_AMOUNT_XAF,
+  TECHNICIAN_FEE_FIXED_XAF,
+  TECHNICIAN_FEE_RATE_DENOMINATOR,
+  TECHNICIAN_FEE_RATE_NUMERATOR,
+  isQuoteAmountAllowed,
+} from './fee-calculator.js';
+
+export const STANDARD_TRANSPORT_FEE = 2_000;
 
 export const FINANCIAL_CURRENCY = 'XAF';
 
@@ -34,18 +48,10 @@ export const CLIENT_PLATFORM_FEE = 100;
 export const TECHNICIAN_PLATFORM_FEE = 150;
 export const TOTAL_PLATFORM_FEES = CLIENT_PLATFORM_FEE + TECHNICIAN_PLATFORM_FEE;
 
-/** Arrondi déterministe (demi-supérieur) de la commission Relio en XAF.
- *  Calcul en entiers : (gross × 2 + 50) ÷ 100 — jamais de flottants. */
-export function computeRelioCommission(grossAmount: number): number {
-  if (!Number.isInteger(grossAmount) || grossAmount < 0) {
-    throw new Error('Le montant brut doit être un entier XAF positif ou nul.');
-  }
-  return Math.floor(
-    (grossAmount * RELIO_COMMISSION_RATE_NUMERATOR +
-      RELIO_COMMISSION_RATE_DENOMINATOR / 2) /
-      RELIO_COMMISSION_RATE_DENOMINATOR,
-  );
-}
+/* ── Barème de commission (chantier 4-FONDATIONS-A) ───────────────────
+ * La commission porte sur le MONTANT DU DEVIS (réparation), pas sur le brut
+ * technicien qui inclut le transport de 2 000 XAF. `computeTechnicianFee`
+ * (source unique, `./fee-calculator.ts`) est le seul calcul appliqué. */
 
 /** Montant brut payé par le client : réparation + transport standard. */
 export function computeGrossAmount(repairAmount: number): number {
@@ -55,9 +61,47 @@ export function computeGrossAmount(repairAmount: number): number {
   return repairAmount + STANDARD_TRANSPORT_FEE;
 }
 
-/** Montant net technicien : brut − commission 2 %. */
-export function computeTechnicianNet(grossAmount: number): number {
-  return grossAmount - computeRelioCommission(grossAmount);
+/** Net technicien : réparation + transport − commission. */
+export function computeTechnicianNet(repairAmount: number): number {
+  return computeGrossAmount(repairAmount) - calculateTechnicianFee(repairAmount);
+}
+
+/** Commission attendue à partir d'un brut client déjà débité
+ *  (brut = réparation + transport) : on retire le transport, qui n'est jamais
+ *  commissionné, puis on applique le barème. */
+export function computeExpectedTechnicianFee(grossAmount: number): number {
+  return calculateTechnicianFee(Math.max(0, grossAmount - STANDARD_TRANSPORT_FEE));
+}
+
+/* ── Réconciliation : deux barèmes ont coexisté en production ──────────
+ * Les missions réglées AVANT le chantier 4-FONDATIONS-A portent une
+ * commission à 2 % du brut. Elles restent immuables (le ledger n'est jamais
+ * réécrit) : la réconciliation administrative doit donc accepter les DEUX
+ * règles, sinon toutes les missions historiques passeraient « écart » du
+ * simple fait d'un changement de barème. */
+const LEGACY_COMMISSION_RATE_NUMERATOR = 2;
+const LEGACY_COMMISSION_RATE_DENOMINATOR = 100;
+
+/** Commission historique : 2 % du brut technicien. Lecture/réconciliation
+ *  uniquement — AUCUNE nouvelle écriture ne doit l'utiliser. */
+export function computeLegacyRelioCommission(grossAmount: number): number {
+  if (!Number.isInteger(grossAmount) || grossAmount < 0) {
+    throw new Error('Le montant brut doit être un entier XAF positif ou nul.');
+  }
+  return Math.floor(
+    (grossAmount * LEGACY_COMMISSION_RATE_NUMERATOR + LEGACY_COMMISSION_RATE_DENOMINATOR / 2) /
+      LEGACY_COMMISSION_RATE_DENOMINATOR,
+  );
+}
+
+/** Une commission enregistrée est-elle conforme, quel que soit le barème
+ *  applicable au moment du règlement ? */
+export function isTechnicianFeeReconciled(grossAmount: number, actualFee: number): boolean {
+  return (
+    actualFee > 0 &&
+    (actualFee === computeExpectedTechnicianFee(grossAmount) ||
+      actualFee === computeLegacyRelioCommission(grossAmount))
+  );
 }
 
 /* Provisionnement de compte client pour le simulateur. */

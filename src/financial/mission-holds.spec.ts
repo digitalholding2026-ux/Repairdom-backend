@@ -374,7 +374,12 @@ describe('CONFIRMED : hold CONSUMED + débit définitif + règlement unique', ()
     return world;
   }
 
-  it('CONFIRMED → CONSUMED + CLIENT_MISSION_DEBIT + repair/travel/fee (440 = 2 % de 22000)', async () => {
+  /* Chantier 4-FONDATIONS-A — le barème est désormais 500 FCFA + 4 % du MONTANT
+   * DU DEVIS (20 000 ici), pas 2 % du brut. Le transport de 2 000 n'est pas
+   * commissionné : commission = 500 + 800 = 1 300 (l'ancien 2 % du brut 22 000
+   * donnait 440). Le débit client de 22 000 est INCHANGÉ — le client ne paie
+   * toujours pas de commission Relio. */
+  it('CONFIRMED → CONSUMED + CLIENT_MISSION_DEBIT + repair/travel/fee (1300 = 500 + 4 % de 20000)', async () => {
     const world = await acceptFirst();
     await world.demandesService.updateStatus('c1', 'm1', { status: 'CONFIRMED' } as never);
     expect(world.store.holds.get('mission-hold:m1:SIMULATION')?.status).toBe('CONSUMED');
@@ -383,7 +388,7 @@ describe('CONFIRMED : hold CONSUMED + débit définitif + règlement unique', ()
     expect(debits[0].amount).toBe(22000);
     expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_REPAIR_REVENUE')?.amount).toBe(20000);
     expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_TRAVEL_REVENUE')?.amount).toBe(2000);
-    expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_FEE')?.amount).toBe(440);
+    expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_FEE')?.amount).toBe(1300);
   });
 
   it('CONFIRMED répété au niveau service → aucun doublon', async () => {

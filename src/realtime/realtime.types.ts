@@ -21,6 +21,10 @@ export type RealtimeEventType =
   // statut KYC sans rechargement de page.
   | 'technician.kyc_verified'
   | 'technician.kyc_rejected'
+  // Chantier 4-FONDATIONS-A : l'admin a notifié le changement de barème de
+  // commission. Émis sur le channel personnel du technicien ; permet à
+  // `/technicien/revenus` d'afficher le nouveau barème sans rechargement.
+  | 'technician.fee_changed'
   // Devis
   | 'mission.quote_created'
   | 'mission.quote_accepted'

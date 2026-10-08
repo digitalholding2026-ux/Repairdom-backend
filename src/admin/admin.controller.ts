@@ -96,6 +96,17 @@ export class AdminController {
     return this.adminService.sendTechnicianMessage(user.id, dto.email, dto.message);
   }
 
+  /* ── Chantier 4-FONDATIONS-A — nouveau barème de commission ──
+   * Déclenchement MANUEL et UNIQUE par l'admin, jamais automatique. Prévu
+   * pour être déclenché une fois le nouveau barème affiché côté technicien
+   * (l'e-mail renvoie vers `/technicien/demandes`). Réponse : `{ sent, failed,
+   * total, failedChannels }`. Un échec par technicien ou par canal n'interrompt
+   * jamais la campagne. */
+  @Post('notify-technicians/fee-change')
+  notifyTechniciansFeeChange() {
+    return this.adminService.notifyTechniciansFeeChange();
+  }
+
   /* Litiges post-intervention (ADMIN uniquement) : liste paginée,
    * détail avec mission + parties, décision motivée. RESOLVED libère le
    * hold (fonds rendus, sans règlement) ; REJECTED rouvre la confirmation.

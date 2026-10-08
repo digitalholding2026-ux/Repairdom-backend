@@ -1,11 +1,17 @@
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { MIN_QUOTE_AMOUNT_XAF } from '../../financial/fee-calculator.js';
 
 export const QUOTE_MAX_AMOUNT = 1_000_000_000;
 export const QUOTE_DESCRIPTION_MAX_LENGTH = 1000;
 
 export class CreateQuoteDto {
+  /* Chantier 4-FONDATIONS-A — seuil minimum d'intervention. Le garde métier
+   * (message explicite « Le montant minimum d'une intervention est de
+   * 5 000 FCFA. ») est aussi posé dans `CollaborationService.createQuote()` :
+   * cette contrainte `@Min` est la première barrière, celle du service donne
+   * le message métier lu par l'utilisateur. */
   @IsInt()
-  @Min(1)
+  @Min(MIN_QUOTE_AMOUNT_XAF)
   @Max(QUOTE_MAX_AMOUNT)
   amount: number;
 

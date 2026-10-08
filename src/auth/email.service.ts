@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  buildFeeChangeEmail,
   buildKycRejectedEmail,
   buildKycVerifiedEmail,
   buildMissionAvailableEmail,
@@ -296,6 +297,29 @@ export class EmailService {
       const reason = error instanceof Error ? error.message : 'erreur inconnue';
       this.logger.error(`Échec d'envoi Resend (relance) pour ${to} : ${reason}.`);
     }
+  }
+
+  /* ── Chantier 4-FONDATIONS-A — nouveau barème de commission ────────
+   *
+   * Lève une Error assainie en cas d'échec (comme `sendMissionAvailable`) :
+   * c'est `AdminService.notifyTechniciansFeeChange()` qui isole l'échec par
+   * technicien, pour qu'un e-mail non parti n'annule ni la notification in-app
+   * ni les autres techniciens.
+   *
+   * AUCUN montant pré-formaté : le barème est écrit en toutes lettres dans le
+   * gabarit (règle FCFA). */
+  async sendFeeChangeEmail(to: string, firstName: string, missionsUrl: string): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(`[e-mail non envoyé] nouveau barème pour ${to} (Resend non configuré).`);
+      return;
+    }
+    const content = buildFeeChangeEmail(firstName, missionsUrl, this.footerLinks());
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
   }
 
   /** Résumé d'erreur Resend (nom + message uniquement : jamais la clé ni le corps brut). */

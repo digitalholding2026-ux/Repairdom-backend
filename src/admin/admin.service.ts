@@ -392,8 +392,11 @@ export class AdminService {
     return this.getKycFolder(technicianId);
   }
 
-  /* Journalise l'échec d'un canal de notification KYC. Aucun secret, aucune
-   * donnée personnelle : uniquement l'identifiant technique du technicien. */
+  /* Journalise l'échec d'un canal de notification. Aucun secret, aucune
+   * donnée personnelle : uniquement l'identifiant technique du technicien.
+   * Le message est volontairement neutre — la même méthode sert la décision
+   * KYC et la notification de barème, où il n'y a pas de « décision » à
+   * mentionner. */
   private logKycChannelFailure(
     channel: string,
     technicianId: string,
@@ -401,9 +404,164 @@ export class AdminService {
   ): void {
     const reason = error instanceof Error ? error.message : 'erreur inconnue';
     this.logger.warn(
-      `Canal KYC « ${channel} » en échec pour ${technicianId} : ${reason}. ` +
-        'La décision reste enregistrée.',
+      `Canal « ${channel} » en échec pour ${technicianId} : ${reason}. ` +
+        'Les autres canaux et les autres destinataires sont traités normalement.',
     );
+  }
+
+  /* ── Chantier 4-FONDATIONS-A — notification du nouveau barème ──── */
+  /* ⚠️ CET ENVOI N'EST PAS AUTOMATIQUE. Aucun scheduler, aucun déclenchement
+   * au déploiement : c'est une action UNIQUE et VOLONTAIRE de l'admin, à
+   * déclencher une fois le nouveau barème Visible par les techniciens
+   * (l'e-mail renvoie vers `/technicien/demandes`, qui affiche désormais la
+   * commission). L'ordre de grandeur est celui du chantier KYC : mêmes quatre
+   * canaux, mêmes protections.
+   *
+   * Isolation stricte : chaque technicien est traité dans son propre
+   * try/catch. Un e-mail en échec n'empêche NI la notification in-app du même
+   * technicien NI l'envoi aux techniciens suivants. Le compte rendu
+   * `{ sent, failed }` est le seul contrat de la route.
+   *
+   * Aucun montant pré-formaté dans la notification : le barème est écrit en
+   * toutes lettres (règle FCFA), et `metadata` reste vide. */
+
+  /** Notifications du changement de barème envoyées avec succès. */
+  private async notifyTechnicianChannels(
+    technician: { id: string; firstName: string; email: string },
+    missionsUrl: string,
+  ): Promise<string[]> {
+    const failed: string[] = [];
+
+    /* Canal 1 : notification in-app (persistée). `ADMIN_MESSAGE` est le type
+     * déjà utilisé par `sendTechnicianMessage` : aucun nouveau type, aucune
+     * migration, et le technicien la voit dans son espace existant. */
+    let notificationId: string | null = null;
+    try {
+      const notification = await this.prisma.notification.create({
+        data: {
+          userId: technician.id,
+          /* Barème ≠ mission : `demandeId` reste `null`, donc l'app affiche la
+           * notification à plat (jamais regroupée par mission). */
+          demandeId: null,
+          type: 'ADMIN_MESSAGE',
+          title: 'Nouveau barème Relio',
+          message:
+            'La commission Relio est désormais de 500 FCFA + 4 % par mission, ' +
+            'avec un minimum de 5 000 FCFA par intervention. Votre commission ' +
+            'est affichée dans chaque devis.',
+        },
+      });
+      notificationId = notification.id;
+    } catch (error) {
+      failed.push('notification');
+      this.logKycChannelFailure('notification in-app (barème)', technician.id, error);
+    }
+
+    /* Canal 2 : SSE (onglet ouvert). */
+    if (this.realtime) {
+      try {
+        if (notificationId) {
+          this.realtime.publishToUser(technician.id, 'notification.created', {
+            notificationId,
+            kind: 'ADMIN_MESSAGE',
+          });
+        }
+        this.realtime.publishToUser(technician.id, 'technician.fee_changed', {
+          technicianId: technician.id,
+        });
+      } catch (error) {
+        failed.push('sse');
+        this.logKycChannelFailure('SSE (barème)', technician.id, error);
+      }
+    }
+
+    /* Canal 3 : push web VAPID (onglet fermé). `sendToUser` ne lève jamais et
+     * SUPPRIME l'envoi si une connexion SSE est active : pas de doublon. */
+    if (this.push) {
+      try {
+        await this.push.sendToUser(technician.id, {
+          title: 'Nouveau barème Relio',
+          body: 'Commission : 500 FCFA + 4 % par mission. Minimum 5 000 FCFA par intervention.',
+          tag: `fee-change-${technician.id}`,
+          url: '/technicien/demandes',
+          type: 'fee_change',
+        });
+      } catch (error) {
+        failed.push('push');
+        this.logKycChannelFailure('push (barème)', technician.id, error);
+      }
+    }
+
+    /* Canal 4 : e-mail (Resend). */
+    if (this.email && technician.email) {
+      try {
+        await this.email.sendFeeChangeEmail(
+          technician.email,
+          technician.firstName,
+          missionsUrl,
+        );
+      } catch (error) {
+        failed.push('email');
+        this.logKycChannelFailure('e-mail (barème)', technician.id, error);
+      }
+    }
+
+    return failed;
+  }
+
+  /**
+   * Notifie TOUS les techniciens actifs du nouveau barème (500 FCFA + 4 %,
+   * minimum 5 000 FCFA par intervention). Déclenchement manuel par l'admin.
+   */
+  async notifyTechniciansFeeChange() {
+    const technicians = await this.prisma.user.findMany({
+      where: { role: 'TECHNICIAN', isActive: true },
+      select: { id: true, firstName: true, email: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const missionsUrl = `${this.frontendUrl()}/technicien/demandes`;
+
+    let sent = 0;
+    const failedChannels: Record<string, number> = {};
+    for (const technician of technicians) {
+      try {
+        const failures = await this.notifyTechnicianChannels(technician, missionsUrl);
+        if (failures.length === 0) {
+          sent += 1;
+        } else {
+          for (const channel of failures) {
+            failedChannels[channel] = (failedChannels[channel] ?? 0) + 1;
+          }
+        }
+      } catch (error) {
+        /* Filet de sécurité : un échec inattendu sur UN technicien
+         * n'interrompt jamais la campagne. */
+        this.logKycChannelFailure('canal (barème)', technician.id, error);
+        failedChannels['inconnu'] = (failedChannels['inconnu'] ?? 0) + 1;
+      }
+    }
+
+    const failed = technicians.length - sent;
+    this.logger.log(
+      `Notification du nouveau barème : ${sent} technicien(s) notifié(s), ${failed} en échec ` +
+        `sur ${technicians.length} technicien(s) actif(s).`,
+    );
+
+    return {
+      sent,
+      failed,
+      total: technicians.length,
+      /* Détail par canal, pour que l'admin sache SI l'e-mail est parti ou
+       * si seul un canal a échoué. */
+      failedChannels,
+      /* Le contenu exact, afin que l'admin puisse le comparer au gabarit
+       * affiché dans l'interface avant de déclencher. */
+      rule: {
+        commission: '500 FCFA + 4 % du montant du devis',
+        minimumQuote: '5 000 FCFA',
+      },
+    };
   }
 
   /* ── Supervision des missions (Sprint 8.6.5) ────────────────── */

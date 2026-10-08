@@ -15,7 +15,13 @@ import type { CreateDiagnosticDto } from './dto/create-diagnostic.dto.js';
 import type { CreateQuoteDto } from './dto/create-quote.dto.js';
 import type { SelectCatalogDiagnosticDto } from './dto/select-catalog-diagnostic.dto.js';
 import { FinancialService } from '../financial/financial.service.js';
-import { STANDARD_TRANSPORT_FEE } from '../financial/financial-fees.js';
+import {
+  MIN_QUOTE_AMOUNT_ERROR_MESSAGE,
+  MIN_QUOTE_AMOUNT_XAF,
+  STANDARD_TRANSPORT_FEE,
+  calculateTechnicianFee,
+  isQuoteAmountAllowed,
+} from '../financial/financial-fees.js';
 /* Phase A (frontend) — le technicien assigné voit le barème (fourchette
  * min/ref/max + frais, SANS historique ni données internes) dès le choix du
  * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
@@ -252,6 +258,16 @@ export class CollaborationService {
       repair: quote.amount,
       travel: STANDARD_TRANSPORT_FEE,
       totalToDebit: quote.amount + STANDARD_TRANSPORT_FEE,
+      /* Barème 4-FONDATIONS-A — transparence : le technicien voit la
+       * commission Relio et son net AVANT/APRÈS l'envoi du devis, sans jamais
+       * recalculer de son côté. Réservé au technicien et à l'admin (comme le
+       * `serviceFee` plus bas) : le client ne voit que ce qu'il paie. */
+      ...(userRole === 'CLIENT'
+        ? {}
+        : {
+            commission: calculateTechnicianFee(quote.amount),
+            netTechnician: quote.amount + STANDARD_TRANSPORT_FEE - calculateTechnicianFee(quote.amount),
+          }),
       breakdown: quote.source === 'CATALOG'
         ? {
             referencePrice: quote.initialReferencePrice,
@@ -393,6 +409,15 @@ export class CollaborationService {
 
     const description = dto.description.trim();
     if (!description) throw new BadRequestException('La description du tarif ne peut pas être vide.');
+
+    /* Chantier 4-FONDATIONS-A — seuil minimum de devis. Barème appliqué à la
+     * CRÉATION uniquement : un devis antérieur au déploiement (même < 5 000)
+     * reste acceptable et confirmable normalement, aucune écriture n'est
+     * réécrite. Le garde est posé ici (service) ET dans le DTO : le service
+     * protège les appels directs, le DTO rend le 400 explicite côté HTTP. */
+    if (!isQuoteAmountAllowed(dto.amount)) {
+      throw new BadRequestException(MIN_QUOTE_AMOUNT_ERROR_MESSAGE);
+    }
 
     // Règle Relio : le montant manuel accepté EST la réparation ; le
     // transport standard (2 000 XAF) est figé par le backend — la valeur
@@ -875,6 +900,16 @@ export class CollaborationService {
         });
 
         const amount = pricing.referencePrice ?? 0;
+        /* Chantier 4-FONDATIONS-A — le devis automatique catalogue ne peut pas
+         * contourner le seuil minimum. AUCUN `Pricing` n'est modifié : c'est une
+         * règle applicative. Le technicien est renvoyé vers le diagnostic libre,
+         * qui produit un devis manuel au-dessus du seuil. */
+        if (!isQuoteAmountAllowed(amount)) {
+          throw new BadRequestException(
+            `Cette intervention du barème est tarifée en dessous du minimum de 5 000 FCFA. ` +
+              `Utilisez le diagnostic libre pour proposer un devis manuel d'au moins ${MIN_QUOTE_AMOUNT_XAF} FCFA.`,
+          );
+        }
         const quote = await tx.quote.create({
           data: {
             demandeId,

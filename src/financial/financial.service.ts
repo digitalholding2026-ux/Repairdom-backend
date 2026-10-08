@@ -27,20 +27,23 @@ import {
   MAX_WITHDRAWAL_AMOUNT,
   MIN_TOPUP_AMOUNT,
   MIN_WITHDRAWAL_AMOUNT,
-  RELIO_COMMISSION_RATE_DENOMINATOR,
-  RELIO_COMMISSION_RATE_NUMERATOR,
   RELIO_WITHDRAWAL_NOTE_MAX_LENGTH,
   RELIO_WITHDRAWAL_REFERENCE_ALPHABET,
   RELIO_WITHDRAWAL_REFERENCE_LENGTH,
   RELIO_WITHDRAWAL_REFERENCE_PREFIX,
   STANDARD_TRANSPORT_FEE,
+  TECHNICIAN_FEE_FIXED_XAF,
+  TECHNICIAN_FEE_RATE_DENOMINATOR,
+  TECHNICIAN_FEE_RATE_NUMERATOR,
   TECHNICIAN_PLATFORM_FEE,
   TOPUP_INTENT_REFERENCE_LENGTH,
   TOPUP_INTENT_REFERENCE_PREFIX,
   TOTAL_PLATFORM_FEES,
   WITHDRAWAL_REQUEST_REFERENCE_LENGTH,
   WITHDRAWAL_REQUEST_REFERENCE_PREFIX,
-  computeRelioCommission,
+  calculateTechnicianFee,
+  computeExpectedTechnicianFee,
+  isTechnicianFeeReconciled,
 } from './financial-fees.js';
 import {
   SASPAY_PAYOUT_COUNTRY,
@@ -432,8 +435,12 @@ export class FinancialService {
    *  la transition CONFIRMED, dans la même transaction) :
    *    TECHNICIAN_REPAIR_REVENUE CREDIT = réparation (montant accepté)
    *    TECHNICIAN_TRAVEL_REVENUE CREDIT = transport standard (2 000 XAF)
-   *    TECHNICIAN_FEE            DEBIT  = commission Relio 2 % du brut
-   *  Net technicien = brut − commission. Rien n'est crédité à COMPLETED :
+   *    TECHNICIAN_FEE            DEBIT  = commission Relio
+   *                                    (500 XAF + 4 % du montant du devis)
+   *  Net technicien = réparation + transport − commission. La commission ne
+   *  porte JAMAIS sur le transport : c'est un pass-through intégralement
+   *  reversé au technicien.
+   *  Rien n'est crédité à COMPLETED :
    *  la commission n'est due qu'à la validation finale (CONFIRMED), jamais à
    *  la création, au dispatch, à l'acceptation technicien, au devis, à
    *  l'acceptation du devis ni pendant la négociation.
@@ -457,7 +464,10 @@ export class FinancialService {
 
     const { repairAmount, travelAmount } = this.splitQuote(quote);
     const grossAmount = repairAmount + travelAmount;
-    const commission = computeRelioCommission(grossAmount);
+    /* Barème 4-FONDATIONS-A : la commission porte sur le MONTANT DU DEVIS
+     * (`repairAmount`), jamais sur le brut — le transport est un pass-through
+     * intégralement reversé au technicien et n'est donc pas commissionné. */
+    const commission = calculateTechnicianFee(repairAmount);
 
     // Une composante réparation nulle ne donne pas lieu à une écriture ; le
     // transport standard (2 000) est toujours crédité au technicien.
@@ -507,9 +517,12 @@ export class FinancialService {
       createdById: args.createdById,
       metadata: {
         fee: commission,
+        /* Base commissionnée = montant du devis (hors transport). */
+        repair: repairAmount,
         gross: grossAmount,
-        rateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
-        rateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        fixedFee: TECHNICIAN_FEE_FIXED_XAF,
+        rateNumerator: TECHNICIAN_FEE_RATE_NUMERATOR,
+        rateDenominator: TECHNICIAN_FEE_RATE_DENOMINATOR,
         currency: FINANCIAL_CURRENCY,
       },
     });
@@ -913,8 +926,11 @@ export class FinancialService {
   }
 
   /** Réconciliation Relio par mission financièrement réglée.
-   *  Nouvelle règle : revenu Relio = commission 2 % du brut technicien
-   *  (aucune commission client). Missions antérieures : les écritures
+   *  Règle en vigueur : revenu Relio = commission 500 XAF + 4 % du montant du
+   *  devis technicien (le transport n'est pas commissionné), aucune commission
+   *  client. Une mission réglée sous l'ancien barème 2 % reste conforme : le
+   *  ledger n'est jamais réécrit, `isTechnicianFeeReconciled` accepte les deux
+   *  règles. Missions antérieures : les écritures
    *  CLIENT_FEE legacy (100 XAF) restent comptées telles quelles et la mission
    *  est réconciliée contre l'ancien attendu (100 + 150 = 250) — sans jamais
    *  réécrire l'historique. Le transport et la réparation ne sont jamais
@@ -959,14 +975,13 @@ export class FinancialService {
     const expectedRepairDomRevenue = isLegacyMission
       ? TOTAL_PLATFORM_FEES
       : clientMissionDebit > 0
-        ? computeRelioCommission(clientMissionDebit)
+        ? computeExpectedTechnicianFee(clientMissionDebit)
         : 0;
     const reconciled = isLegacyMission
       ? repairDomRevenue === TOTAL_PLATFORM_FEES
       : clientMissionDebit > 0 &&
         clientFee === 0 &&
-        technicianFee === expectedRepairDomRevenue &&
-        technicianFee > 0;
+        isTechnicianFeeReconciled(clientMissionDebit, technicianFee);
 
     return {
       demandeId,
@@ -987,8 +1002,9 @@ export class FinancialService {
   /** Vérifie la réconciliation globale des commissions Relio sur toutes les
    *  missions du mode : aucune mission ne doit présenter d'écart.
    *  Missions antérieures (avec CLIENT_FEE legacy) : attendu 100 + 150 = 250.
-   *  Nouvelles missions : attendu = 2 % du brut débité au client, sans
-   *  commission client. */
+   *  Nouvelles missions : attendu = 500 + 4 % du devis (brut débité au client
+   *  moins le transport standard), sans commission client. Les missions
+   *  réglées sous l'ancien barème 2 % restent réconciliées. */
   async reconcileRepairDomFees(mode: FinancialTransactionMode) {
     this.ensureModeAllowed(mode);
     const rows = await this.prisma.financialTransaction.findMany({
@@ -1020,15 +1036,14 @@ export class FinancialService {
         const expected = isLegacy
           ? TOTAL_PLATFORM_FEES
           : fees.clientDebit > 0
-            ? computeRelioCommission(fees.clientDebit)
+            ? computeExpectedTechnicianFee(fees.clientDebit)
             : 0;
         const total = fees.clientFee + fees.technicianFee;
         const reconciled = isLegacy
           ? total === TOTAL_PLATFORM_FEES
           : fees.clientDebit > 0 &&
             fees.clientFee === 0 &&
-            fees.technicianFee === expected &&
-            expected > 0;
+            isTechnicianFeeReconciled(fees.clientDebit, fees.technicianFee);
         return { demandeId, ...fees, total, expected, legacy: isLegacy, reconciled };
       });
 
@@ -1038,8 +1053,9 @@ export class FinancialService {
       mismatches: mismatched,
       expectedPerMission: {
         transport: STANDARD_TRANSPORT_FEE,
-        commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
-        commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        commissionFixedXAF: TECHNICIAN_FEE_FIXED_XAF,
+        commissionRateNumerator: TECHNICIAN_FEE_RATE_NUMERATOR,
+        commissionRateDenominator: TECHNICIAN_FEE_RATE_DENOMINATOR,
         legacyTotal: TOTAL_PLATFORM_FEES,
       },
     };
@@ -1061,8 +1077,9 @@ export class FinancialService {
       currency: FINANCIAL_CURRENCY,
       expectedPerMission: {
         transport: STANDARD_TRANSPORT_FEE,
-        commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
-        commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+        commissionFixedXAF: TECHNICIAN_FEE_FIXED_XAF,
+        commissionRateNumerator: TECHNICIAN_FEE_RATE_NUMERATOR,
+        commissionRateDenominator: TECHNICIAN_FEE_RATE_DENOMINATOR,
         // Historique uniquement : ancien forfait 100 (client) + 150 (techno).
         clientFee: CLIENT_PLATFORM_FEE,
         technicianFee: TECHNICIAN_PLATFORM_FEE,
@@ -1177,18 +1194,19 @@ export class FinancialService {
         mission.technicianNet = mission.repair + mission.travel - mission.technicianFee;
         mission.repairDomRevenue = mission.clientFee + mission.technicianFee;
         // Missions antérieures (frais client legacy) : attendu 250.
-        // Nouvelles missions : commission 2 % du brut débité, sans frais client.
+        // Nouvelles missions : 500 + 4 % du devis, sans frais client. Les
+        // missions réglées sous l'ancien barème 2 % restent conformes.
         if (mission.clientFee > 0) {
           mission.reconciled =
             mission.repairDomRevenue === TOTAL_PLATFORM_FEES &&
             mission.technicianFee > 0;
         } else {
           const expected =
-            mission.clientDebit > 0 ? computeRelioCommission(mission.clientDebit) : 0;
+            mission.clientDebit > 0 ? computeExpectedTechnicianFee(mission.clientDebit) : 0;
           mission.reconciled =
             mission.clientDebit > 0 &&
-            mission.technicianFee === expected &&
-            expected > 0;
+            expected > 0 &&
+            isTechnicianFeeReconciled(mission.clientDebit, mission.technicianFee);
         }
         if (t.createdAt.toISOString() > mission.lastActivity) {
           mission.lastActivity = t.createdAt.toISOString();
@@ -1226,8 +1244,9 @@ export class FinancialService {
         ok: missions.length === 0 ? null : mismatchMissions === 0,
         expectedPerMission: {
           transport: STANDARD_TRANSPORT_FEE,
-          commissionRateNumerator: RELIO_COMMISSION_RATE_NUMERATOR,
-          commissionRateDenominator: RELIO_COMMISSION_RATE_DENOMINATOR,
+          commissionFixedXAF: TECHNICIAN_FEE_FIXED_XAF,
+          commissionRateNumerator: TECHNICIAN_FEE_RATE_NUMERATOR,
+          commissionRateDenominator: TECHNICIAN_FEE_RATE_DENOMINATOR,
           legacyTotal: TOTAL_PLATFORM_FEES,
         },
       },
@@ -1290,14 +1309,13 @@ export class FinancialService {
     const expectedRepairDomRevenue = isLegacyMission
       ? TOTAL_PLATFORM_FEES
       : clientMissionDebit > 0
-        ? computeRelioCommission(clientMissionDebit)
+        ? computeExpectedTechnicianFee(clientMissionDebit)
         : 0;
     const reconciled = isLegacyMission
       ? repairDomRevenue === TOTAL_PLATFORM_FEES
       : clientMissionDebit > 0 &&
         clientFee === 0 &&
-        technicianFee === expectedRepairDomRevenue &&
-        technicianFee > 0;
+        isTechnicianFeeReconciled(clientMissionDebit, technicianFee);
 
     return {
       demande: {
@@ -1436,8 +1454,8 @@ export class FinancialService {
   /* ── Fonds Relio + retraits ADMIN (Sprint ADMIN SUPER POWERS) ─── */
   /* Le portefeuille Relio n'est PAS un deuxième système financier : il est
    * calculé depuis le ledger existant.
-   *   - commissions acquises = Σ TECHNICIAN_FEE (2 % du brut, au CONFIRMED)
-   *     + Σ CLIENT_FEE legacy, écritures VALIDATED du mode serveur ;
+   *   - commissions acquises = Σ TECHNICIAN_FEE (500 + 4 % du devis, au
+   *     CONFIRMED) + Σ CLIENT_FEE legacy, écritures VALIDATED du mode serveur ;
    *   - une commission n'est acquise qu'après validation finale (CONFIRMED) :
    *     les missions non confirmées ne contribuent jamais au disponible ;
    *   - retraits = lignes RelioWithdrawal VALIDATED (chacune doublée d'une
