@@ -68,7 +68,13 @@ export type NotificationType =
   // Chantier #4A : récompenses client — palier franchi (client) et mission
   // écartée après décision anti-fraude (client).
   | 'REWARD_TIER_REACHED'
-  | 'REWARD_MISSION_NOT_COUNTED';
+  | 'REWARD_MISSION_NOT_COUNTED'
+  // Chantier 4-FONDATIONS-C : refonte LTV. Ces deux valeurs MANQUAIENT à ce
+  // type local alors qu'elles existent dans l'enum Prisma — la dérive signalée
+  // à l'audit du 08/10 est ici corrigée : sans elles, le backend ne pouvait pas
+  // créer ces notifications (erreur de compilation, pas un bug silencieux).
+  | 'REWARD_CREDIT_EARNED'
+  | 'REWARD_NATURE_REACHED';
 
 export interface EventInput {
   demandeId: string;
@@ -283,6 +289,18 @@ export function buildNotification(
     REWARD_MISSION_NOT_COUNTED: {
       title: 'Mission non comptabilisée',
       message: 'Cette mission n’a pas été retenue dans votre programme de récompenses.',
+    },
+    /* Chantier 4-FONDATIONS-C — libellés par défaut. Les titres et messages
+     * RÉELS sont fournis par `RewardsNotificationsService` (qui construit la
+     * notification directement) ; ces entrées servent aux appels de
+     * `buildNotification` générique. AUCUN montant : règle FCFA. */
+    REWARD_CREDIT_EARNED: {
+      title: 'De nouveaux crédits de fidélité',
+      message: 'Des crédits vous attendent sur votre programme de fidélité.',
+    },
+    REWARD_NATURE_REACHED: {
+      title: 'Récompense débloquée',
+      message: 'Une nouvelle récompense est disponible dans votre programme de fidélité.',
     },
   };
   const { title, message } = content[type];

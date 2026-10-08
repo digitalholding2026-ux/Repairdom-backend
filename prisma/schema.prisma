@@ -95,18 +95,39 @@ enum NotificationType {
   // de récompenses après décision administrative sur un signalement
   // anti-fraude. `ACTION` côté client (il doit contacter l'app pour comprendre).
   REWARD_MISSION_NOT_COUNTED
+  // Chantier 4-FONDATIONS-C — des CRÉDITS de fidélité sont disponibles et
+  // attendent une action du client (« ajouter à mon solde »). `ACTION` : sans
+  // clic de sa part, le crédit reste acquis mais non versé.
+  REWARD_CREDIT_EARNED
+  // Chantier 4-FONDATIONS-C — un palier de récompense NATURE vient d'être
+  // atteint et peut être réclamé. `ACTION` : le versement reste manuel (admin).
+  REWARD_NATURE_REACHED
 }
 
 // Chantier #4A — paliers du programme de récompenses client.
 // `NONE` = aucun palier atteint (état initial, et état d'un compte dont le
 // compteur est à zéro). Les seuils sont dans `src/rewards/rewards.config.ts`
 // (REWARD_TIERS), seule source de vérité : l'enum ne porte que l'ordre.
+// Chantier 4-FONDATIONS-C — refonte LTV. Le programme #4A (nombre de
+// missions) est SUPPRIMÉ : il était économiquement insoutenable avec le barème
+// « 500 + 4 % ». Les paliers portent désormais sur la MARGE CUMULÉE générée
+// par le client. `BRONZE`/`ARGENT` n'existent plus : la migration les retire
+// (aucun client en base n'a de progression, le DROP est sans perte).
 enum RewardTier {
   NONE
-  BRONZE
-  ARGENT
+  FIDELE
   OR
   PLATINE
+}
+
+// Chantier 4-FONDATIONS-C — récompenses NATURE (cumulables), sur la même
+// marge cumulée mais à des seuils bien plus hauts que les badges. `NONE` est
+// l'absence de palier, pas un palier.
+enum NatureRewardTier {
+  NONE
+  ELECTROMENAGER_PETIT
+  ELECTROMENAGER_MOYEN
+  SMARTPHONE
 }
 
 // Sprint 8.4 — Gouvernance du diagnostic : origine d'un diagnostic de mission.
@@ -170,6 +191,11 @@ enum FinancialTransactionType {
   // payout, après consommation du hold — voir FundsHold/WithdrawalRequest).
   CLIENT_WITHDRAWAL
   TECHNICIAN_WITHDRAWAL
+  // Chantier 4-FONDATIONS-C : crédit de fidélité versé au SOLDE client sur
+  // demande explicite (`POST /client/rewards/credits/claim`). distinct de
+  // CLIENT_TOPUP (vraie recharge payante) : ici, le crédit est un avantage
+  // acquis par la marge cumulée, jamais un encaissement.
+  CLIENT_REWARD_CREDIT
 }
 
 enum FinancialTransactionDirection {
@@ -346,20 +372,47 @@ model User {
 //
 // `missionCount` est INCRÉMENTÉ de façon atomique (`updateMany` / `$queryRaw`
 // côté service) : deux confirmations concurrentes ne peuvent pas s'écraser.
+// Chantier 4-FONDATIONS-C — PROGRESSION LTV (remplace le compteur de
+// missions du #4A).
+//
+// L'unité n'est plus « une mission » mais la MARGE RÉELLE générée par le
+// client : à chaque mission CONFIRMED on cumule la commission Relio prélevée
+// sur cette mission (500 FCFA + 4 % du devis technicien). C'est la seule
+// grandeur qui trouve dans le panier du client sans hypothèse de fréquence.
+//
+//   - `cumulativeMarginXAF` : marge cumulée à vie, ENTIER XAF (règle FCFA :
+//     aucun montant formaté n'est stocké, le formatage est fait à
+//     l'affichage par `formatFCFA`) ;
+//   - crédits = floor(marge / 10 000) x 500, donc PLAFONNÉS à 5 % de la marge
+//     à vie — le coût du programme est borné par construction ;
+//   - les crédits s'accumulent et attendent une demande explicite du client
+//     (`claimCredits`) qui les verse au solde sous forme d'une écriture
+//     ledger `CLIENT_REWARD_CREDIT` ;
+//   - les récompenses NATURE sont cumulables et suivent la même marge, à des
+//     seuils bien plus hauts ; leur versement reste MANUEL (admin).
+//
+// `lastMissionAt` reste la garde-fou anti-double comptage du #4A.
 model ClientRewardProgress {
-  id            String       @id @default(dbgenerated("gen_random_uuid()"))
-  userId        String       @unique
-  missionCount  Int          @default(0)
-  currentTier   RewardTier   @default(NONE)
-  // Paliers FRANCHIS (jamais retirés : un palier atteint ne se reperd pas).
-  reachedTiers  RewardTier[] @default([])
-  // Paliers dont le client a DEMANDÉ l'usage (« Utiliser ma récompense »).
-  // L'usage effectif reste manuel (admin) : ici on mémorise la demande seule.
-  claimedTiers  RewardTier[] @default([])
+  id                  String            @id @default(dbgenerated("gen_random_uuid()"))
+  userId              String            @unique
+  // Marge cumulée générée par le client, XAF ENTIER.
+  cumulativeMarginXAF Int               @default(0)
+  // Palier badge atteint (le plus haut) et palier nature atteint.
+  currentTier         RewardTier        @default(NONE)
+  currentNatureTier   NatureRewardTier  @default(NONE)
+  // Crédits : `creditsEarned` est AUTO (dérivé de la marge), `creditsClaimed`
+  // est ce qui a déjà été versé au solde. Le disponible est leur différence.
+  creditsEarned       Int               @default(0)
+  creditsClaimed      Int               @default(0)
+  lastCreditClaimAt   DateTime?
+  // Paliers nature ATTEINTS (jamais retirés) et DÉJÀ RÉCLAMÉS (demande
+  // client ; le versement effectif reste manuel côté admin).
+  natureReached       NatureRewardTier[] @default([])
+  natureClaimed       NatureRewardTier[] @default([])
   // Dernière mission COMPTABILISÉE : garde-fou anti-double comptage.
-  lastMissionAt DateTime?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  lastMissionAt       DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

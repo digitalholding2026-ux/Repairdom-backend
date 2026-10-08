@@ -65,22 +65,42 @@ export interface NotificationMetadata {
    *  `view_missions` (dossier validé) ou `fix_kyc` (dossier à corriger). */
   kycAction?: string;
   /** Palier de récompenses franchi, littéral (REWARD_TIER_REACHED) :
-   *  `BRONZE` | `ARGENT` | `OR` | `PLATINE`. */
+   *  `FIDELE` | `OR` | `PLATINE`. */
   rewardTier?: string;
-  /** Libellé du palier (« Bronze », « Platine »…). */
+  /** Libellé du palier (« Fidèle », « Platine »…). */
   rewardLabel?: string;
-  /** Nom de missions requis pour le palier (permet d'afficher « 15 missions »). */
-  rewardMissions?: number;
-  /** Valeur de la récompense, XAF ENTIER (REWARD_TIER_REACHED). Jamais
-   *  formatée ici : `formatFCFA` côté frontend. */
-  rewardValueXAF?: NotificationAmountXAF;
-  /** Action attendue côté client : `view_rewards` (REWARD_TIER_REACHED) ou
-   *  `contact_support` (REWARD_MISSION_NOT_COUNTED). */
-  rewardAction?: string;
   /** Motif littéral du signalement anti-fraude (REWARD_MISSION_NOT_COUNTED) :
    *  `SAME_TECHNICIAN_48H`. Sert à l'app pour expliquer la décision ; le
    *  commentaire libre de l'admin n'est JAMAIS exposé au client. */
   rewardFraudReason?: string;
+  /* ── Chantier 4-FONDATIONS-C : refonte LTV ───────────────────────────
+   * Le #4A exposait `rewardMissions` (nombre de missions) et
+   * `rewardValueXAF` (valeur du palier) : les deux sont SUPPRIMÉS, la
+   * progression ne porte plus sur un nombre de missions. */
+
+  /** Marge cumulée du client, XAF ENTIER (toutes notifications LTV). */
+  rewardMarginXAF?: NotificationAmountXAF;
+  /** Montant du CRÉDIT nouvellement acquis, XAF ENTIER
+   *  (REWARD_CREDIT_EARNED). Jamais formaté ici : `formatFCFA` côté frontend. */
+  rewardCreditXAF?: NotificationAmountXAF;
+  /** Crédits encore disponibles après ce cumul
+   *  (REWARD_CREDIT_EARNED). */
+  rewardCreditAvailableXAF?: NotificationAmountXAF;
+  /** Palier NATURE atteint, littéral : `ELECTROMENAGER_PETIT` |
+   *  `ELECTROMENAGER_MOYEN` | `SMARTPHONE` (REWARD_NATURE_REACHED). */
+  rewardNatureTier?: string;
+  /** Libellé du palier nature (« Petit électroménager »…). */
+  rewardNatureLabel?: string;
+  /** Seuil de marge du palier nature, XAF ENTIER. */
+  rewardNatureThresholdXAF?: NotificationAmountXAF;
+  /** Seuil de marge du prochain badge, XAF ENTIER (`null` si tous atteints). */
+  rewardNextTierXAF?: NotificationAmountXAF;
+  /** Action attendue côté client. Valeurs :
+   *  `view_rewards` (palier atteint, OUIVI) · `claim_credits`
+   *  (REWARD_CREDIT_EARNED, ACTION : il doit cliquer) ·
+   *  `claim_nature` (REWARD_NATURE_REACHED, ACTION : il doit réclamer) ·
+   *  `contact_support` (REWARD_MISSION_NOT_COUNTED). */
+  rewardAction?: string;
 }
 
 /**
@@ -122,10 +142,16 @@ const METADATA_KEYS: Array<keyof NotificationMetadata> = [
   'kycAction',
   'rewardTier',
   'rewardLabel',
-  'rewardMissions',
-  'rewardValueXAF',
   'rewardAction',
   'rewardFraudReason',
+  /* Chantier 4-FONDATIONS-C — refonte LTV. */
+  'rewardMarginXAF',
+  'rewardCreditXAF',
+  'rewardCreditAvailableXAF',
+  'rewardNatureTier',
+  'rewardNatureLabel',
+  'rewardNatureThresholdXAF',
+  'rewardNextTierXAF',
 ];
 
 /**

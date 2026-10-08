@@ -371,36 +371,39 @@ export function buildKycRejectedEmail(
  *
  * E-mail « palier atteint ». Ton congratulatoire et factuel.
  *
- * RÈGLE FCFA : le montant N'EST PAS formaté ici. Il arrive en XAF entier
- * (`rewardValueXAF`) et n'apparaît donc pas dans ce gabarit : seule la ligne
- * « Prochain palier : … missions restantes » est affichée. La valeur de la
- * récompense dépend de la mécanique d'attribution (admin) et peut être
- * amenée à changer sans que l'e-mail déjà envoyé mente. Le label du palier
- * (`rewardLabel`) et le libellé de la récompense (`reward`) sont échappés.
+ * RÈGLE FCFA : aucun montant n'est FORMATÉ ici. Les seuils arrivent en XAF
+ * entier (`tierSeuilXAF`, `nextTierThresholdXAF`) et le gabarit n'affiche donc
+ * que les PALIERS, jamais de somme pré-formatée : la mécanique d'attribution
+ * peut évoluer sans que l'e-mail déjà envoyé mente. Les libellés sont échappés.
+ *
+ * Chantier 4-FONDATIONS-C : la progression porte désormais sur la MARGE
+ * CUMULÉE, plus sur un nombre de missions. Il n'y a donc plus de « X missions
+ * restantes » — le client n'a aucun compteur de missions à’interpréter.
  */
 export function buildRewardTierReachedEmail(
   firstName: string,
   tierLabel: string,
-  rewardLabel: string,
   rewardsUrl: string,
-  nextTier: { label: string; remaining: number } | null,
+  nextTierThresholdXAF: number | null,
   links: EmailFooterLinks,
 ): KycEmailContent {
   const name = firstName.trim() || 'Bonjour';
   const tier = tierLabel.trim() || 'palier';
-  const reward = rewardLabel.trim() || 'votre récompense';
-  const suite = nextTier
-    ? `Encore ${Math.max(nextTier.remaining, 0)} mission${nextTier.remaining !== 1 ? 's' : ''} pour atteindre le palier ${nextTier.label}.`
+  const suite = nextTierThresholdXAF
+    ? `Encore un peu de marge cumulée pour atteindre le palier suivant.`
     : 'Vous avez atteint le dernier palier du programme. Bravo.';
 
   const text = [
     `${name},`,
     '',
-    `Vous avez atteint le palier ${tier} du programme de récompenses Relio.`,
-    `Récompense débloquée : ${reward}.`,
+    `Vous avez atteint le palier ${tier} du programme de fidélité Relio.`,
+    '',
+    'Votre statut de client fidèle a changé, et avec lui vos avantages :',
+    'des crédits cumulables et des récompenses.',
+    '',
     suite,
     '',
-    'Utiliser ma récompense :',
+    'Voir mes récompenses :',
     '',
     rewardsUrl,
     '',
@@ -411,18 +414,16 @@ export function buildRewardTierReachedEmail(
   ].join('\n');
 
   const html = emailLayout({
-    preheader: `Vous avez atteint le palier ${tier} de vos récompenses Relio.`,
+    preheader: `Vous avez atteint le palier ${tier} de votre programme de fidélité Relio.`,
     title: `Vous avez atteint le palier ${tier}`,
     bodyHtml: [
       paragraph(
-        `${escapeHtml(name)}, <strong>vous avez atteint le palier ${escapeHtml(tier)}</strong> du programme de récompenses Relio.`,
+        `${escapeHtml(name)}, <strong>vous avez atteint le palier ${escapeHtml(tier)}</strong> de votre programme de fidélité Relio.`,
       ),
-      infoBox([`Récompense débloquée : <strong>${escapeHtml(reward)}</strong>`]),
-      paragraph(escapeHtml(suite), true),
       paragraph(
-        "L'utilisation de la récompense se fait avec un conseiller Relio : indiquez-lui le palier concerné, il l'applique sur votre prochaine mission.",
-        true,
+        'Votre statut de client fidèle vient de progresser : des crédits cumulables vous attendent, ainsi que les récompenses que vous avez débloquées.',
       ),
+      paragraph(escapeHtml(suite), true),
     ].join(''),
     ctaLabel: 'Voir mes récompenses',
     ctaUrl: rewardsUrl,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RewardsNotificationsService, REWARDS_PATH } from './rewards-notifications.service.js';
 import { buildNotificationMetadata } from '../notifications/notification-metadata.js';
-import { REWARD_TIER_BY_NAME } from './rewards.config.js';
+import { NATURE_TIER_BY_NAME, REWARD_TIER_BY_NAME } from './rewards.config.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
 import type { ConfigService } from '@nestjs/config';
 import type { RealtimeService } from '../realtime/realtime.service.js';
@@ -54,12 +54,13 @@ function harness(options: { email?: string | null } = {}) {
   return { service, created, realtime, push, email };
 }
 
-const BRONZE = REWARD_TIER_BY_NAME.BRONZE;
+const FIDELE = REWARD_TIER_BY_NAME.FIDELE;
+const PETIT = NATURE_TIER_BY_NAME.ELECTROMENAGER_PETIT;
 
 describe('RewardsNotificationsService — 4 canaux', () => {
   it('canal 1 : crée la notification in-app avec metadata conforme', async () => {
     const h = harness();
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, { label: 'Argent', remaining: 35 });
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, 50_000);
 
     expect(h.created).toHaveLength(1);
     const row = h.created[0];
@@ -67,31 +68,37 @@ describe('RewardsNotificationsService — 4 canaux', () => {
     /* Pas de mission rattachée : l'app affiche la notification à plat. */
     expect(row.demandeId).toBeNull();
     expect(row.type).toBe('REWARD_TIER_REACHED');
-    expect(row.title).toBe('Palier Bronze atteint !');
-    expect(row.message).toBe('Vous avez débloqué : Réduction sur votre prochaine mission');
+    expect(row.title).toBe('Palier Fidèle atteint !');
+    expect(row.message).toBe('Votre statut de client fidèle vient de progresser.');
     expect(row.metadata).toEqual({
-      rewardTier: 'BRONZE',
-      rewardLabel: 'Bronze',
-      rewardMissions: 15,
-      rewardValueXAF: 5_000,
+      rewardTier: 'FIDELE',
+      rewardLabel: 'Fidèle',
+      rewardMarginXAF: 10_000,
+      rewardNextTierXAF: 50_000,
       rewardAction: 'view_rewards',
     });
   });
 
   it('respecte la RÈGLE FCFA : aucun montant formaté dans title/message', async () => {
     const h = harness();
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, null);
+    /* Seuil suivant fourni, pour que les deux montants de metadata soient
+     * des entiers (un `null` est volontairement ÉCARTÉ par le constructeur). */
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, 50_000);
 
     const row = h.created[0];
     expect(row.title).not.toMatch(/FCFA/);
     expect(row.message).not.toMatch(/FCFA/);
     /* La valeur, elle, est bien un entier XAF dans metadata. */
-    expect(Number.isInteger(row.metadata.rewardValueXAF)).toBe(true);
+    expect(Number.isInteger(row.metadata.rewardMarginXAF)).toBe(true);
+    expect(Number.isInteger(row.metadata.rewardNextTierXAF)).toBe(true);
+    /* Le #4A exposait `rewardMissions`/`rewardValueXAF` : ils ont disparu. */
+    expect(row.metadata).not.toHaveProperty('rewardMissions');
+    expect(row.metadata).not.toHaveProperty('rewardValueXAF');
   });
 
   it('canal 2 : publie le SSE notification.created ET rewards_updated', async () => {
     const h = harness();
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, null);
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, null);
 
     expect(h.realtime.publishToUser).toHaveBeenCalledWith('c1', 'notification.created', {
       notificationId: 'n1',
@@ -100,18 +107,18 @@ describe('RewardsNotificationsService — 4 canaux', () => {
     /* `client.rewards_updated` permet à `/client/recompenses` de se
      * rafraîchir sans rechargement de page. */
     expect(h.realtime.publishToUser).toHaveBeenCalledWith('c1', 'client.rewards_updated', {
-      tierReached: 'BRONZE',
+      tierReached: 'FIDELE',
     });
   });
 
   it('canal 3 : envoie un push VAPID vers /client/recompenses', async () => {
     const h = harness();
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, null);
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, null);
 
     expect(h.push.sendToUser).toHaveBeenCalledWith('c1', {
-      title: 'Palier Bronze atteint !',
-      body: 'Vous avez débloqué : Réduction sur votre prochaine mission',
-      tag: 'reward-BRONZE',
+      title: 'Palier Fidèle atteint !',
+      body: 'Votre statut de client fidèle vient de progresser.',
+      tag: 'reward-FIDELE',
       url: REWARDS_PATH,
       type: 'reward_tier_reached',
     });
@@ -120,21 +127,20 @@ describe('RewardsNotificationsService — 4 canaux', () => {
 
   it('canal 4 : envoie l’e-mail avec le lien du frontend et le palier suivant', async () => {
     const h = harness();
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, { label: 'Argent', remaining: 35 });
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, 50_000);
 
     expect(h.email.sendRewardTierReachedEmail).toHaveBeenCalledWith(
       'awa@test.cm',
       'Awa',
-      'Bronze',
-      'Réduction sur votre prochaine mission',
+      'Fidèle',
       'https://relioo.space/client/recompenses',
-      { label: 'Argent', remaining: 35 },
+      50_000,
     );
   });
 
   it('omet l’e-mail quand le compte n’a pas d’adresse', async () => {
     const h = harness({ email: null });
-    await h.service.notifyTierReached('c1', 'Awa', BRONZE, null);
+    await h.service.notifyTierReached('c1', 'Awa', FIDELE, null);
 
     /* Les 3 autres canaux sont bien passés. */
     expect(h.created).toHaveLength(1);
@@ -157,13 +163,94 @@ describe('RewardsNotificationsService — 4 canaux', () => {
       { get: () => undefined } as unknown as ConfigService,
     );
 
-    await service.notifyTierReached('c1', 'Awa', BRONZE, null);
+    await service.notifyTierReached('c1', 'Awa', FIDELE, null);
 
     /* Un lien relatif dans un e-mail ne serait pas cliquable. */
     expect(email.sendRewardTierReachedEmail).toHaveBeenCalledWith(
-      'a@b.cm', 'Awa', 'Bronze', expect.any(String),
-      'https://relioo.space/client/recompenses', null,
+      'a@b.cm',
+      'Awa',
+      'Fidèle',
+      'https://relioo.space/client/recompenses',
+      null,
     );
+  });
+});
+
+describe('RewardsNotificationsService — crédits et nature (chantier 4-FONDATIONS-C)', () => {
+  it('crédit : in-app + SSE + push, AUCUN e-mail (volume élevé)', async () => {
+    const h = harness();
+    await h.service.notifyCreditsEarned('c1', 500);
+
+    const row = h.created[0];
+    expect(row.type).toBe('REWARD_CREDIT_EARNED');
+    expect(row.demandeId).toBeNull();
+    /* Règle FCFA : le montant est un ENTIER dans metadata, jamais dans le texte. */
+    expect(row.title).not.toMatch(/FCFA|\d/);
+    expect(row.message).not.toMatch(/FCFA|\d/);
+    expect(row.metadata).toEqual({
+      rewardCreditXAF: 500,
+      rewardCreditAvailableXAF: 500,
+      rewardAction: 'claim_credits',
+    });
+
+    expect(h.realtime.publishToUser).toHaveBeenCalledWith('c1', 'notification.created', {
+      notificationId: 'n1',
+      kind: 'REWARD_CREDIT_EARNED',
+    });
+    expect(h.push.sendToUser).toHaveBeenCalledWith(
+      'c1',
+      expect.objectContaining({ type: 'reward_credit_earned', url: REWARDS_PATH }),
+    );
+    /* Décision assumée : pas d'e-mail pour un crédit mineur et fréquent. */
+    expect(h.email.sendRewardTierReachedEmail).not.toHaveBeenCalled();
+  });
+
+  it('nature atteinte : 4 canaux, action = réclamer', async () => {
+    const h = harness();
+    await h.service.notifyNatureReached('c1', PETIT);
+
+    const row = h.created[0];
+    expect(row.type).toBe('REWARD_NATURE_REACHED');
+    expect(row.title).toContain('Petit électroménager');
+    expect(row.metadata).toEqual({
+      rewardNatureTier: 'ELECTROMENAGER_PETIT',
+      rewardNatureLabel: 'Petit électroménager',
+      rewardNatureThresholdXAF: 50_000,
+      rewardAction: 'claim_nature',
+    });
+
+    expect(h.realtime.publishToUser).toHaveBeenCalledWith(
+      'c1',
+      'client.rewards_updated',
+      { natureTier: 'ELECTROMENAGER_PETIT' },
+    );
+    expect(h.push.sendToUser).toHaveBeenCalledWith(
+      'c1',
+      expect.objectContaining({ type: 'reward_nature_reached' }),
+    );
+  });
+
+  it('nature réclamée : accusé de réception au client', async () => {
+    const h = harness();
+    await h.service.notifyNatureClaimed('c1', 'ELECTROMENAGER_PETIT', PETIT);
+
+    expect(h.created[0].type).toBe('REWARD_NATURE_REACHED');
+    expect(h.created[0].metadata).toMatchObject({ rewardAction: 'view_rewards' });
+    expect(h.push.sendToUser).toHaveBeenCalledWith(
+      'c1',
+      expect.objectContaining({ type: 'reward_nature_claimed' }),
+    );
+  });
+
+  it('un palier déjà atteint ne déclenche PAS de seconde notification nature', async () => {
+    /* Le service ne.notifie que les paliers NOUVELLEMENT atteints (calculé par
+     * `newlyReachedNature` dans `RewardsService`) : le harness vérifie ici
+     * qu'un appel unitaire ne crée qu'une notification. */
+    const h = harness();
+    await h.service.notifyNatureReached('c1', PETIT);
+    await h.service.notifyNatureReached('c1', PETIT);
+    expect(h.created).toHaveLength(2);
+    expect(h.created.every((r) => r.metadata.rewardNatureTier === 'ELECTROMENAGER_PETIT')).toBe(true);
   });
 });
 
@@ -172,7 +259,7 @@ describe('RewardsNotificationsService — isolation des pannes de canal', () => 
     const h = harness();
     (h.push.sendToUser as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('VAPID invalide'));
 
-    await expect(h.service.notifyTierReached('c1', 'Awa', BRONZE, null)).resolves.toBeUndefined();
+    await expect(h.service.notifyTierReached('c1', 'Awa', FIDELE, null)).resolves.toBeUndefined();
 
     expect(h.created).toHaveLength(1);
     expect(h.realtime.publishToUser).toHaveBeenCalled();
@@ -191,13 +278,13 @@ describe('RewardsNotificationsService — isolation des pannes de canal', () => 
       prisma, h.realtime, h.push, h.email, { get: () => undefined } as unknown as ConfigService,
     );
 
-    await expect(service.notifyTierReached('c1', 'Awa', BRONZE, null)).resolves.toBeUndefined();
+    await expect(service.notifyTierReached('c1', 'Awa', FIDELE, null)).resolves.toBeUndefined();
 
     /* Pas de `notificationId`, mais le push et l'e-mail partent quand même. */
     expect(h.push.sendToUser).toHaveBeenCalledTimes(1);
     expect(h.email.sendRewardTierReachedEmail).toHaveBeenCalledTimes(1);
     expect(h.realtime.publishToUser).toHaveBeenCalledWith('c1', 'client.rewards_updated', {
-      tierReached: 'BRONZE',
+      tierReached: 'FIDELE',
     });
   });
 
@@ -209,7 +296,7 @@ describe('RewardsNotificationsService — isolation des pannes de canal', () => 
     } as unknown as PrismaService;
     const service = new RewardsNotificationsService(prisma);
 
-    await expect(service.notifyTierReached('c1', 'Awa', BRONZE, null)).resolves.toBeUndefined();
+    await expect(service.notifyTierReached('c1', 'Awa', FIDELE, null)).resolves.toBeUndefined();
     expect(created).toHaveLength(1);
   });
 });
@@ -252,16 +339,20 @@ describe('buildNotificationMetadata — clés récompenses', () => {
   it('accepte les nouvelles clés et écarte les valeurs undefined/null', () => {
     expect(
       buildNotificationMetadata({
-        rewardTier: 'BRONZE',
+        rewardTier: 'FIDELE',
         rewardLabel: null,
-        rewardMissions: 15,
-        rewardValueXAF: 5_000,
+        rewardMarginXAF: 10_000,
+        rewardCreditXAF: 500,
+        rewardCreditAvailableXAF: null,
+        rewardNatureTier: 'SMARTPHONE',
+        rewardNextTierXAF: null,
         rewardAction: 'view_rewards',
       }),
     ).toEqual({
-      rewardTier: 'BRONZE',
-      rewardMissions: 15,
-      rewardValueXAF: 5_000,
+      rewardTier: 'FIDELE',
+      rewardMarginXAF: 10_000,
+      rewardCreditXAF: 500,
+      rewardNatureTier: 'SMARTPHONE',
       rewardAction: 'view_rewards',
     });
   });

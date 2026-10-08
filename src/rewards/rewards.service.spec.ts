@@ -3,44 +3,230 @@ import type { PrismaService } from '../prisma/prisma.service.js';
 import { RewardsService } from './rewards.service.js';
 import type { RewardsNotificationsService } from './rewards-notifications.service.js';
 
-/* Chantier #4A — comptage des récompenses (Prisma simulé EN MÉMOIRE).
+/* Chantier 4-FONDATIONS-C — cumul de MARGE (LTV), primes à la réécriture du
+ * #4A.
  *
- * On ne mocke pas chaque appel Prisma individuellement : on implémente le
- * sous-ensemble de requêtes réellement utilisées par `RewardsService`
- * (`findUnique`, `findFirst`, `findMany`, `upsert`, `update`, `updateMany`,
- * `create`) sur des Maps, ce qui permet d'exprimer des scénarios réels
- * (compteur qui s'incrémente réellement, `upsert` qui crée la première ligne,
- * `updateMany` gardé qui refuse un second traitement) plutôt que d'empiler des
- * `vi.fn()` qui ne vérifient rien.
+ * On n'empile pas des `vi.fn()` : on implémente le sous-ensemble de requêtes
+ * réellement utilisées par `RewardsService` sur des Maps, ce qui permet
+ * d'exprimer des scénarios RÉELS (marge qui s'additionne, upsert qui crée la
+ * première ligne, `updateMany` gardé qui refuse un second versement) au lieu
+ * de vérifier l'appel d'un mock.
  *
- * Aucun accès réseau, aucune base : c'est un test unitaire pur. */
+ * Aucun accès réseau, aucune base : test unitaire pur.
+ *
+ * RÈGLE D'OR DU DOUPLE : le calcul de commission est fait par le VRAI
+ * `calculateTechnicianFee`, importé du module source de vérité. Les montants
+ * attendus sont donc derivés de la MÊME règle que le ledger — un test qui
+ * recalculerait la commission à la main ne prouverait rien. */
 
 type Row = Record<string, any>;
 
-function world(seed: {
-  demandes?: Row[];
-  progress?: Row[];
-  flags?: Row[];
-  users?: Record<string, Row>;
-} = {}) {
+function pick(source: Row, keys: string[]): Row {
+  const out: Row = {};
+  for (const key of keys) out[key] = source[key];
+  return out;
+}
+
+function world(
+  seed: {
+    demandes?: Row[];
+    quotes?: Row[];
+    progress?: Row[];
+    flags?: Row[];
+    ledger?: Row[];
+    users?: Record<string, Row>;
+  } = {},
+) {
   const demandes = new Map<string, Row>((seed.demandes ?? []).map((d) => [d.id, { ...d }]));
   const progress = new Map<string, Row>();
   for (const row of seed.progress ?? []) progress.set(row.userId, { ...row });
   const flags = new Map<string, Row>((seed.flags ?? []).map((f) => [f.id, { ...f }]));
+  const ledger = new Map<string, Row>();
+  for (const row of seed.ledger ?? []) ledger.set(row.reference, { ...row });
   const users = new Map<string, Row>(
-    Object.entries(seed.users ?? { c1: { id: 'c1', firstName: 'Awa', email: 'awa@test.cm' } }).map(
-      ([id, u]) => [id, { ...u, id }],
-    ),
+    Object.entries(
+      seed.users ?? { c1: { id: 'c1', firstName: 'Awa', email: 'awa@test.cm' } },
+    ).map(([id, u]) => [id, { ...u, id }]),
   );
 
+  /* Devis ACCEPTED par mission. Par défaut, une mission confirmée a un devis
+   * accepté au montant de `quoteAmount` (la commission se calcule dessus). */
+  const quotes = new Map<string, Row>();
+  for (const q of seed.quotes ?? []) {
+    quotes.set(q.demandeId, { id: `q-${q.demandeId}`, status: 'ACCEPTED', travelAmount: 2_000, ...q });
+  }
+  for (const d of demandes.values()) {
+    if (!quotes.has(d.id)) {
+      quotes.set(d.id, {
+        id: `q-${d.id}`,
+        demandeId: d.id,
+        status: 'ACCEPTED',
+        amount: (d.finalAmount ?? 0) - 2_000,
+        travelAmount: 2_000,
+      });
+    }
+  }
+
   let flagSeq = 0;
+  let ledgerSeq = 0;
+
+  const clientRewardProgress = {
+    findUnique: ({ where, select }: any) => {
+      const row = progress.get(where.userId);
+      if (!row) return null;
+      return select ? pick(row, Object.keys(select)) : row;
+    },
+    upsert: ({ where, create, update }: any) => {
+      const existing = progress.get(where.userId);
+      if (existing) {
+        const merged = {
+          ...existing,
+          cumulativeMarginXAF:
+            existing.cumulativeMarginXAF + (update.cumulativeMarginXAF?.increment ?? 0),
+          lastMissionAt: update.lastMissionAt ?? existing.lastMissionAt,
+        };
+        progress.set(where.userId, merged);
+        return merged;
+      }
+      const created = {
+        id: `p-${progress.size + 1}`,
+        creditsClaimed: 0,
+        natureReached: [],
+        natureClaimed: [],
+        updatedAt: new Date(),
+        ...create,
+      };
+      progress.set(where.userId, created);
+      return created;
+    },
+    update: ({ where, data }: any) => {
+      const existing = progress.get(where.userId);
+      if (!existing) throw new Error('P2025: progression absente');
+      const updated = { ...existing, ...data, updatedAt: new Date() };
+      progress.set(where.userId, updated);
+      return updated;
+    },
+    /* Claim ATOMIQUE du versement : le `where` porte les valeurs lues, donc
+     * un second versement concurrent doit échouer (count 0). */
+    updateMany: ({ where, data }: any) => {
+      const existing = progress.get(where.userId);
+      if (!existing) return { count: 0 };
+      if (where.creditsEarned !== undefined && existing.creditsEarned !== where.creditsEarned) {
+        return { count: 0 };
+      }
+      if (where.creditsClaimed !== undefined && existing.creditsClaimed !== where.creditsClaimed) {
+        return { count: 0 };
+      }
+      progress.set(where.userId, { ...existing, ...data, updatedAt: new Date() });
+      return { count: 1 };
+    },
+  };
+
+  const financialTransaction = {
+    create: ({ data }: any) => {
+      /* Unicité `reference` reproduite comme en base : un double versement
+       * doit lever P2002 (idempotence du versement). */
+      if (ledger.has(data.reference)) {
+        const error: Row = new Error('Unique constraint failed');
+        error.code = 'P2002';
+        throw error;
+      }
+      ledgerSeq += 1;
+      const created = { id: `tx-${ledgerSeq}`, ...data };
+      ledger.set(data.reference, created);
+      return created;
+    },
+    aggregate: ({ where }: any) => {
+      let sum = 0;
+      for (const t of ledger.values()) {
+        if (t.userId !== where.userId) continue;
+        if (t.status !== where.status) continue;
+        if (t.direction !== where.direction) continue;
+        sum += t.amount;
+      }
+      return { _sum: { amount: sum } };
+    },
+  };
+
+  const rewardFraudFlag = {
+    findUnique: ({ where, include }: any) => {
+      const flag = [...flags.values()].find((f) => {
+        if (where.demandeId) return f.demandeId === where.demandeId;
+        if (where.id) return f.id === where.id;
+        return false;
+      });
+      if (!flag) return null;
+      if (include?.demande) {
+        const d = demandes.get(flag.demandeId);
+        if (!d) return null;
+        return { ...flag, demande: pick(d, Object.keys(include.demande.select)) };
+      }
+      return flag;
+    },
+    create: ({ data, select }: any) => {
+      for (const flag of flags.values()) {
+        if (flag.demandeId === data.demandeId) {
+          const error: Row = new Error('Unique constraint failed');
+          error.code = 'P2002';
+          throw error;
+        }
+      }
+      flagSeq += 1;
+      const created = {
+        id: `f${flagSeq}`,
+        detectedAt: new Date(),
+        resolvedAt: null,
+        resolvedBy: null,
+        decision: null,
+        note: null,
+        ...data,
+      };
+      flags.set(created.id, created);
+      return select ? pick(created, Object.keys(select)) : created;
+    },
+    updateMany: ({ where, data }: any) => {
+      let count = 0;
+      for (const [id, flag] of flags) {
+        if (where.id && flag.id !== where.id) continue;
+        if (where.resolvedAt === null && flag.resolvedAt !== null) continue;
+        flags.set(id, { ...flag, ...data });
+        count += 1;
+      }
+      return { count };
+    },
+    findMany: ({ where, take }: any) => {
+      let rows = [...flags.values()];
+      if (where?.resolvedAt === null) rows = rows.filter((f) => f.resolvedAt === null);
+      if (where?.resolvedAt?.not !== undefined) rows = rows.filter((f) => f.resolvedAt !== null);
+      rows.sort((a, b) => b.detectedAt - a.detectedAt);
+      return rows.slice(0, take ?? 50).map((f) => ({
+        ...f,
+        demande: demandes.get(f.demandeId) ?? null,
+        user: users.get(f.userId) ?? { firstName: '?', lastName: null, email: '?' },
+        technician: users.get(f.technicianId) ?? { firstName: '?', lastName: null },
+      }));
+    },
+  };
+
+  /* Vraies transactions : les callbacks reçoivent le même jeu de doubles. */
+  const tx = {
+    demande: { findUnique: ({ where }: any) => demandes.get(where.id) ?? null },
+    quote: { findFirst: ({ where }: any) => quotes.get(where.demandeId) ?? null },
+    user: {
+      findUnique: ({ where, select }: any) => {
+        const user = users.get(where.id);
+        if (!user) return null;
+        return select ? pick(user, Object.keys(select)) : user;
+      },
+    },
+    clientRewardProgress,
+    rewardFraudFlag,
+    financialTransaction,
+  };
 
   const prisma = {
     demande: {
       findUnique: ({ where }: any) => demandes.get(where.id) ?? null,
-      /* `orderBy: { updatedAt: 'desc' }` + filtres simples : suffisant pour le
-       * service, qui ne fait qu'une requête de « mission CONFIRMED
-       * précédente ». */
       findFirst: ({ where, orderBy }: any) => {
         const rows = [...demandes.values()].filter((d) => {
           if (where.clientId && d.clientId !== where.clientId) return false;
@@ -53,133 +239,28 @@ function world(seed: {
         return rows[0] ?? null;
       },
     },
-    user: {
-      findUnique: ({ where, select }: any) => {
-        const user = users.get(where.id);
-        if (!user) return null;
-        return select ? pick(user, Object.keys(select)) : user;
+    quote: {
+      findFirst: ({ where }: any) => {
+        const quote = quotes.get(where.demandeId);
+        if (!quote) return null;
+        if (where.status && quote.status !== where.status) return null;
+        return quote;
       },
     },
-    clientRewardProgress: {
-      findUnique: ({ where }: any) => progress.get(where.userId) ?? null,
-      upsert: ({ where, create, update }: any) => {
-        const existing = progress.get(where.userId);
-        if (existing) {
-          const merged = {
-            ...existing,
-            missionCount: existing.missionCount + (update.missionCount?.increment ?? 0),
-            lastMissionAt: update.lastMissionAt ?? existing.lastMissionAt,
-          };
-          progress.set(where.userId, merged);
-          return merged;
-        }
-        const created = { id: `p-${progress.size + 1}`, updatedAt: new Date(), ...create };
-        progress.set(where.userId, created);
-        return created;
-      },
-      update: ({ where, data }: any) => {
-        const existing = progress.get(where.userId);
-        if (!existing) throw new Error('P2025: progression absente');
-        const updated = { ...existing, ...data, updatedAt: new Date() };
-        progress.set(where.userId, updated);
-        return updated;
-      },
-    },
-    rewardFraudFlag: {
-      findUnique: ({ where, include }: any) => {
-        const flag = [...flags.values()].find((f) => {
-          if (where.demandeId) return f.demandeId === where.demandeId;
-          if (where.id) return f.id === where.id;
-          return false;
-        });
-        if (!flag) return null;
-        /* `include: { demande: ... }` est résolu comme en base : la décision
-         * administrative a besoin de la référence et du montant de la mission. */
-        if (include?.demande) {
-          const d = demandes.get(flag.demandeId);
-          if (!d) return null;
-          return {
-            ...flag,
-            demande: include.demande.select ? pick(d, Object.keys(include.demande.select)) : d,
-          };
-        }
-        return flag;
-      },
-      create: ({ data, select }: any) => {
-        /* Unicité `demandeId` reproduite comme en base : la collision lève une
-         * erreur `P2002`, ce qui permet de tester la course entre deux
-         * traitements. */
-        for (const flag of flags.values()) {
-          if (flag.demandeId === data.demandeId) {
-            const error: Row = new Error('Unique constraint failed');
-            error.code = 'P2002';
-            throw error;
-          }
-        }
-        flagSeq += 1;
-        const created = {
-          id: `f${flagSeq}`,
-          detectedAt: new Date(),
-          resolvedAt: null,
-          resolvedBy: null,
-          decision: null,
-          note: null,
-          ...data,
-        };
-        flags.set(created.id, created);
-        return select ? pick(created, Object.keys(select)) : created;
-      },
-      updateMany: ({ where, data }: any) => {
-        let count = 0;
-        for (const [id, flag] of flags) {
-          /* Le `where` gardé (`resolvedAt: null`) est ce qui rend la décision
-           * atomique : un dossier déjà tranché n'est pas recompté. */
-          if (where.id && flag.id !== where.id) continue;
-          if (where.resolvedAt === null && flag.resolvedAt !== null) continue;
-          flags.set(id, { ...flag, ...data });
-          count += 1;
-        }
-        return { count };
-      },
-      findMany: ({ where, take }: any) => {
-        let rows = [...flags.values()];
-        if (where?.resolvedAt === null) rows = rows.filter((f) => f.resolvedAt === null);
-        if (where?.resolvedAt?.not !== undefined) rows = rows.filter((f) => f.resolvedAt !== null);
-        rows.sort((a, b) => b.detectedAt - a.detectedAt);
-        rows = rows.slice(0, take ?? 50);
-        return rows.map((f) => ({
-          ...f,
-          demande: demandes.get(f.demandeId) ?? null,
-          user: users.get(f.userId) ?? { firstName: '?', lastName: null, email: '?' },
-          technician: users.get(f.technicianId) ?? { firstName: '?', lastName: null },
-        }));
-      },
-    },
+    user: tx.user,
+    clientRewardProgress,
+    rewardFraudFlag,
+    financialTransaction,
+    $transaction: (callback: (t: unknown) => Promise<unknown>) => callback(tx),
   } as unknown as PrismaService;
 
-  return { prisma, demandes, progress, flags, users };
+  return { prisma, demandes, quotes, progress, flags, ledger, users };
 }
 
-/** Raccourci typé : dans ces scénarios la ligne de progression DOIT exister.
- *  Sans cette assertion, `Map.get` renvoie `Row | undefined` et chaque
- *  expectation porterait un `!` — on préfère un échec de test explicite. */
 function prog(w: { progress: Map<string, Row> }, userId = 'c1'): Row {
   const row = w.progress.get(userId);
   if (!row) throw new Error(`progression absente pour ${userId}`);
   return row;
-}
-
-/** Idem pour un signalement. */
-function flagOf(w: { flags: Map<string, Row> }, id = 'f1'): Row {
-  const row = w.flags.get(id);
-  if (!row) throw new Error(`signalement ${id} absent`);
-  return row;
-}
-
-function pick(source: Row, keys: string[]): Row {
-  const out: Row = {};
-  for (const key of keys) out[key] = source[key];
-  return out;
 }
 
 function confirmed(overrides: Row = {}): Row {
@@ -189,568 +270,430 @@ function confirmed(overrides: Row = {}): Row {
     clientId: 'c1',
     technicianId: 't1',
     status: 'CONFIRMED',
-    finalAmount: 20_000,
+    finalAmount: 17_000,
     updatedAt: new Date('2026-10-01T10:00:00Z'),
     ...overrides,
   };
 }
 
-/** Double de `RewardsNotificationsService` qui enregistre les appels. */
 function notificationsSpy() {
   return {
     notifyTierReached: vi.fn().mockResolvedValue(undefined),
+    notifyCreditsEarned: vi.fn().mockResolvedValue(undefined),
+    notifyNatureReached: vi.fn().mockResolvedValue(undefined),
+    notifyNatureClaimed: vi.fn().mockResolvedValue(undefined),
     notifyMissionNotCounted: vi.fn().mockResolvedValue(undefined),
     publishProgressChanged: vi.fn(),
-  } as unknown as RewardsNotificationsService & {
-    notifyTierReached: ReturnType<typeof vi.fn>;
-    notifyMissionNotCounted: ReturnType<typeof vi.fn>;
-    publishProgressChanged: ReturnType<typeof vi.fn>;
-  };
+  } as unknown as RewardsNotificationsService & Record<string, ReturnType<typeof vi.fn>>;
 }
 
-describe('RewardsService.onMissionConfirmed — règle de comptage', () => {
-  it('ignore une mission dont le montant payé est sous le minimum', async () => {
-    const w = world({ demandes: [confirmed({ finalAmount: 1_499 })] });
+/* Barème de référence : 500 + 4 % du devis. Réutilisé par les attentes pour
+ * que le test reste lisible, mais le SERVICE, lui, appelle la vraie fonction. */
+const FEE = (devis: number) => 500 + Math.round(devis * 0.04);
+
+describe('RewardsService.onMissionConfirmed — cumul de marge', () => {
+  it('mission de 15 000 → marge 1 100 (= 500 + 4 %), cumul 1 100', async () => {
+    const w = world({
+      demandes: [confirmed({ finalAmount: 17_000 })],
+      quotes: [{ demandeId: 'm1', amount: 15_000 }],
+    });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('m1');
+
+    expect(FEE(15_000)).toBe(1_100);
+    expect(outcome.counted).toBe(true);
+    expect(outcome.marginXAF).toBe(1_100);
+    expect(outcome.cumulativeMarginXAF).toBe(1_100);
+    expect(prog(w).cumulativeMarginXAF).toBe(1_100);
+    /* Aucun crédit avant 10 000 de marge. */
+    expect(prog(w).creditsEarned).toBe(0);
+  });
+
+  it('10 missions à 15 000 → cumul 11 000 → 1 crédit de 500', async () => {
+    const demandes = Array.from({ length: 10 }, (_, i) =>
+      confirmed({
+        id: `m${i}`,
+        reference: `RD-${i}`,
+        clientId: 'c1',
+        /* Techniciens DIFFÉRENTS et espacés de plus de 48 h : pas de fraude,
+         * sinon ce test mesurerait autre chose. */
+        technicianId: `t${i}`,
+        finalAmount: 17_000,
+        updatedAt: new Date(Date.UTC(2026, 0, i + 1)),
+      }),
+    );
+    const quotes = demandes.map((d) => ({ demandeId: d.id, amount: 15_000 }));
+    const w = world({ demandes, quotes });
     const service = new RewardsService(w.prisma, notificationsSpy());
 
-    const outcome = await service.onMissionConfirmed('m1');
+    for (const d of demandes) await service.onMissionConfirmed(d.id);
 
+    expect(prog(w).cumulativeMarginXAF).toBe(10 * FEE(15_000));
+    /* floor(11 000 / 10 000) × 500 = 500. */
+    expect(prog(w).creditsEarned).toBe(500);
+    expect(prog(w).creditsClaimed).toBe(0);
+  });
+
+  it('ignore une mission sous le montant plancher (1 499)', async () => {
+    const w = world({ demandes: [confirmed({ finalAmount: 1_499 })] });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('m1');
     expect(outcome.counted).toBe(false);
     expect(outcome.reason).toBe('AMOUNT_BELOW_MINIMUM');
     expect(w.progress.size).toBe(0);
   });
 
-  it('compte une mission payée exactement 1 500 XAF (montant plancher inclus)', async () => {
-    const w = world({ demandes: [confirmed({ finalAmount: 1_500 })] });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const outcome = await service.onMissionConfirmed('m1');
-
-    expect(outcome.counted).toBe(true);
-    expect(prog(w).missionCount).toBe(1);
-  });
-
-  it('incrémente le compteur mission après mission', async () => {
+  it('sans devis ACCEPTED → rien à cumuler (aucune commission prélevée)', async () => {
     const w = world({
-      demandes: [
-        confirmed({ id: 'm1', reference: 'RD-AAA111', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({
-          id: 'm2',
-          reference: 'RD-BBB222',
-          technicianId: 't2',
-          updatedAt: new Date('2026-10-05T10:00:00Z'),
-        }),
-        confirmed({
-          id: 'm3',
-          reference: 'RD-CCC333',
-          technicianId: 't3',
-          updatedAt: new Date('2026-10-09T10:00:00Z'),
-        }),
-      ],
+      demandes: [confirmed()],
+      quotes: [{ demandeId: 'm1', amount: 15_000, status: 'REJECTED' }],
     });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.onMissionConfirmed('m1');
-    await service.onMissionConfirmed('m2');
-    const outcome = await service.onMissionConfirmed('m3');
-
-    expect(outcome.counted).toBe(true);
-    expect(prog(w).missionCount).toBe(3);
-  });
-
-  it('ignore une mission qui n’est pas CONFIRMED (défense en profondeur)', async () => {
-    const w = world({ demandes: [confirmed({ status: 'COMPLETED' })] });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const outcome = await service.onMissionConfirmed('m1');
-
-    expect(outcome).toEqual({ counted: false, reason: 'NOT_CONFIRMED' });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('m1');
+    expect(outcome.counted).toBe(false);
+    expect(outcome.reason).toBe('NO_ACCEPTED_QUOTE');
     expect(w.progress.size).toBe(0);
   });
 
-  it('ignore une mission introuvable sans lever', async () => {
-    const w = world();
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const outcome = await service.onMissionConfirmed('inconnue');
-
-    expect(outcome).toEqual({ counted: false, reason: 'DEMANDE_NOT_FOUND' });
+  it('mission non CONFIRMED → ignorée', async () => {
+    const w = world({ demandes: [confirmed({ status: 'COMPLETED' })] });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('m1');
+    expect(outcome.counted).toBe(false);
+    expect(outcome.reason).toBe('NOT_CONFIRMED');
   });
 
-  it('crée la ligne de progression à la première mission comptée', async () => {
-    const w = world({ demandes: [confirmed()] });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.onMissionConfirmed('m1');
-
-    const row = prog(w);
-    expect(row.missionCount).toBe(1);
-    expect(row.currentTier).toBe('NONE');
-    expect(row.reachedTiers).toEqual([]);
-    expect(row.lastMissionAt).toEqual(new Date('2026-10-01T10:00:00Z'));
+  it('mission introuvable → ignorée sans erreur', async () => {
+    const w = world({ demandes: [] });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('inconnu');
+    expect(outcome.counted).toBe(false);
+    expect(outcome.reason).toBe('DEMANDE_NOT_FOUND');
   });
 });
 
-describe('RewardsService — paliers', () => {
-  /* Helper : place le compteur à N-1 missions avec les paliers cohérents, puis
-   * compte une mission de plus. */
-  function atMission(count: number) {
-    const reachedTiers = (['BRONZE', 'ARGENT', 'OR', 'PLATINE'] as const).filter(
-      (tier) =>
-        ({ BRONZE: 15, ARGENT: 50, OR: 150, PLATINE: 500 })[tier] <= count,
-    );
-    return {
-      id: 'p1',
-      userId: 'c1',
-      missionCount: count,
-      currentTier: reachedTiers[reachedTiers.length - 1] ?? 'NONE',
-      reachedTiers: [...reachedTiers],
-      claimedTiers: [],
-      lastMissionAt: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+describe('RewardsService — badges sur la marge cumulée', () => {
+  /** Atteint le palier demandé par cumul de missions à 15 000 (marge 1 100). */
+  async function cumulateTo(service: RewardsService, w: ReturnType<typeof world>, n: number) {
+    for (let i = 0; i < n; i++) {
+      await service.onMissionConfirmed(`m${i}`);
+    }
   }
 
-  it('franchit BRONZE à la 15ᵉ mission et notifie sur les 4 canaux', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(14)] });
+  function seed(n: number) {
+    const demandes = Array.from({ length: n }, (_, i) =>
+      confirmed({
+        id: `m${i}`,
+        reference: `RD-${i}`,
+        technicianId: `t${i}`,
+        updatedAt: new Date(Date.UTC(2026, 0, i + 1)),
+      }),
+    );
+    const quotes = demandes.map((d) => ({ demandeId: d.id, amount: 15_000 }));
+    return world({ demandes, quotes });
+  }
+
+  it('atteint FIDELE à 10 000 de marge cumulée et notifie', async () => {
+    // 10 000 / 1 100 = 9,09 → 10 missions (11 000) suffisent.
+    const w = seed(10);
     const notifications = notificationsSpy();
     const service = new RewardsService(w.prisma, notifications);
 
-    const outcome = await service.onMissionConfirmed('m1');
+    await cumulateTo(service, w, 10);
 
-    expect(outcome.counted).toBe(true);
-    expect(outcome.tiersReached).toEqual(['BRONZE']);
-    expect(prog(w).currentTier).toBe('BRONZE');
-    expect(prog(w).reachedTiers).toEqual(['BRONZE']);
-
-    /* Le service de notifications est le SEUL chemin vers les 4 canaux : c'est
-     * lui qui est testé dans `rewards-notifications.spec.ts` (in-app, SSE,
-     * push, e-mail). */
+    expect(prog(w).cumulativeMarginXAF).toBeGreaterThanOrEqual(10_000);
+    expect(prog(w).currentTier).toBe('FIDELE');
     expect(notifications.notifyTierReached).toHaveBeenCalledTimes(1);
-    const [userId, firstName, tier, nextTier] = notifications.notifyTierReached.mock.calls[0];
-    expect(userId).toBe('c1');
-    expect(firstName).toBe('Awa');
-    expect(tier.tier).toBe('BRONZE');
-    expect(tier.rewardValueXAF).toBe(5_000);
-    /* « Encore X missions pour ARGENT » : le client sait où il va. */
-    expect(nextTier).toEqual(
-      expect.objectContaining({ tier: 'ARGENT', remaining: 35 }),
-    );
+    expect((notifications.notifyTierReached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toMatchObject({
+      tier: 'FIDELE',
+      label: 'Fidèle',
+      margeXAF: 10_000,
+    });
   });
 
-  it('ne NOTIFIE PAS et ne rebranche pas un palier déjà atteint', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(20)] });
+  it('ne franchit pas FIDELE à 9 000 de marge', async () => {
+    // 8 missions = 8 800 < 10 000 ; la 9ᵉ = 9 900 < 10 000.
+    const w = seed(9);
     const notifications = notificationsSpy();
     const service = new RewardsService(w.prisma, notifications);
 
-    const outcome = await service.onMissionConfirmed('m1');
+    await cumulateTo(service, w, 9);
 
-    expect(outcome.tiersReached).toEqual([]);
-    expect(notifications.notifyTierReached).not.toHaveBeenCalled();
-    expect(prog(w).reachedTiers).toEqual(['BRONZE']);
-  });
-
-  it('ne franchit rien à la 14ᵉ mission (une mission avant BRONZE)', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(13)] });
-    const notifications = notificationsSpy();
-    const service = new RewardsService(w.prisma, notifications);
-
-    const outcome = await service.onMissionConfirmed('m1');
-
-    expect(outcome.tiersReached).toEqual([]);
-    expect(notifications.notifyTierReached).not.toHaveBeenCalled();
+    expect(prog(w).cumulativeMarginXAF).toBe(9_900);
     expect(prog(w).currentTier).toBe('NONE');
+    expect(notifications.notifyTierReached).not.toHaveBeenCalled();
   });
 
-  it('franchit ARGENT à la 50ᵉ mission et met le niveau courant à jour', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(49)] });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const outcome = await service.onMissionConfirmed('m1');
-
-    expect(outcome.tiersReached).toEqual(['ARGENT']);
-    expect(prog(w).currentTier).toBe('ARGENT');
-    /* BRONZE n'est pas perdu : un palier atteint ne se reperd pas. */
-    expect(prog(w).reachedTiers).toEqual(['BRONZE', 'ARGENT']);
-  });
-
-  it('signale la progression en temps réel même sans palier franchi', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(5)] });
+  it('ne NOTIFIE PAS deux fois un palier déjà atteint', async () => {
+    const w = seed(12);
     const notifications = notificationsSpy();
     const service = new RewardsService(w.prisma, notifications);
 
-    await service.onMissionConfirmed('m1');
+    await cumulateTo(service, w, 12);
 
-    expect(notifications.publishProgressChanged).toHaveBeenCalledWith(
-      'c1',
-      expect.objectContaining({ missionCount: 6, currentTier: 'NONE' }),
-    );
-  });
-
-  it('ne fait JAMAIS échouer le comptage si la notification lève', async () => {
-    const w = world({ demandes: [confirmed()], progress: [atMission(14)] });
-    const notifications = notificationsSpy();
-    notifications.notifyTierReached.mockRejectedValue(new Error('push indisponible'));
-    const service = new RewardsService(w.prisma, notifications);
-
-    const outcome = await service.onMissionConfirmed('m1');
-
-    /* Le compteur prime toujours sur la notification. */
-    expect(outcome.counted).toBe(true);
-    expect(prog(w).missionCount).toBe(15);
+    expect(notifications.notifyTierReached).toHaveBeenCalledTimes(1);
+    expect(prog(w).currentTier).toBe('FIDELE');
   });
 });
 
-describe('RewardsService — anti-fraude (même technicien < 48 h)', () => {
-  it('ouvre un signalement et NE COMPTE PAS la 2ᵉ mission', async () => {
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', reference: 'RD-AAA111', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', reference: 'RD-BBB222', updatedAt: new Date('2026-10-01T20:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    // 1ʳᵉ mission : comptée normalement.
-    await service.onMissionConfirmed('m1');
-    // 2ᵉ mission, même technicien, 10 h plus tard : signalée, NON comptée.
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome.counted).toBe(false);
-    expect(outcome.reason).toBe('FRAUD_FLAGGED');
-    expect(outcome.flagId).toBe('f1');
-
-    /* Le compteur n'avance pas : il reste sur la seule 1ʳᵉ mission. */
-    expect(prog(w).missionCount).toBe(1);
-    expect(w.flags.size).toBe(1);
-    expect(flagOf(w)).toEqual(
-      expect.objectContaining({
-        userId: 'c1',
-        demandeId: 'm2',
-        technicianId: 't1',
-        reason: 'SAME_TECHNICIAN_48H',
-        resolvedAt: null,
-        decision: null,
-      }),
+describe('RewardsService — crédits', () => {
+  it('notifie le crédit AU MOMENT où il est gagné', async () => {
+    const demandes = Array.from({ length: 10 }, (_, i) =>
+      confirmed({ id: `m${i}`, reference: `RD-${i}`, technicianId: `t${i}`, updatedAt: new Date(Date.UTC(2026, 0, i + 1)) }),
     );
+    const w = world({ demandes, quotes: demandes.map((d) => ({ demandeId: d.id, amount: 15_000 })) });
+    const notifications = notificationsSpy();
+    const service = new RewardsService(w.prisma, notifications);
+
+    for (const d of demandes) await service.onMissionConfirmed(d.id);
+
+    expect(notifications.notifyCreditsEarned).toHaveBeenCalledTimes(1);
+    expect((notifications.notifyCreditsEarned as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(500);
   });
 
-  it('compte normalement au-delà de 48 h avec le même technicien', async () => {
+  it('claimCredits verse le disponible au solde et avance creditsClaimed', async () => {
     const w = world({
-      demandes: [
-        confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', updatedAt: new Date('2026-10-03T10:00:01Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.onMissionConfirmed('m1');
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome.counted).toBe(true);
-    expect(w.flags.size).toBe(0);
-    expect(prog(w).missionCount).toBe(2);
-  });
-
-  it('compte normalement avec un technicien différent dans la fenêtre', async () => {
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', technicianId: 't1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', technicianId: 't2', updatedAt: new Date('2026-10-01T12:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome.counted).toBe(true);
-    expect(w.flags.size).toBe(0);
-  });
-
-  it("compare à la dernière mission CONFIRMED, même si celle-ci a été écartée", async () => {
-    /* m1 (t1, −24 h) comptée, m2 (t1, −1 h) signalée et non comptée, puis m3
-     * (t1, T).
-     *
-     * COMPORTEMENT SPÉCIFIÉ : la référence est « la mission CONFIRMED
-     * précédente », sans condition de comptage. m2 reste donc la référence
-     * pour m3, et m3 est signalée à son tour.
-     *
-     * C'est voulu, et c'est à garder en tête : tant que le même technicien est
-     * ré-affecté au client, CHAQUE mission successive est signalée, donc gelée.
-     * Un admin tranche les dossiers (ou le client change de technicien, ce qu'on
-     * ne peut pas imposer). Ce qui est garanti dans tous les cas : le compteur
-     * ne bouge pas, aucune mission gelée n'est comptée. */
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', technicianId: 't1', updatedAt: new Date('2026-10-09T11:00:00Z') }),
-        confirmed({ id: 'm2', technicianId: 't1', updatedAt: new Date('2026-10-10T11:00:00Z') }),
-        confirmed({ id: 'm3', technicianId: 't1', updatedAt: new Date('2026-10-10T12:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.onMissionConfirmed('m1');
-    await service.onMissionConfirmed('m2');
-    const outcome = await service.onMissionConfirmed('m3');
-
-    expect(outcome.counted).toBe(false);
-    expect(outcome.reason).toBe('FRAUD_FLAGGED');
-    /* Un signalement par mission. */
-    expect(w.flags.size).toBe(2);
-    /* Le compteur reste à 1 : aucune mission gelée n'a été comptée. */
-    expect(prog(w).missionCount).toBe(1);
-  });
-
-  it('casse la chaîne dès qu’un autre technicien intervient', async () => {
-    /* Sortie réaliste de la zone de fraude : m2 est écartée, m3 est confiée à
-     * un autre technicien dans la fenêtre → elle est comptée normalement. */
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', technicianId: 't1', updatedAt: new Date('2026-10-09T11:00:00Z') }),
-        confirmed({ id: 'm2', technicianId: 't1', updatedAt: new Date('2026-10-10T11:00:00Z') }),
-        confirmed({ id: 'm3', technicianId: 't2', updatedAt: new Date('2026-10-10T12:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.onMissionConfirmed('m1');
-    await service.onMissionConfirmed('m2');
-    const outcome = await service.onMissionConfirmed('m3');
-
-    expect(outcome.counted).toBe(true);
-    expect(w.flags.size).toBe(1);
-    expect(prog(w).missionCount).toBe(2);
-  });
-
-  it('ignore une mission CONFIRMED ancienne comme référence (updatedAt antérieur)', async () => {
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', technicianId: 't1', updatedAt: new Date('2026-10-01T18:00:00Z') }),
-        confirmed({ id: 'm2', technicianId: 't1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    /* m1 est « postérieure » à m2 : elle n'est pas la mission PRÉCÉDENTE, donc
-     * aucune fraude (le service ne compare qu'à l'antérieure). */
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome.counted).toBe(true);
-    expect(w.flags.size).toBe(0);
-  });
-
-  it('ne crée pas de second signalement si la mission en a déjà un (rejeu)', async () => {
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', updatedAt: new Date('2026-10-01T12:00:00Z') }),
-      ],
-      flags: [
+      progress: [
         {
-          id: 'existant',
           userId: 'c1',
-          demandeId: 'm2',
-          technicianId: 't1',
-          reason: 'SAME_TECHNICIAN_48H',
-          detectedAt: new Date(),
-          resolvedAt: null,
-          decision: null,
-          note: null,
+          cumulativeMarginXAF: 20_000,
+          creditsEarned: 1_000,
+          creditsClaimed: 0,
+          currentTier: 'FIDELE',
+          currentNatureTier: 'NONE',
+          natureReached: [],
+          natureClaimed: [],
+        },
+      ],
+      ledger: [{ reference: 'seed', userId: 'c1', status: 'VALIDATED', direction: 'CREDIT', amount: 40_000 }],
+    });
+    const service = new RewardsService(w.prisma, notificationsSpy());
+
+    const result = await service.claimCredits('c1');
+
+    expect(result.claimedXAF).toBe(1_000);
+    expect(result.newBalanceXAF).toBe(41_000);
+    expect(prog(w).creditsClaimed).toBe(1_000);
+    /* Une écriture ledger CLIENT_REWARD_CREDIT, AUCUN encaissement. */
+    const entry = [...w.ledger.values()].find((t) => t.type === 'CLIENT_REWARD_CREDIT');
+    expect(entry).toMatchObject({ direction: 'CREDIT', amount: 1_000, status: 'VALIDATED' });
+  });
+
+  it('claimCredits avec 0 disponible → 400, aucune écriture', async () => {
+    const w = world({
+      progress: [
+        {
+          userId: 'c1',
+          cumulativeMarginXAF: 5_000,
+          creditsEarned: 0,
+          creditsClaimed: 0,
+          currentTier: 'NONE',
+          currentNatureTier: 'NONE',
+          natureReached: [],
+          natureClaimed: [],
         },
       ],
     });
     const service = new RewardsService(w.prisma, notificationsSpy());
 
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome.counted).toBe(false);
-    expect(outcome.flagId).toBe('existant');
-    expect(w.flags.size).toBe(1);
+    await expect(service.claimCredits('c1')).rejects.toMatchObject({ status: 400 });
+    expect(w.ledger.size).toBe(0);
   });
 
-  it('absorbe la course entre deux traitements (P2002) sans remonter d’erreur', async () => {
+  it('un second versement concurrent est refusé (claim atomique)', async () => {
+    const w = world({
+      progress: [
+        {
+          userId: 'c1',
+          cumulativeMarginXAF: 20_000,
+          creditsEarned: 1_000,
+          creditsClaimed: 0,
+          currentTier: 'FIDELE',
+          currentNatureTier: 'NONE',
+          natureReached: [],
+          natureClaimed: [],
+        },
+      ],
+    });
+    const service = new RewardsService(w.prisma, notificationsSpy());
+
+    await service.claimCredits('c1');
+    // creditsClaimed vaut désormais 1 000 = creditsEarned → plus rien à verser.
+    await expect(service.claimCredits('c1')).rejects.toMatchObject({ status: 400 });
+    expect([...w.ledger.values()].filter((t) => t.type === 'CLIENT_REWARD_CREDIT')).toHaveLength(1);
+  });
+});
+
+describe('RewardsService — récompenses nature', () => {
+  const withNature = (margin: number) => ({
+    progress: [
+      {
+        userId: 'c1',
+        cumulativeMarginXAF: margin,
+        creditsEarned: Math.floor(margin / 10_000) * 500,
+        creditsClaimed: 0,
+        currentTier: 'OR',
+        currentNatureTier: 'ELECTROMENAGER_PETIT',
+        natureReached: ['ELECTROMENAGER_PETIT'],
+        natureClaimed: [],
+      },
+    ],
+  });
+
+  it('notifie l\'atteinte d\'ELECTROMENAGER_PETIT à 50 000 de marge', async () => {
+    const demandes = Array.from({ length: 46 }, (_, i) =>
+      confirmed({ id: `m${i}`, reference: `RD-${i}`, technicianId: `t${i}`, updatedAt: new Date(Date.UTC(2026, 0, i + 1)) }),
+    );
+    const w = world({ demandes, quotes: demandes.map((d) => ({ demandeId: d.id, amount: 15_000 })) });
+    const notifications = notificationsSpy();
+    const service = new RewardsService(w.prisma, notifications);
+
+    for (const d of demandes) await service.onMissionConfirmed(d.id);
+
+    expect(prog(w).cumulativeMarginXAF).toBeGreaterThanOrEqual(50_000);
+    expect(prog(w).natureReached).toContain('ELECTROMENAGER_PETIT');
+    expect(notifications.notifyNatureReached).toHaveBeenCalledTimes(1);
+    expect((notifications.notifyNatureReached as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({
+      tier: 'ELECTROMENAGER_PETIT',
+      margeXAF: 50_000,
+    });
+  });
+
+  it('claimNatureReward sur un palier atteint → ok', async () => {
+    const w = world(withNature(50_000));
+    const notifications = notificationsSpy();
+    const result = await new RewardsService(w.prisma, notifications).claimNatureReward(
+      'c1',
+      'ELECTROMENAGER_PETIT',
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.natureClaimed).toContain('ELECTROMENAGER_PETIT');
+    expect(notifications.notifyNatureClaimed).toHaveBeenCalledTimes(1);
+  });
+
+  it('palier NON atteint → 400, rien n\'est écrit', async () => {
+    const w = world({
+      progress: [
+        {
+          userId: 'c1',
+          cumulativeMarginXAF: 5_000,
+          creditsEarned: 0,
+          creditsClaimed: 0,
+          currentTier: 'NONE',
+          currentNatureTier: 'NONE',
+          natureReached: [],
+          natureClaimed: [],
+        },
+      ],
+    });
+    await expect(
+      new RewardsService(w.prisma, notificationsSpy()).claimNatureReward('c1', 'SMARTPHONE'),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(prog(w).natureClaimed).toEqual([]);
+  });
+
+  it('palier déjà réclamé → 400', async () => {
+    const seed = withNature(50_000);
+    seed.progress[0].natureClaimed = ['ELECTROMENAGER_PETIT'];
+    const w = world(seed);
+    await expect(
+      new RewardsService(w.prisma, notificationsSpy()).claimNatureReward('c1', 'ELECTROMENAGER_PETIT'),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('palier inconnu → 400', async () => {
+    const w = world(withNature(50_000));
+    await expect(
+      new RewardsService(w.prisma, notificationsSpy()).claimNatureReward('c1', 'VOITURE'),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe('RewardsService — anti-fraude (règle #4A conservée)', () => {
+  it('même technicien < 48 h → signalement, marge NON cumulée', async () => {
     const w = world({
       demandes: [
         confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', updatedAt: new Date('2026-10-01T12:00:00Z') }),
+        confirmed({ id: 'm2', reference: 'RD-DEF456', updatedAt: new Date('2026-10-01T20:00:00Z') }),
+      ],
+      quotes: [
+        { demandeId: 'm1', amount: 15_000 },
+        { demandeId: 'm2', amount: 15_000 },
       ],
     });
     const service = new RewardsService(w.prisma, notificationsSpy());
 
-    const [a, b] = await Promise.all([
-      service.onMissionConfirmed('m2'),
-      service.onMissionConfirmed('m2'),
-    ]);
-
-    expect(a.counted).toBe(false);
-    expect(b.counted).toBe(false);
-    expect(w.flags.size).toBe(1);
-    /* m1 n'a jamais été confirmée dans ce scénario : rien n'est compté. */
-    expect(w.progress.size).toBe(0);
-  });
-
-  it("ne déclenche PAS l'anti-fraude sur une mission sans technicien", async () => {
-    const w = world({
-      demandes: [
-        confirmed({ id: 'm1', technicianId: null, updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', technicianId: null, updatedAt: new Date('2026-10-01T12:00:00Z') }),
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
+    await service.onMissionConfirmed('m1');
+    expect(prog(w).cumulativeMarginXAF).toBe(FEE(15_000));
 
     const outcome = await service.onMissionConfirmed('m2');
+    expect(outcome.counted).toBe(false);
+    expect(outcome.reason).toBe('FRAUD_FLAGGED');
+    /* La 2ᵉ mission ne compte pas : le cumul n'a pas bougé. */
+    expect(prog(w).cumulativeMarginXAF).toBe(FEE(15_000));
+    expect([...w.flags.values()][0]).toMatchObject({ technicianId: 't1', reason: 'SAME_TECHNICIAN_48H' });
+  });
 
+  it('même technicien AU-DELÀ de 48 h → compté normalement', async () => {
+    const w = world({
+      demandes: [
+        confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
+        confirmed({ id: 'm2', updatedAt: new Date('2026-10-04T10:00:00Z') }),
+      ],
+      quotes: [
+        { demandeId: 'm1', amount: 15_000 },
+        { demandeId: 'm2', amount: 15_000 },
+      ],
+    });
+    const service = new RewardsService(w.prisma, notificationsSpy());
+    await service.onMissionConfirmed('m1');
+    const outcome = await service.onMissionConfirmed('m2');
     expect(outcome.counted).toBe(true);
     expect(w.flags.size).toBe(0);
   });
 
-  it('ne déclenche PAS l’anti-fraude si la mission ne compte pas (montant trop bas)', async () => {
+  it('technicien différent dans la fenêtre → compté', async () => {
     const w = world({
       demandes: [
-        confirmed({ id: 'm1', finalAmount: 1_000, updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', finalAmount: 1_000, updatedAt: new Date('2026-10-01T12:00:00Z') }),
+        confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
+        confirmed({ id: 'm2', technicianId: 't2', updatedAt: new Date('2026-10-01T20:00:00Z') }),
+      ],
+      quotes: [
+        { demandeId: 'm1', amount: 15_000 },
+        { demandeId: 'm2', amount: 15_000 },
       ],
     });
     const service = new RewardsService(w.prisma, notificationsSpy());
+    await service.onMissionConfirmed('m1');
+    expect((await service.onMissionConfirmed('m2')).counted).toBe(true);
+  });
 
-    const outcome = await service.onMissionConfirmed('m2');
-
-    expect(outcome).toEqual({ counted: false, reason: 'AMOUNT_BELOW_MINIMUM' });
+  it('mission SANS technicien → jamais de signalement', async () => {
+    const w = world({ demandes: [confirmed({ technicianId: null })] });
+    const outcome = await new RewardsService(w.prisma, notificationsSpy()).onMissionConfirmed('m1');
+    expect(outcome.counted).toBe(true);
     expect(w.flags.size).toBe(0);
   });
-});
 
-describe('RewardsService.resolveFraudFlag', () => {
-  const flagged = () => {
+  it('rejeu : un 2ᵉ signalement n\'est pas créé', async () => {
     const w = world({
       demandes: [
-        confirmed({ id: 'm1', reference: 'RD-AAA111', updatedAt: new Date('2026-10-01T10:00:00Z') }),
-        confirmed({ id: 'm2', reference: 'RD-BBB222', updatedAt: new Date('2026-10-01T12:00:00Z') }),
+        confirmed({ id: 'm1', updatedAt: new Date('2026-10-01T10:00:00Z') }),
+        confirmed({ id: 'm2', updatedAt: new Date('2026-10-01T20:00:00Z') }),
+      ],
+      quotes: [
+        { demandeId: 'm1', amount: 15_000 },
+        { demandeId: 'm2', amount: 15_000 },
       ],
     });
-    w.flags.set('f1', {
-      id: 'f1',
-      userId: 'c1',
-      demandeId: 'm2',
-      technicianId: 't1',
-      reason: 'SAME_TECHNICIAN_48H',
-      detectedAt: new Date('2026-10-01T12:00:01Z'),
-      resolvedAt: null,
-      resolvedBy: null,
-      decision: null,
-      note: null,
-    });
-    return w;
-  };
-
-  it('VALIDATED : comptabilise la mission et notifie les paliers', async () => {
-    const w = flagged();
-    const notifications = notificationsSpy();
-    /* Compteur à 14 : la validation de m2 fait franchir BRONZE. */
-    w.progress.set('c1', {
-      id: 'p1',
-      userId: 'c1',
-      missionCount: 14,
-      currentTier: 'NONE',
-      reachedTiers: [],
-      claimedTiers: [],
-      lastMissionAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    const service = new RewardsService(w.prisma, notifications);
-
-    const result = await service.resolveFraudFlag('f1', 'VALIDATED', 'admin1', 'Fausse alerte');
-
-    expect(result.counted).toBe(true);
-    expect(result.decision).toBe('VALIDATED');
-    expect(prog(w).missionCount).toBe(15);
-    expect(notifications.notifyTierReached).toHaveBeenCalledTimes(1);
-    /* VALIDATED = la mission est normale : aucune notification « écartée ». */
-    expect(notifications.notifyMissionNotCounted).not.toHaveBeenCalled();
-    expect(flagOf(w)).toEqual(
-      expect.objectContaining({
-        decision: 'VALIDATED',
-        resolvedBy: 'admin1',
-        note: 'Fausse alerte',
-      }),
-    );
-    expect(flagOf(w).resolvedAt).toBeInstanceOf(Date);
-  });
-
-  it('REJECTED : ne compte PAS la mission et notifie le client', async () => {
-    const w = flagged();
-    const notifications = notificationsSpy();
-    w.progress.set('c1', {
-      id: 'p1',
-      userId: 'c1',
-      missionCount: 1,
-      currentTier: 'NONE',
-      reachedTiers: [],
-      claimedTiers: [],
-      lastMissionAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    const service = new RewardsService(w.prisma, notifications);
-
-    const result = await service.resolveFraudFlag('f1', 'REJECTED', 'admin1');
-
-    expect(result.counted).toBe(false);
-    expect(result.decision).toBe('REJECTED');
-    /* Le compteur reste à 1 : seule m1 compte. */
-    expect(prog(w).missionCount).toBe(1);
-    expect(notifications.notifyMissionNotCounted).toHaveBeenCalledWith(
-      'c1',
-      'SAME_TECHNICIAN_48H',
-      'RD-BBB222',
-    );
-    expect(notifications.notifyTierReached).not.toHaveBeenCalled();
-    expect(flagOf(w).decision).toBe('REJECTED');
-  });
-
-  it('refuse une décision inconnue', async () => {
-    const w = flagged();
     const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(
-      service.resolveFraudFlag('f1', 'PEUT_ETRE' as never, 'admin1'),
-    ).rejects.toThrow(/Décision invalide/);
-    expect(flagOf(w).resolvedAt).toBeNull();
+    await service.onMissionConfirmed('m1');
+    await service.onMissionConfirmed('m2');
+    const second = await service.onMissionConfirmed('m2');
+    expect(second.reason).toBe('FRAUD_FLAGGED');
+    expect(w.flags.size).toBe(1);
   });
 
-  it('refuse un signalement déjà traité (claim atomique)', async () => {
-    const w = flagged();
-    flagOf(w).resolvedAt = new Date();
-    flagOf(w).decision = 'REJECTED';
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.resolveFraudFlag('f1', 'VALIDATED', 'admin2')).rejects.toThrow(
-      /déjà été traité/,
-    );
-    /* Surtout : aucune double comptabilisation. */
-    expect(w.progress.size).toBe(0);
-  });
-
-  it('refuse un signalement inexistant', async () => {
-    const w = flagged();
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.resolveFraudFlag('inconnu', 'VALIDATED', 'admin1')).rejects.toThrow(
-      /introuvable/i,
-    );
-  });
-});
-
-describe('RewardsService.listFraudFlags', () => {
-  it('liste les dossiers ouverts par défaut et sérialise sans exposer de secret', async () => {
+  it('VALIDATED → la mission est finally cumulée', async () => {
     const w = world({
-      demandes: [confirmed({ id: 'm2', reference: 'RD-BBB222', finalAmount: 20_000 })],
-      users: {
-        c1: { id: 'c1', firstName: 'Awa', lastName: 'N.', email: 'awa@test.cm' },
-        t1: { id: 't1', firstName: 'Jean', lastName: 'B.' },
-      },
+      demandes: [confirmed({ id: 'm2', updatedAt: new Date('2026-10-01T20:00:00Z') })],
+      quotes: [{ demandeId: 'm2', amount: 15_000 }],
       flags: [
         {
           id: 'f1',
@@ -758,38 +701,23 @@ describe('RewardsService.listFraudFlags', () => {
           demandeId: 'm2',
           technicianId: 't1',
           reason: 'SAME_TECHNICIAN_48H',
-          detectedAt: new Date('2026-10-01T12:00:01Z'),
           resolvedAt: null,
-          resolvedBy: null,
           decision: null,
-          note: null,
         },
       ],
     });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const rows = await service.listFraudFlags({ resolved: false });
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({
-      id: 'f1',
-      reason: 'SAME_TECHNICIAN_48H',
-      detectedAt: '2026-10-01T12:00:01.000Z',
-      resolvedAt: null,
-      decision: null,
-      note: null,
-      userId: 'c1',
-      clientName: 'Awa N.',
-      demandeId: 'm2',
-      missionReference: 'RD-BBB222',
-      missionFinalAmountXAF: 20_000,
-      missionStatus: 'CONFIRMED',
-      technicianId: 't1',
-      technicianName: 'Jean B.',
-    });
+    const notifications = notificationsSpy();
+    const result = await new RewardsService(w.prisma, notifications).resolveFraudFlag(
+      'f1',
+      'VALIDATED',
+      'admin-1',
+    );
+    expect(result.counted).toBe(true);
+    expect(result.marginXAF).toBe(FEE(15_000));
+    expect(prog(w).cumulativeMarginXAF).toBe(FEE(15_000));
   });
 
-  it('filtre sur les dossiers résolus', async () => {
+  it('REJECTED → rien n\'est cumulé, le client est informé', async () => {
     const w = world({
       demandes: [confirmed({ id: 'm2' })],
       flags: [
@@ -799,168 +727,130 @@ describe('RewardsService.listFraudFlags', () => {
           demandeId: 'm2',
           technicianId: 't1',
           reason: 'SAME_TECHNICIAN_48H',
-          detectedAt: new Date(),
-          resolvedAt: new Date(),
-          resolvedBy: 'a1',
-          decision: 'VALIDATED',
-          note: null,
+          resolvedAt: null,
+          decision: null,
         },
       ],
     });
-    const service = new RewardsService(w.prisma, notificationsSpy());
+    const notifications = notificationsSpy();
+    const result = await new RewardsService(w.prisma, notifications).resolveFraudFlag(
+      'f1',
+      'REJECTED',
+      'admin-1',
+    );
+    expect(result.counted).toBe(false);
+    expect(w.progress.size).toBe(0);
+    expect(notifications.notifyMissionNotCounted).toHaveBeenCalledTimes(1);
+  });
 
-    expect(await service.listFraudFlags({ resolved: true })).toHaveLength(1);
-    expect(await service.listFraudFlags({ resolved: false })).toHaveLength(0);
-    /* Une décision inattendue en base ne fuit pas en clair vers l'API. */
-    expect((await service.listFraudFlags({ resolved: true }))[0].decision).toBe('VALIDATED');
+  it('un dossier déjà tranché → 409 (décision atomique)', async () => {
+    const w = world({
+      demandes: [confirmed({ id: 'm2' })],
+      flags: [
+        {
+          id: 'f1',
+          userId: 'c1',
+          demandeId: 'm2',
+          technicianId: 't1',
+          reason: 'SAME_TECHNICIAN_48H',
+          resolvedAt: new Date(),
+          decision: 'REJECTED',
+        },
+      ],
+    });
+    await expect(
+      new RewardsService(w.prisma, notificationsSpy()).resolveFraudFlag('f1', 'VALIDATED', 'admin-1'),
+    ).rejects.toMatchObject({ status: 409 });
   });
 });
 
-describe('RewardsService.getProgress', () => {
-  it('renvoie un état à zéro pour un client sans aucune mission payée', async () => {
-    const w = world();
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const progress = await service.getProgress('c1');
-
-    expect(progress.missionCount).toBe(0);
-    expect(progress.currentTier).toBe('NONE');
-    expect(progress.reachedTiers).toEqual([]);
-    expect(progress.claimedTiers).toEqual([]);
-    expect(progress.nextTier).toEqual(
-      expect.objectContaining({ tier: 'BRONZE', missions: 15, remaining: 15 }),
-    );
-    expect(progress.tiers).toHaveLength(4);
+describe('RewardsService.getProgress — contrat de lecture', () => {
+  it('client sans progression → état à zéro synthétisé', async () => {
+    const w = world({});
+    const view = await new RewardsService(w.prisma, notificationsSpy()).getProgress('c1');
+    expect(view).toMatchObject({
+      cumulativeMarginXAF: 0,
+      currentTier: 'NONE',
+      creditsEarned: 0,
+      creditsClaimed: 0,
+      creditsAvailable: 0,
+      nextCreditTrancheAt: 10_000,
+      marginToNextCreditXAF: 10_000,
+      nextTierAt: 10_000,
+      nextNatureAt: 50_000,
+    });
   });
 
-  it('renvoie le compteur, le niveau et le prochain palier', async () => {
+  it('expose marge, crédits et seuils cohérents', async () => {
     const w = world({
       progress: [
         {
-          id: 'p1',
           userId: 'c1',
-          missionCount: 50,
-          currentTier: 'ARGENT',
-          reachedTiers: ['BRONZE', 'ARGENT'],
-          claimedTiers: ['BRONZE'],
+          cumulativeMarginXAF: 45_000,
+          creditsEarned: 2_000,
+          creditsClaimed: 500,
+          currentTier: 'FIDELE',
+          currentNatureTier: 'NONE',
+          natureReached: [],
+          natureClaimed: [],
           lastMissionAt: new Date('2026-10-01T10:00:00Z'),
-          createdAt: new Date(),
-          updatedAt: new Date(),
         },
       ],
     });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const progress = await service.getProgress('c1');
-
-    expect(progress.missionCount).toBe(50);
-    expect(progress.currentTier).toBe('ARGENT');
-    expect(progress.reachedTiers).toEqual(['BRONZE', 'ARGENT']);
-    expect(progress.claimedTiers).toEqual(['BRONZE']);
-    expect(progress.lastMissionAt).toBe('2026-10-01T10:00:00.000Z');
-    expect(progress.nextTier).toEqual(expect.objectContaining({ tier: 'OR', remaining: 100 }));
-  });
-
-  it('renvoie nextTier null une fois tous les paliers franchis (aucun reset)', async () => {
-    const w = world({
-      progress: [
-        {
-          id: 'p1',
-          userId: 'c1',
-          missionCount: 500,
-          currentTier: 'PLATINE',
-          reachedTiers: ['BRONZE', 'ARGENT', 'OR', 'PLATINE'],
-          claimedTiers: [],
-          lastMissionAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ],
-    });
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    expect((await service.getProgress('c1')).nextTier).toBeNull();
-  });
-
-  it('expose les 4 paliers avec un montant XAF entier (jamais formaté)', async () => {
-    const w = world();
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const { tiers } = await service.getProgress('c1');
-
-    for (const tier of tiers) {
-      expect(Number.isInteger(tier.rewardValueXAF)).toBe(true);
-      expect(tier.reward).not.toMatch(/FCFA/);
+    const view = await new RewardsService(w.prisma, notificationsSpy()).getProgress('c1');
+    expect(view.cumulativeMarginXAF).toBe(45_000);
+    expect(view.creditsAvailable).toBe(1_500);
+    expect(view.currentTier).toBe('FIDELE');
+    expect(view.nextCreditTrancheAt).toBe(50_000);
+    expect(view.marginToNextCreditXAF).toBe(5_000);
+    expect(view.nextTierAt).toBe(50_000);
+    expect(view.nextNatureAt).toBe(50_000);
+    /* Les seuils travelent avec le contrat, en XAF entier. */
+    expect(view.tiers).toHaveLength(3);
+    expect(view.natureThresholds).toHaveLength(3);
+    for (const tier of view.tiers) {
+      expect(Number.isInteger(tier.margeXAF)).toBe(true);
+      expect(String(tier.margeXAF)).not.toContain('FCFA');
     }
   });
+
+  it('tous les paliers atteints → nextTierAt / nextNatureAt null', async () => {
+    const w = world({
+      progress: [
+        {
+          userId: 'c1',
+          cumulativeMarginXAF: 300_000,
+          creditsEarned: 15_000,
+          creditsClaimed: 0,
+          currentTier: 'PLATINE',
+          currentNatureTier: 'SMARTPHONE',
+          natureReached: ['ELECTROMENAGER_PETIT', 'ELECTROMENAGER_MOYEN', 'SMARTPHONE'],
+          natureClaimed: [],
+        },
+      ],
+    });
+    const view = await new RewardsService(w.prisma, notificationsSpy()).getProgress('c1');
+    expect(view.nextTierAt).toBeNull();
+    expect(view.nextNatureAt).toBeNull();
+    expect(view.creditsEarned).toBe(15_000);
+  });
 });
 
-describe('RewardsService.claimTier', () => {
-  const withReached = (reached: string[], claimed: string[] = []) => ({
-    progress: [
-      {
-        id: 'p1',
-        userId: 'c1',
-        missionCount: 20,
-        currentTier: 'BRONZE',
-        reachedTiers: reached,
-        claimedTiers: claimed,
-        lastMissionAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ],
-  });
+describe('RewardsService — isolation des notifications', () => {
+  it('un canal qui lève ne fait JAMAIS échouer le cumul', async () => {
+    const demandes = Array.from({ length: 10 }, (_, i) =>
+      confirmed({ id: `m${i}`, reference: `RD-${i}`, technicianId: `t${i}`, updatedAt: new Date(Date.UTC(2026, 0, i + 1)) }),
+    );
+    const w = world({ demandes, quotes: demandes.map((d) => ({ demandeId: d.id, amount: 15_000 })) });
+    const notifications = notificationsSpy();
+    (notifications.notifyTierReached as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Resend 500'),
+    );
+    const service = new RewardsService(w.prisma, notifications);
 
-  it('enregistre la demande sur un palier atteint non encore demandé', async () => {
-    const w = world(withReached(['BRONZE']));
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    const result = await service.claimTier('c1', 'BRONZE');
-
-    expect(result.success).toBe(true);
-    expect(result.tier).toBe('BRONZE');
-    expect(result.claimedTiers).toEqual(['BRONZE']);
-    expect(prog(w).claimedTiers).toEqual(['BRONZE']);
-  });
-
-  it('refuse un palier NON atteint (400)', async () => {
-    const w = world(withReached(['BRONZE']));
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.claimTier('c1', 'OR')).rejects.toThrow(/pas encore atteint/);
-    expect(prog(w).claimedTiers).toEqual([]);
-  });
-
-  it('refuse un palier DÉJÀ demandé (400)', async () => {
-    const w = world(withReached(['BRONZE'], ['BRONZE']));
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.claimTier('c1', 'BRONZE')).rejects.toThrow(/déjà été enregistrée/);
-    expect(prog(w).claimedTiers).toEqual(['BRONZE']);
-  });
-
-  it('refuse un palier inconnu (400)', async () => {
-    const w = world(withReached(['BRONZE']));
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.claimTier('c1', 'DIAMANT')).rejects.toThrow(/Palier inconnu/);
-  });
-
-  it('permet de demander deux paliers différents', async () => {
-    const w = world(withReached(['BRONZE', 'ARGENT']));
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await service.claimTier('c1', 'BRONZE');
-    await service.claimTier('c1', 'ARGENT');
-
-    expect(prog(w).claimedTiers).toEqual(['BRONZE', 'ARGENT']);
-  });
-
-  it('refuse toute demande pour un client sans progression', async () => {
-    const w = world();
-    const service = new RewardsService(w.prisma, notificationsSpy());
-
-    await expect(service.claimTier('c1', 'BRONZE')).rejects.toThrow(/pas encore atteint/);
+    for (const d of demandes) {
+      await expect(service.onMissionConfirmed(d.id)).resolves.toMatchObject({ counted: true });
+    }
+    expect(prog(w).cumulativeMarginXAF).toBe(10 * FEE(15_000));
   });
 });

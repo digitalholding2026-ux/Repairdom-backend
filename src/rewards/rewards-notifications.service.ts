@@ -6,7 +6,7 @@ import { PushService } from '../push/push.service.js';
 import { EmailService } from '../auth/email.service.js';
 import { createNotification } from '../mission-events/mission-events.js';
 import { buildNotificationMetadata } from '../notifications/notification-metadata.js';
-import type { RewardTierDefinition } from './rewards.config.js';
+import type { NatureTierDefinition, RewardTierDefinition } from './rewards.config.js';
 
 /**
  * Chantier #4A — diffusion du programme de récompenses sur les 4 canaux.
@@ -59,10 +59,10 @@ export class RewardsNotificationsService {
     userId: string,
     firstName: string | null,
     tier: RewardTierDefinition,
-    nextTier: { label: string; remaining: number } | null,
+    nextTierThresholdXAF: number | null,
   ): Promise<void> {
     const title = `Palier ${tier.label} atteint !`;
-    const message = `Vous avez débloqué : ${tier.reward}`;
+    const message = 'Votre statut de client fidèle vient de progresser.';
 
     let notificationId: string | null = null;
     try {
@@ -73,11 +73,13 @@ export class RewardsNotificationsService {
           type: 'REWARD_TIER_REACHED',
           title,
           message,
+          /* AUCUN montant formaté : les seuils sont des ENTIERS XAF, formatés
+           * à l'affichage par `formatFCFA`. */
           metadata: buildNotificationMetadata({
             rewardTier: tier.tier,
             rewardLabel: tier.label,
-            rewardMissions: tier.missions,
-            rewardValueXAF: tier.rewardValueXAF,
+            rewardMarginXAF: tier.margeXAF,
+            rewardNextTierXAF: nextTierThresholdXAF,
             rewardAction: 'view_rewards',
           }),
         }),
@@ -88,17 +90,16 @@ export class RewardsNotificationsService {
     }
 
     // ── Canal 2/4 : SSE ──
-    this.publishTierReached(userId, notificationId, tier.tier);
+    this.publishEvent(userId, notificationId, 'REWARD_TIER_REACHED', { tierReached: tier.tier });
 
     // ── Canal 3/4 : push web VAPID ──
     if (this.push) {
       try {
         /* `sendToUser` ne lève jamais et SUPPRIME l'envoi si une connexion
-         * SSE est active : c'est voulu, pas de doublon. `tag` par palier : un
-         * push de palier écrase le précédent du même palier. */
+         * SSE est active : c'est voulu, pas de doublon. */
         await this.push.sendToUser(userId, {
           title: `Palier ${tier.label} atteint !`,
-          body: `Vous avez débloqué : ${tier.reward}`,
+          body: 'Votre statut de client fidèle vient de progresser.',
           tag: `reward-${tier.tier}`,
           url: REWARDS_PATH,
           type: 'reward_tier_reached',
@@ -110,20 +111,143 @@ export class RewardsNotificationsService {
 
     // ── Canal 4/4 : e-mail (Resend) ──
     if (this.email) {
-      const base = this.frontendUrl();
       try {
         await this.email.sendRewardTierReachedEmail(
-          /* L'e-mail part vers l'adresse du compte ; `firstName` sert au
-           * ton personalization. Sans e-mail connu, rien à envoyer. */
           await this.recipientEmail(userId),
           firstName ?? '',
           tier.label,
-          tier.reward,
-          `${base}${REWARDS_PATH}`,
-          nextTier ? { label: nextTier.label, remaining: nextTier.remaining } : null,
+          `${this.frontendUrl()}${REWARDS_PATH}`,
+          nextTierThresholdXAF,
         );
       } catch (error) {
         this.logChannelFailure('e-mail', userId, error);
+      }
+    }
+  }
+
+  /* ── Canal 1/4 : CRÉDITS ─────────────────────────────────────────── */
+
+  /**
+   * Notification « des crédits de fidélité sont disponibles » : c'est une
+   * ACTION, pas un simple suivi — sans clic du client, le crédit reste acquis
+   * mais n'est pas versé au solde.
+   *
+   * `amountXAF` est le montant NOUVELLEMENT acquis (entier XAF) ; il vit dans
+   * `metadata`, jamais dans le texte : règle FCFA.
+   */
+  async notifyCreditsEarned(userId: string, amountXAF: number): Promise<void> {
+    const title = 'De nouveaux crédits de fidélité !';
+    const message =
+      'Des crédits vous attendent. Ajoutez-les à votre solde depuis votre programme de fidélité.';
+
+    let notificationId: string | null = null;
+    try {
+      const created = await this.prisma.$transaction((tx) =>
+        createNotification(tx, {
+          userId,
+          demandeId: null,
+          type: 'REWARD_CREDIT_EARNED',
+          title,
+          message,
+          metadata: buildNotificationMetadata({
+            rewardCreditXAF: amountXAF,
+            rewardCreditAvailableXAF: amountXAF,
+            rewardAction: 'claim_credits',
+          }),
+        }),
+      );
+      notificationId = created.id;
+    } catch (error) {
+      this.logChannelFailure('notification in-app', userId, error);
+    }
+
+    this.publishEvent(userId, notificationId, 'REWARD_CREDIT_EARNED', {
+      creditsEarned: amountXAF,
+    });
+
+    if (this.push) {
+      try {
+        await this.push.sendToUser(userId, {
+          title,
+          body: 'Des crédits de fidélité vous attendent sur votre solde.',
+          tag: 'reward-credits',
+          url: REWARDS_PATH,
+          type: 'reward_credit_earned',
+        });
+      } catch (error) {
+        this.logChannelFailure('push', userId, error);
+      }
+    }
+    /* PAS d'e-mail : un crédit est un avantage mineur et fréquent ; il
+     * s'afficherait dans l'app et en push sans saturer la boîte mail. Le
+     * badge et la récompense nature, eux, restent notifiés par e-mail. */
+  }
+
+  /* ── Canal 1/4 : RÉCOMPENSE NATURE ───────────────────────────────── */
+
+  /**
+   * Notification « un palier nature vient d'être atteint » : ACTION, le
+   * client doit le réclamer depuis `/client/recompenses` (le versement reste
+   * manuel côté admin).
+   */
+  async notifyNatureReached(userId: string, tier: NatureTierDefinition): Promise<void> {
+    await this.notifyNature(userId, tier, 'REWARD_NATURE_REACHED', 'reward_nature_reached');
+  }
+
+  /**
+   * Notification « le client a réclamé sa récompense nature » : elle est
+   * adressée au CLIENT (accusé de réception + il attend un suivi humain), avec
+   * le même contenu sur les 4 canaux.
+   */
+  async notifyNatureClaimed(userId: string, tierName: string, tier: NatureTierDefinition): Promise<void> {
+    await this.notifyNature(userId, tier, 'REWARD_NATURE_REACHED', 'reward_nature_claimed');
+  }
+
+  /** Corps commun aux deux notifications nature. */
+  private async notifyNature(
+    userId: string,
+    tier: NatureTierDefinition,
+    kind: 'REWARD_NATURE_REACHED',
+    pushType: string,
+  ): Promise<void> {
+    const title = `Récompense ${tier.label} débloquée !`;
+    const message = 'Vous pouvez maintenant la réclamer depuis votre programme de fidélité.';
+
+    let notificationId: string | null = null;
+    try {
+      const created = await this.prisma.$transaction((tx) =>
+        createNotification(tx, {
+          userId,
+          demandeId: null,
+          type: kind,
+          title,
+          message,
+          metadata: buildNotificationMetadata({
+            rewardNatureTier: tier.tier,
+            rewardNatureLabel: tier.label,
+            rewardNatureThresholdXAF: tier.margeXAF,
+            rewardAction: pushType === 'reward_nature_claimed' ? 'view_rewards' : 'claim_nature',
+          }),
+        }),
+      );
+      notificationId = created.id;
+    } catch (error) {
+      this.logChannelFailure('notification in-app', userId, error);
+    }
+
+    this.publishEvent(userId, notificationId, kind, { natureTier: tier.tier });
+
+    if (this.push) {
+      try {
+        await this.push.sendToUser(userId, {
+          title,
+          body: message,
+          tag: `reward-nature-${tier.tier}`,
+          url: REWARDS_PATH,
+          type: pushType,
+        });
+      } catch (error) {
+        this.logChannelFailure('push', userId, error);
       }
     }
   }
@@ -210,16 +334,19 @@ export class RewardsNotificationsService {
     }
   }
 
-  private publishTierReached(userId: string, notificationId: string | null, tier: string): void {
+  /** Diffusion SSE commune : `notification.created` + rafraîchissement. */
+  private publishEvent(
+    userId: string,
+    notificationId: string | null,
+    kind: string,
+    extra: Record<string, unknown>,
+  ): void {
     if (!this.realtime) return;
     try {
       if (notificationId) {
-        this.realtime.publishToUser(userId, 'notification.created', {
-          notificationId,
-          kind: 'REWARD_TIER_REACHED',
-        });
+        this.realtime.publishToUser(userId, 'notification.created', { notificationId, kind });
       }
-      this.realtime.publishToUser(userId, 'client.rewards_updated', { tierReached: tier });
+      this.realtime.publishToUser(userId, 'client.rewards_updated', extra);
     } catch (error) {
       this.logChannelFailure('SSE', userId, error);
     }

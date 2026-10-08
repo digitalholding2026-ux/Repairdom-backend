@@ -92,8 +92,21 @@ describe('RewardsModule (assemblage NestJS)', () => {
     await request(app.getHttpServer()).get('/api/client/rewards').expect(401);
   });
 
-  it('POST /api/client/rewards/BRONZE/claim existe et exige un cookie (401)', async () => {
-    await request(app.getHttpServer()).post('/api/client/rewards/BRONZE/claim').expect(401);
+  it('POST /api/client/rewards/credits/claim existe et exige un cookie (401)', async () => {
+    await request(app.getHttpServer()).post('/api/client/rewards/credits/claim').expect(401);
+  });
+
+  it('POST /api/client/rewards/nature/:tier/claim existe et exige un cookie (401)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/client/rewards/nature/SMARTPHONE/claim')
+      .expect(401);
+  });
+
+  it('la route /:tier/claim du #4A a DISPARU', async () => {
+    /* Le #4A exposait POST /client/rewards/:tier/claim. Elle ne doit plus
+     * exister : sinon le segment paramétré capturerait « credits » et « nature »
+     * comme des noms de palier. */
+    await request(app.getHttpServer()).post('/api/client/rewards/OR/claim').expect(404);
   });
 
   it('GET /api/admin/rewards/frauds existe et exige un cookie (401)', async () => {
@@ -107,10 +120,11 @@ describe('RewardsModule (assemblage NestJS)', () => {
       .expect(401);
   });
 
-  it('rejette un palier inconnu AVANT même de résoudre le client (400 sur cookie invalide)', async () => {
+  it('rejette une récompense nature inconnue AVANT même de résoudre le client', async () => {
     /* Défense en lecture : avec un cookie invalide, c'est le guard qui parle
-     * (401). On vérifie ici seulement que la route n'est pas un 404 «
-     * inexistante », donc bien branchée au contrôleur. */
-    await request(app.getHttpServer()).post('/api/client/rewards/DIAMANT/claim').expect(401);
+     * (401) — la route est bien branchée au contrôleur. */
+    await request(app.getHttpServer())
+      .post('/api/client/rewards/nature/DIAMANT/claim')
+      .expect(401);
   });
 });

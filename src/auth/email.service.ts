@@ -232,9 +232,10 @@ export class EmailService {
     to: string,
     firstName: string,
     tierLabel: string,
-    rewardLabel: string,
     rewardsUrl: string,
-    nextTier: { label: string; remaining: number } | null,
+    /* Seuil de marge du prochain palier, ou `null` si tous sont atteints.
+     * XAF ENTIER : le gabarit n'affiche AUCUN montant formaté (règle FCFA). */
+    nextTierThresholdXAF: number | null,
   ): Promise<void> {
     if (!this.isConfigured) {
       this.logger.warn(
@@ -245,9 +246,8 @@ export class EmailService {
     const content = buildRewardTierReachedEmail(
       firstName,
       tierLabel,
-      rewardLabel,
       rewardsUrl,
-      nextTier,
+      nextTierThresholdXAF,
       this.footerLinks(),
     );
     await this.postEmail({
