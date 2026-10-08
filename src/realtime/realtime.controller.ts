@@ -1,6 +1,5 @@
 import {
   Controller,
-  ForbiddenException,
   Get,
   NotFoundException,
   Param,
@@ -54,7 +53,15 @@ export class RealtimeController {
   }
 
   /** Flux d'une mission : chat, statuts, GPS. Accès réservé au client
-   *  propriétaire ou au technicien assigné (sinon 403, mission inconnue 404). */
+   * propriétaire ou au technicien assigné. SINON 404.
+   *
+   * Masquage volontaire et identique à celui de l'API métier
+   * (`CollaborationService.requireAccess`, `collaboration.service.ts:90-95`) :
+   * une mission existante mais non assignée répond `NotFoundException`, pas
+   * `ForbiddenException`. Répondre 403 ici révélait à un utilisateur non
+   * concerné que CETTE mission existe (réponse distincte de celle d'un id
+   * inexistant), alors que tout le reste de l'API masque. Le frontend
+   * absorbait ces 403 de toute façon (bascule SSE → `polling`). */
   @Get('missions/:demandeId')
   @Roles('CLIENT', 'TECHNICIAN')
   async streamMission(
@@ -69,7 +76,7 @@ export class RealtimeController {
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
     if (demande.clientId !== user.id && demande.technicianId !== user.id) {
-      throw new ForbiddenException("Vous n'avez pas accès à cette mission.");
+      throw new NotFoundException('Demande introuvable.');
     }
     sseHeaders(res);
     this.realtime.subscribe(user.id, user.role, [missionChannel(demandeId)], res, req);

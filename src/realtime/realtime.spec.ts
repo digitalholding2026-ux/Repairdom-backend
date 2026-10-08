@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import {
   REALTIME_MAX_CONNECTIONS_PER_USER,
   REALTIME_PING_INTERVAL_MS,
@@ -156,11 +156,45 @@ describe('RealtimeController — contrôle d’accès mission', () => {
     service.onModuleDestroy();
   });
 
-  it('tiers → 403 (jamais de souscription)', async () => {
+  it('technicien assigné → 200 + souscription mission', async () => {
+    const { ctl, service } = controller({ id: 'd-1', clientId: 'c-1', technicianId: 't-1' });
+    const { user, res, req } = streamArgs('t-1', 'TECHNICIAN');
+    await ctl.streamMission(user as never, 'd-1', req as never, res as never);
+    expect(res.writeHead).toHaveBeenCalledWith(
+      200,
+      expect.objectContaining({ 'Content-Type': 'text/event-stream' }),
+    );
+    expect(service.subscriptionCount('t-1')).toBe(1);
+    service.onModuleDestroy();
+  });
+
+  /* Masquage : une mission EXISTANTE mais non assignée doit répondre EXACTEMENT
+   * comme un id inexistant (404), sinon la différence de statut révèle à un
+   * utilisateur non concerné que la mission existe. Même règle que
+   * `CollaborationService.requireAccess` (collaboration.service.ts:90-95). */
+  it('tiers → 404, jamais 403 (ne pas révéler l’existence de la mission)', async () => {
     const { ctl, service } = controller({ id: 'd-1', clientId: 'c-1', technicianId: 't-1' });
     const { user, res, req } = streamArgs('intrus');
+    const error = await ctl
+      .streamMission(user as never, 'd-1', req as never, res as never)
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NotFoundException);
+    /* Le message est identique à celui d'une mission inexistante : même
+     * réponse octet pour octet, donc rien de discernable. */
+    expect((error as NotFoundException).message).toBe('Demande introuvable.');
+    expect((error as NotFoundException).getStatus()).toBe(404);
+    expect(service.subscriptionCount()).toBe(0);
+    service.onModuleDestroy();
+  });
+
+  it('mission disponible (non assignée) vue par un technicien éligible → 404 aussi', async () => {
+    // Cas réel du signalement : le technicien ouvre une mission disponible,
+    // pas encore acceptée. Le SSE doit refuser comme un id inexistant.
+    const { ctl, service } = controller({ id: 'd-1', clientId: 'c-1', technicianId: null });
+    const { user, res, req } = streamArgs('t-9', 'TECHNICIAN');
     await expect(ctl.streamMission(user as never, 'd-1', req as never, res as never)).rejects.toBeInstanceOf(
-      ForbiddenException,
+      NotFoundException,
     );
     expect(service.subscriptionCount()).toBe(0);
     service.onModuleDestroy();
@@ -173,5 +207,16 @@ describe('RealtimeController — contrôle d’accès mission', () => {
       NotFoundException,
     );
     service.onModuleDestroy();
+  });
+
+  it('le refus ne dépend pas du rôle : client comme technicien sont masqués', async () => {
+    for (const role of ['CLIENT', 'TECHNICIAN'] as const) {
+      const { ctl, service } = controller({ id: 'd-1', clientId: 'c-1', technicianId: 't-1' });
+      const { user, res, req } = streamArgs('autre', role);
+      await expect(
+        ctl.streamMission(user as never, 'd-1', req as never, res as never),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      service.onModuleDestroy();
+    }
   });
 });
