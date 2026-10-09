@@ -295,7 +295,12 @@ describe('paiement : statuts PENDING / SUCCESS / FAILED / CANCELLED', () => {
 });
 
 describe('retrait : frais ADD_ON / DEDUCTED exposés (jamais hardcodés)', () => {
-  it('ADD_ON : débit au charged (10200), DEDUCTED : débit au requested', async () => {
+  /* OPTION A : le débit suit TOUJOURS le net demandé (= montant du hold),
+   * jamais le `chargedAmount`. Débiter le brut majoré porterait les frais
+   * SasPay sur le technicien — l'inverse de « Relio absorbe ». Les
+   * montants SasPay restent exposés tels quels sur la demande (pour la
+   * réconciliation) et tracés en metadata de l'écriture. */
+  it('ADD_ON : débit au net (10000), DEDUCTED : idem — frais jamais débités', async () => {
     const { prisma, store } = mockPrisma();
     const svc = service(prisma);
     credit(store, 'c1', 50000);
@@ -308,7 +313,7 @@ describe('retrait : frais ADD_ON / DEDUCTED exposés (jamais hardcodés)', () =>
     expect(done.feeChargeMode).toBe('ADD_ON');
     expect(done.chargedAmount).toBe(10200);
     expect(done.netAmount).toBe(10000);
-    expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')[0].amount).toBe(10200);
+    expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')[0].amount).toBe(10000);
 
     const ded = await svc.createWithdrawalRequest('c1', 'c1', 10000, { idempotencyKey: 'fee-ded' });
     await svc.settleWithdrawalSuccess(ded.reference, {

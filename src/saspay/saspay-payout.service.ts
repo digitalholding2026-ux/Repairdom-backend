@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { FinancialService } from '../financial/financial.service.js';
+import { computeSaspayPayoutCharged } from '../financial/saspay-fees.js';
 import { SasPayApiClient, SasPayTerminalException, SasPayUpstreamException } from './saspay-api.client.js';
 import { SasPayConfig } from './saspay.config.js';
 import {
@@ -127,9 +128,22 @@ export class SasPayPayoutService {
     const email = (input.email ?? request.user.email ?? '').trim() || 'client@relio.local';
 
     const description = `Retrait Relio ${request.reference}`;
+    /* OPTION A (TRANSPARENCE SASPAY) : SasPay déduit 3,5 % du montant
+     * envoyé, donc Relio envoie le BRUT pour que le technicien reçoive
+     * EXACTEMENT `request.amount` — le net qu'il a demandé et qui est
+     * affiché dans l'UI. Les frais sont à la charge de Relio
+     * (`computeSaspayPayoutFee`), jamais exposés au technicien.
+     *
+     * Le plafond `MAX_WITHDRAWAL_AMOUNT` porte sur `request.amount` (le
+     * NET), validé à la création de la demande : le brut ci-dessus peut
+     * donc légitimement dépasser 10 000 000 sans contourner la borne
+     * utilisateur (cf. `assertWithdrawalAmount`). Seule limite restante :
+     * un plafond TECHNIQUE éventuel côté SasPay sur le montant brut, qui
+     * ne peut être connu que par un appel réel (non vérifiable ici). */
+    const chargedAmount = computeSaspayPayoutCharged(request.amount);
     try {
       const init = await this.api.initializePayout({
-        amountMinor: request.amount,
+        amountMinor: chargedAmount,
         currency: request.currency,
         country: SASPAY_PAYOUT_COUNTRY,
         method: network,

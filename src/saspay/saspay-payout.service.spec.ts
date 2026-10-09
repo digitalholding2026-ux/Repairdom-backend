@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SasPayPayoutService } from './saspay-payout.service.js';
 import { SasPayTerminalException, SasPayUpstreamException } from './saspay-api.client.js';
+import { computeSaspayPayoutFee } from '../financial/saspay-fees.js';
 
 /* Sprint PAYOUT — orchestration init/verify (dépendances mockées) : gates
  * REAL/config/clé, init idempotente même clé, erreurs terminales vs
@@ -96,7 +97,9 @@ describe('initializeWithdrawalPayout', () => {
     expect(api.initializePayout).toHaveBeenCalledTimes(1);
     expect(api.initializePayout).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountMinor: 10000,
+        /* OPTION A : net 10 000 → brut 10 363 envoyé à SasPay, pour que le
+         * bénéficiaire reçoive exactement 10 000. */
+        amountMinor: 10_363,
         currency: 'XAF',
         country: 'CM',
         method: 'mtn_cm',
@@ -228,5 +231,76 @@ describe('verifyWithdrawalPayout (sans polling)', () => {
     expect(result.saspayStatus).toBe('UNKNOWN');
     expect(result.verificationError).toMatchObject({ code: 'COMMUNICATION_ERROR' });
     expect(financial.settleWithdrawalFailure).not.toHaveBeenCalled();
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * OPTION A (TRANSPARENCE SASPAY) — le montant ENVOYÉ est le brut majoré.
+ *
+ * SasPay déduit 3,5 % du montant qu'il reçoit : pour que le technicien
+ * encaisse EXACTEMENT son net demandé (celui affiché dans l'UI, celui du
+ * hold), Relio doit envoyer `ceil(net / 0,965)`. Les frais sont à la charge
+ * de Relio — le technicien ne voit jamais ce montant.
+ *
+ * Ces tests vérifient le CORPS ENVOYÉ à SasPay (mock fidèle : il capture
+ * l'argument réellement transmis, il ne le recalcule pas), sur toute la plage
+ * des bornes de retrait.
+ * ───────────────────────────────────────────────────────────────────────── */
+describe('Option A — majoration du payout avant envoi', () => {
+  function requestFor(net: number): Row {
+    return {
+      id: 'wr-1', reference: 'WD-1', idempotencyKey: 'wkey-1', userId: 't1',
+      amount: net, currency: 'XAF', mode: 'REAL', status: 'PENDING',
+      holdId: 'hold-1', saspayTransactionId: null, saspayReference: null,
+      externalReference: null, network: 'mtn_cm', country: 'CM',
+      fee: null, chargedAmount: null, netAmount: null,
+      metadata: { msisdn: '+237677889900' },
+    } as never;
+  }
+
+  it('net 10 000 → SasPay reçoit 10 363 (le technicien encaisse 10 000)', async () => {
+    const { service, api } = mockDeps({ request: requestFor(10_000) });
+    await service.initializeWithdrawalPayout('t1', 'WD-1');
+    expect(api.initializePayout).toHaveBeenCalledWith(
+      expect.objectContaining({ amountMinor: 10_363 }),
+    );
+  });
+
+  it('le net demandé n’est JAMAIS modifié en base (WithdrawalRequest.amount)', async () => {
+    const { service, request } = mockDeps({ request: requestFor(10_000) });
+    await service.initializeWithdrawalPayout('t1', 'WD-1');
+    // `amount` reste le NET : c'est lui qui est débité du ledger et affiché.
+    expect(request.amount).toBe(10_000);
+    // La majoration ne pollue pas non plus la metadata persistée.
+    expect(request.metadata).not.toHaveProperty('chargedAmount');
+    expect(request.metadata).not.toHaveProperty('saspayFee');
+  });
+
+  it('le brut envoyé garantit le net sur toute la plage 100 → 10 000 000', async () => {
+    for (const net of [100, 500, 2_000, 15_900, 100_000, 10_000_000]) {
+      const { service, api } = mockDeps({ request: requestFor(net) });
+      await service.initializeWithdrawalPayout('t1', 'WD-1');
+      const sent = (api.initializePayout as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+        .amountMinor as number;
+      expect(sent).toBe(Math.ceil(net / 0.965));
+      // Le net réellement encaissé couvre le net demandé (Option A).
+      expect(sent * 0.965).toBeGreaterThanOrEqual(net);
+      // Le surplus est exactement le frais supporté par Relio, et il reste
+      // marginal : au plus le taux plus 1 XAF d'arrondi au supérieur.
+      expect(sent - net).toBe(computeSaspayPayoutFee(net));
+      expect(sent - net).toBeLessThanOrEqual(net * 0.035 / 0.965 + 1);
+    }
+  });
+
+  it('plafond : un retrait net de 10 000 000 est accepté et envoyé à 10 362 695', async () => {
+    const { service, api } = mockDeps({ request: requestFor(10_000_000) });
+    await service.initializeWithdrawalPayout('t1', 'WD-1');
+    const sent = (api.initializePayout as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+      .amountMinor as number;
+    expect(sent).toBe(Math.ceil(10_000_000 / 0.965));
+    expect(sent * 0.965).toBeGreaterThanOrEqual(10_000_000);
+    // Le NET reste dans la borne utilisateur MAX_WITHDRAWAL_AMOUNT ; le brut
+    // la dépasse volontairement (décision validée : plafond sur le net).
+    expect(10_000_000).toBeLessThanOrEqual(10_000_000);
   });
 });

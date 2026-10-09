@@ -2335,10 +2335,23 @@ export class FinancialService {
   /** Règle un payout réussi : débit ledger définitif + hold CONSUMED +
    *  demande SUCCESS, dans la même transaction. Idempotent : une demande
    *  déjà SUCCESS est retournée sans nouveau débit.
-   *  Montant débité (Sprint PAYOUT, jamais `requested` seul) : le `charged`
-   *  constaté SasPay quand il est fourni et valide, sinon le montant demandé.
-   *  Les frais ne sont jamais calculés par Relio (fournis par SasPay,
-   *  tracés en metadata). */
+   *
+   *  OPTION A (TRANSPARENCE SASPAY) — le débit porte TOUJOURS sur
+   *  `request.amount`, le NET demandé par le bénéficiaire, jamais sur le
+   *  `chargedAmount` :
+   *
+   *    Relio envoie à SasPay le brut majoré (`computeSaspayPayoutCharged`)
+   *    pour que le technicien reçoive exactement son net ; SasPay débite
+   *    ce brut et retient ses 3,5 %. Le hold a été créé sur le NET, donc
+   *    c'est le NET qui sort du solde Relio : débiter le `charged` ferait
+   *    passer le solde du technicien en négatif (10 363 débités pour 10 000
+   *    reçus) et porterait les frais sur le technicien — l'inverse de
+   *    l'Option A, dont la promesse est « Relio absorbe ».
+   *
+   *    Les montants réellement constatés chez SasPay (`chargedAmount`,
+   *    `fee`, `netAmount`, `feeChargeMode`) restent TRACÉS en metadata :
+   *    ils documentent le coût réel de Relio et permettent la
+   *    réconciliation, sans jamais modifier le débit ni le solde affiché. */
   async settleWithdrawalSuccess(
     reference: string,
     saspay: {
@@ -2377,13 +2390,10 @@ export class FinancialService {
       if (!owner) throw new NotFoundException('Utilisateur introuvable.');
       const type = owner.role === 'TECHNICIAN' ? 'TECHNICIAN_WITHDRAWAL' : 'CLIENT_WITHDRAWAL';
       await this.lockUserFunds(tx, request.userId);
-      const debitAmount =
-        saspay.chargedAmount !== null &&
-        saspay.chargedAmount !== undefined &&
-        Number.isInteger(saspay.chargedAmount) &&
-        saspay.chargedAmount > 0
-          ? saspay.chargedAmount
-          : request.amount;
+      /* Option A : le débit suit le NET demandé (= montant du hold, = montant
+       * réellement reçu par le bénéficiaire). Voir le commentaire de la
+       * méthode : débiter le `charged` débiterait les frais au technicien. */
+      const debitAmount = request.amount;
       const ledgerReference = `withdrawal:${request.id}:${mode}`;
       await this.record(
         tx,
@@ -2398,10 +2408,16 @@ export class FinancialService {
           metadata: {
             withdrawalRequestId: request.id,
             withdrawalReference: request.reference,
+            /* Montants côté technicien : ce qu'il a demandé et ce qu'il reçoit. */
             requestedAmount: request.amount,
-            chargedAmount: debitAmount,
+            debitedAmount: debitAmount,
+            /* Montants constatés chez SasPay : coût réel de Relio (Option A),
+             * jamais débités au technicien, tracés pour réconciliation. */
+            chargedAmount: saspay.chargedAmount ?? null,
             fee: saspay.fee ?? null,
             netAmount: saspay.netAmount ?? null,
+            feeChargeMode: saspay.feeChargeMode ?? null,
+            saspayFeesAbsorbedByRelio: true,
             saspayTransactionId: saspay.saspayTransactionId ?? null,
             saspayReference: saspay.saspayReference ?? null,
             currency: FINANCIAL_CURRENCY,

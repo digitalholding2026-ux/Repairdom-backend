@@ -225,7 +225,12 @@ describe('SUCCESS : débit unique au charged constaté', () => {
     const debits = store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL');
     expect(debits).toHaveLength(1);
     expect(debits[0].amount).toBe(10000);
-    expect(debits[0].metadata).toMatchObject({ fee: 150, chargedAmount: 10000, netAmount: 9850 });
+    expect(debits[0].metadata).toMatchObject({
+      fee: 150,
+      chargedAmount: 10000,
+      netAmount: 9850,
+      debitedAmount: 10000,
+    });
     expect([...store.holds.values()].find((h) => h.id === holdId)?.status).toBe('CONSUMED');
     expect(store.withdrawals.get(req.reference)?.status).toBe('SUCCESS');
     expect(store.withdrawals.get(req.reference)?.fee).toBe(150);
@@ -235,7 +240,11 @@ describe('SUCCESS : débit unique au charged constaté', () => {
     expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')).toHaveLength(1);
   });
 
-  it('ADD_ON (charged > requested) → débit au charged, jamais de frais calculés', async () => {
+  /* OPTION A : SasPay débite le BRUT majoré (Relio envoie net / 0,965) et
+   * retient 3,5 %. Le débit porte sur le NET demandé, sinon le solde du
+   * technicien passerait en négatif et les frais seraient portés par lui
+   * au lieu de Relio. Les montants SasPay restent tracés en metadata. */
+  it('ADD_ON (charged > requested) → débit au NET demandé, frais tracés en metadata', async () => {
     const { prisma, store } = mockPrisma();
     const svc = service(prisma);
     creditLedger(store, { userId: 'c1', type: 'CLIENT_TOPUP', direction: 'CREDIT', amount: 20000, reference: 'seed' });
@@ -247,7 +256,33 @@ describe('SUCCESS : débit unique au charged constaté', () => {
       netAmount: 10000,
       feeChargeMode: 'ADD_ON',
     });
-    expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')[0].amount).toBe(10200);
+    const debit = store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')[0];
+    expect(debit.amount).toBe(10000);
+    expect(debit.metadata).toMatchObject({
+      requestedAmount: 10000,
+      debitedAmount: 10000,
+      chargedAmount: 10200,
+      fee: 200,
+      netAmount: 10000,
+      saspayFeesAbsorbedByRelio: true,
+    });
+  });
+
+  it('Option A : le débit ne rend jamais le solde négatif (10 000 nets sur 20 000)', async () => {
+    const { prisma, store } = mockPrisma();
+    const svc = service(prisma);
+    creditLedger(store, { userId: 't1', type: 'TECHNICIAN_REPAIR_REVENUE', direction: 'CREDIT', amount: 20000, reference: 'seed' });
+    const req = await svc.createWithdrawalRequest('t1', 't1', 10_000, { idempotencyKey: 'w-optA' });
+    // SasPay a débité le brut majoré et payé le net exact au technicien.
+    await svc.settleWithdrawalSuccess(req.reference, {
+      saspayTransactionId: 'po-optA',
+      fee: 363,
+      chargedAmount: 10_363,
+      netAmount: 10_000,
+      feeChargeMode: 'DEDUCTED',
+    });
+    const balance = await svc.getBalance('t1', 'SIMULATION');
+    expect(balance).toBe(10_000); // et non 20 000 − 10 363 = 9 637
   });
 
   it('sans montants SasPay → débit au requested', async () => {

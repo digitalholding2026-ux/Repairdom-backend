@@ -12,12 +12,21 @@ import { SasPayPayoutService } from './saspay-payout.service.js';
  *
  *  Création = hold ACTIVE + demande PENDING (fonds gelés, aucun débit).
  *  En REAL, enchaîne l'init `POST /payouts/initialize/` (Idempotency-Key =
- *  demande). Le débit définitif (CLIENT_/TECHNICIAN_WITHDRAWAL, au `charged`
- *  constaté) n'est créé qu'au SUCCESS confirmé serveur (webhook/verify) ;
- *  en cas d'échec les fonds sont libérés.
+ *  demande). Le débit définitif (CLIENT_/TECHNICIAN_WITHDRAWAL, au NET
+ *  demandé — Option A : les frais SasPay sont absorbés par Relio) n'est créé
+ *  qu'au SUCCESS confirmé serveur (webhook/verify) ; en cas d'échec les fonds
+ *  sont libérés.
  *  Séparation CLIENT/TECHNICIAN : le compte est TOUJOURS dérivé du JWT
  *  (type de débit déduit du rôle du propriétaire au règlement). Le frontend
- *  n'appelle jamais SasPay directement. */
+ *  n'appelle jamais SasPay directement.
+ *
+ *  PAS D'ENDPOINT DE BREAKDOWN, volontairement : le détail « brut envoyé /
+ *  frais SasPay » n'est pas exposé. Les frais de payout sont à la charge de
+ *  Relio (Option A) et le technicien n'a pas à connaître leur montant — il ne
+ *  voit que le NET qu'il recevra, déjà affiché dans l'UI. Exposer le brut
+ *  romprait la promesse commerciale de la partie C du chantier
+ *  TRANSPARENCE-SASPAY. Le coût réel de Relio reste tracé côté serveur
+ *  (metadata de l'écriture ledger + `WithdrawalRequest.fee`). */
 @Controller('finances/withdrawals')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('CLIENT', 'TECHNICIAN')
