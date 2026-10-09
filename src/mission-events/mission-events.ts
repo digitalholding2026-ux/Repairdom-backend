@@ -74,7 +74,12 @@ export type NotificationType =
   // à l'audit du 08/10 est ici corrigée : sans elles, le backend ne pouvait pas
   // créer ces notifications (erreur de compilation, pas un bug silencieux).
   | 'REWARD_CREDIT_EARNED'
-  | 'REWARD_NATURE_REACHED';
+  | 'REWARD_NATURE_REACHED'
+  // Chantier 4B : parrainage — le parrain est crédité (REFERRAL_REWARDED) et
+  // le filleul reçoit son bonus de bienvenue (REFERRAL_WELCOME). `demandeId`
+  // reste `null` : ce n'est pas une notification de mission.
+  | 'REFERRAL_REWARDED'
+  | 'REFERRAL_WELCOME';
 
 export interface EventInput {
   demandeId: string;
@@ -301,6 +306,18 @@ export function buildNotification(
     REWARD_NATURE_REACHED: {
       title: 'Récompense débloquée',
       message: 'Une nouvelle récompense est disponible dans votre programme de fidélité.',
+    },
+    /* Chantier 4B — parrainage. Les deux textes sont volontairement SANS
+     * montant : la règle FCFA veut les montants en `metadata` (entiers XAF),
+     * formatés à l'affichage. Un « 500 FCFA » ici serait figé en base pour
+     * tous les destinataires. */
+    REFERRAL_REWARDED: {
+      title: '🎁 Récompense de parrainage reçue',
+      message: 'Un filleul a validé sa première intervention. Votre crédit est disponible.',
+    },
+    REFERRAL_WELCOME: {
+      title: '🎁 Bonus de bienvenue crédité',
+      message: 'Votre crédit de bienvenue est disponible sur votre solde.',
     },
   };
   const { title, message } = content[type];

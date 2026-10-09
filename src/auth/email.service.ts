@@ -6,6 +6,8 @@ import {
   buildKycVerifiedEmail,
   buildMissionAvailableEmail,
   buildPasswordResetEmail,
+  buildReferralRewardedEmail,
+  buildReferralWelcomeEmail,
   buildRewardTierReachedEmail,
   buildVerificationEmail,
   buildVerificationReminderEmail,
@@ -228,6 +230,70 @@ export class EmailService {
    *
    * Comme pour le KYC : Resend non configuré = simple journalisation, l'envoi
    * n'échoue jamais et le flux récompenses n'est jamais bloqué par l'e-mail. */
+  /* ── Chantier 4B — parrainage ────────────────────────────────────────
+   * Deux envois distincts : le parrain reçoit une notification de
+   * RÉCOMPENSE (il a un geste à encourager), le filleul un bonus de
+   * BIENVENUE (purement informatif). Confondre les deux ferait croire au
+   * filleul qu'il doit agir.
+   *
+   * Montants : ENTIERS XAF, jamais formatés ici — règle FCFA. */
+
+  /** Parrain : une filleul a validé, sa récompense est créditée. */
+  async sendReferralRewardedEmail(
+    to: string,
+    referrerFirstName: string,
+    referredName: string,
+    amountXAF: number,
+    referralsUrl: string,
+  ): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] récompense de parrainage pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    const content = buildReferralRewardedEmail(
+      referrerFirstName,
+      referredName,
+      amountXAF,
+      referralsUrl,
+      this.footerLinks(),
+    );
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
+  /** Filleul : bonus de bienvenue crédité après sa première mission. */
+  async sendReferralWelcomeEmail(
+    to: string,
+    referredFirstName: string,
+    amountXAF: number,
+    balanceUrl: string,
+  ): Promise<void> {
+    if (!this.isConfigured) {
+      this.logger.warn(
+        `[e-mail non envoyé] bonus de bienvenue parrainage pour ${to} (Resend non configuré).`,
+      );
+      return;
+    }
+    const content = buildReferralWelcomeEmail(
+      referredFirstName,
+      amountXAF,
+      balanceUrl,
+      this.footerLinks(),
+    );
+    await this.postEmail({
+      to,
+      subject: content.subject,
+      text: content.text,
+      html: content.html,
+    });
+  }
+
   async sendRewardTierReachedEmail(
     to: string,
     firstName: string,

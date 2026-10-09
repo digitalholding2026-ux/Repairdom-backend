@@ -18,6 +18,7 @@ import { BackofficeAgentModule } from './backoffice-agent/backoffice-agent.modul
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { PushModule } from './push/push.module.js';
 import { RewardsModule } from './rewards/rewards.module.js';
+import { ReferralsModule } from './referrals/referrals.module.js';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { RewardsModule } from './rewards/rewards.module.js';
     RealtimeModule,
     PushModule,
     RewardsModule,
+    ReferralsModule,
   ],
 })
 export class AppModule {}

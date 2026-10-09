@@ -622,3 +622,116 @@ export function buildVerificationReminderEmail(
   });
   return { subject, text, html };
 }
+
+/**
+ * Chantier 4B — Parrainage : récompense versée au PARRAIN.
+ *
+ * RÈGLE FCFA : le montant est un ENTIER XAF. Le gabarit n'affiche que ce
+ * que le client a réellement crédit — un montant pré-formaté en base serait
+ * figé pour tous les destinataires. Le formatage reste à l'affichage.
+ *
+ * Le message dit CE QUI s'est passé (quelle filleul, quel geste) plutôt que
+ * « une récompense a été versée » : c'est ce qui donne envie de recommencer.
+ */
+export function buildReferralRewardedEmail(
+  referrerName: string,
+  referredName: string,
+  amountXAF: number,
+  referralsUrl: string,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = referrerName.trim() || 'Bonjour';
+  const referred = referredName.trim() || 'votre filleul';
+  const amount = Math.round(amountXAF);
+
+  const text = [
+    `${name},`,
+    '',
+    `${referred} vient de confirmer sa première intervention.`,
+    '',
+    `${amount} FCFA de crédit viennent d'être ajoutés à votre solde Relio.`,
+    '',
+    'Vous pouvez continuer à inviter vos proches : chaque filleul validé vous',
+    'rapporte la même récompense.',
+    '',
+    'Voir mes parrainages :',
+    '',
+    referralsUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+
+  const html = emailLayout({
+    preheader: `${amount} FCFA de crédit ajoutés à votre solde Relio.`,
+    title: '🎁 Récompense de parrainage reçue',
+    bodyHtml: [
+      paragraph(
+        `${escapeHtml(name)}, <strong>${escapeHtml(referred)}</strong> vient de confirmer sa première intervention.`,
+      ),
+      paragraph(
+        `<strong>${amount} FCFA de crédit</strong> viennent d'être ajoutés à votre solde Relio.`,
+      ),
+      paragraph('Chaque filleul validé vous rapporte la même récompense.'),
+    ].join(''),
+    ctaLabel: 'Voir mes parrainages',
+    ctaUrl: referralsUrl,
+    links,
+  });
+
+  return { subject: `🎁 ${amount} FCFA de crédit ajoutés à votre solde Relio`, text, html };
+}
+
+/**
+ * Chantier 4B — Parrainage : bonus de bienvenue crédité au FILLEUL.
+ *
+ * Même règle FCFA que ci-dessus. Le message explique ce qu'il vient de
+ * gagner et ce qu'il reste à faire pour que le parrain soit récompensé lui
+ * aussi — sans quoi le filleul ignore qu'il a un rôle dans l'opération.
+ */
+export function buildReferralWelcomeEmail(
+  referredName: string,
+  amountXAF: number,
+  balanceUrl: string,
+  links: EmailFooterLinks,
+): KycEmailContent {
+  const name = referredName.trim() || 'Bonjour';
+  const amount = Math.round(amountXAF);
+
+  const text = [
+    `${name},`,
+    '',
+    `Merci d'avoir rejoint Relio.`,
+    '',
+    `${amount} FCFA de crédit viennent d'être ajoutés à votre solde pour votre`,
+    'première intervention confirmée.',
+    '',
+    'Voir mon solde :',
+    '',
+    balanceUrl,
+    '',
+    'À bientôt,',
+    "L'équipe Relio",
+    '',
+    `Relio — ${links.siteUrl}`,
+  ].join('\n');
+
+  const html = emailLayout({
+    preheader: `${amount} FCFA de crédit ajoutés à votre solde Relio.`,
+    title: '🎁 Bienvenue chez Relio',
+    bodyHtml: [
+      paragraph(`${escapeHtml(name)}, merci d'avoir rejoint <strong>Relio</strong>.`),
+      paragraph(
+        `<strong>${amount} FCFA de crédit</strong> viennent d'être ajoutés à votre solde pour votre première intervention confirmée.`,
+      ),
+      paragraph('Votre solde est disponible dès maintenant depuis votre espace client.'),
+    ].join(''),
+    ctaLabel: 'Voir mon solde',
+    ctaUrl: balanceUrl,
+    links,
+  });
+
+  return { subject: `🎁 ${amount} FCFA de crédit ajoutés à votre solde Relio`, text, html };
+}

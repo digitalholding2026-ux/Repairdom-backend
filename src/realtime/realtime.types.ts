@@ -35,7 +35,10 @@ export type RealtimeEventType =
   // Chantier #4A : la progression du programme de récompenses a changé
   // (palier franchi, mission validée ou écartée par un admin). Permet à
   // `/client/recompenses` de se rafraîchir sans rechargement de page.
-  | 'client.rewards_updated';
+  | 'client.rewards_updated'
+  // Chantier 4B : le programme de parrainage a changé (récompense versée).
+  // Permet à `/client/parrainage` de se rafraîchir sans rechargement de page.
+  | 'client.referrals_updated';
 
 export interface RealtimeEvent {
   type: RealtimeEventType;

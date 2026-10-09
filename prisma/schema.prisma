@@ -102,6 +102,15 @@ enum NotificationType {
   // Chantier 4-FONDATIONS-C — un palier de récompense NATURE vient d'être
   // atteint et peut être réclamé. `ACTION` : le versement reste manuel (admin).
   REWARD_NATURE_REACHED
+  // Chantier 4B — parrainage.
+  // `REFERRAL_REWARDED` : le PARRAIN vient d'être crédité de la récompense
+  // de son filleul. `ACTION` : sans clic, le crédit reste acquis et visible
+  // dans le programme de parrainage.
+  REFERRAL_REWARDED
+  // `REFERRAL_WELCOME` : le FILLEUL vient d'être crédité de son bonus de
+  // bienvenue. `FOLLOW_UP` : information, aucune action attendue — d'où
+  // l'absence de CTA obligatoire.
+  REFERRAL_WELCOME
 }
 
 // Chantier #4A — paliers du programme de récompenses client.
@@ -196,6 +205,15 @@ enum FinancialTransactionType {
   // CLIENT_TOPUP (vraie recharge payante) : ici, le crédit est un avantage
   // acquis par la marge cumulée, jamais un encaissement.
   CLIENT_REWARD_CREDIT
+  // Chantier 4B — parrainage. DEUX écritures distinctes, jamais une seule
+  // avec deux sens : le ledger doit pouvoir dire qui a été crédité et
+  // pourquoi. `CLIENT_REFERRAL_REWARD` (CREDIT) = le PARRAIN est crédité de
+  // la récompense de son filleul ; `CLIENT_REFERRAL_RECEIVED` (CREDIT) = le
+  // FILLEUL est crédité de son bonus de bienvenue. Les deux sont des
+  // avantages acquis par un tiers, jamais des encaissements : à ne jamais
+  // confondre avec `CLIENT_TOPUP` (vraie recharge payante).
+  CLIENT_REFERRAL_REWARD
+  CLIENT_REFERRAL_RECEIVED
 }
 
 enum FinancialTransactionDirection {
@@ -361,6 +379,14 @@ model User {
   clientRewardProgress         ClientRewardProgress?
   rewardFraudFlags             RewardFraudFlag[]      @relation("RewardFraudFlagClient")
   rewardFraudFlagsAsTechnician RewardFraudFlag[]      @relation("RewardFraudFlagTechnician")
+  // Chantier 4B — parrainage client. `referralCode` est le code PERSONNEL du
+  // client, généré à la première demande (jamais à l'inscription : un compte
+  // qui n'a jamais parrainé n'a pas besoin de code en base). `referralsMade` /
+  // `referralReceived` sont deux relations NOMMÉES : un compte peut être
+  // parrain ET filleul, et Prisma doit savoir laquelle des deux il occupe.
+  referralCode                 String?               @unique
+  referralsMade                Referral[]            @relation("ReferralReferrer")
+  referralReceived             Referral?             @relation("ReferralReferred")
 }
 
 // Chantier #4A — PROGRESSION DU PROGRAMME DE RÉCOMPENSES (cumulatif à vie,
@@ -1724,4 +1750,64 @@ model FundsHold {
   @@index([userId, status])
   @@index([demandeId])
   @@index([mode, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Chantier 4B — PARRAINAGE CLIENT
+//
+// Un client partage un lien (`?ref=RELIO-XXXXX`). Son inscription lie un
+// `Referral` en `REGISTERED`. La récompense (500 FCFA chacun) n'est versée
+// qu'à la PREMIÈRE mission `CONFIRMED` du filleul — jamais à l'inscription,
+// ce qui rendrait le parrainage trivial à exploiter (créer un compte, gagner
+// 1 000 FCFA, supprimer le compte).
+//
+// COHÉRENCE ET DURABILITÉ :
+//   - `referredId` est UNIQUE : un client ne peut avoir qu'un parrain. Un
+//     `onDelete: SetNull` conserve la ligne si le filleul est supprimé —
+//     l'historique de la récompense versée au parrain ne doit pas disparaître
+//     avec le compte du filleul.
+//   - `referrerId` est en `Cascade` : les parrainages d'un compte supprimé
+//     n'ont plus de sens.
+//   - `code` est UNIQUE et porte le code UTILISÉ, pas le code du parrain
+//     courant : si le parrain change un jour de code, l'historique reste
+//     lisible.
+//   - `referredEmail` est l'email pré-rempli par le parrain. Il n'est jamais
+//     lu par le backend pour notifier qui que ce soit : la notification part
+//     au `referredId`, une fois le compte réellement créé.
+//
+// MONTANTS : ce modèle ne stocke AUCUN montant. La récompense est un
+// montant du barème (`referrals.config.ts`), et le versement est une écriture
+// de ledger — donc le ledger reste la seule source de vérité financière, comme
+// pour le programme de récompenses.
+model Referral {
+  id            String         @id @default(dbgenerated("gen_random_uuid()"))
+  referrerId    String
+  referrer      User           @relation("ReferralReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  // UNIQUE : un client ne peut être filleul que d'un seul parrain.
+  referredId    String?        @unique
+  referred      User?          @relation("ReferralReferred", fields: [referredId], references: [id], onDelete: SetNull)
+  // Code UTILISÉ par le filleul (RELIO-XXXXX), pas le code courant du
+  // parrain : l'historique reste lisible même si le code change un jour.
+  code          String         @unique
+  // Email pré-rempli par le parrain à l'invitation (facultatif). Valeur
+  // informative : elle n'authorise aucun envoi.
+  referredEmail String?
+  status        ReferralStatus @default(PENDING)
+  rewardedAt    DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([referrerId])
+  @@index([status])
+}
+
+// `PENDING` : lien partagé / invitation créée, filleul pas encore inscrit.
+// `REGISTERED` : filleul inscrit, on attend sa première mission CONFIRMED.
+// `REWARDED` : récompense versée (écritures ledger créées).
+// `EXPIRED` : parrain à la limite de 5 filleuls, ou lien annulé.
+enum ReferralStatus {
+  PENDING
+  REGISTERED
+  REWARDED
+  EXPIRED
 }

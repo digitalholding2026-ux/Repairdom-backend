@@ -80,4 +80,24 @@ export class RegisterDto {
   @IsString({ each: true })
   @IsIn(ALLOWED_CATEGORIES, { each: true })
   categories?: string[];
+
+  /* ── Code de parrainage (chantier 4B) ──────────────────────────────────
+   *
+   * Accepté UNIQUEMENT pour un CLIENT : le DTO ne connaît pas le rôle (comme
+   * `cityId`), c'est `AuthService.register` qui l'ignore pour un technicien.
+   *
+   * `MaxLength(32)` : le format canonique `RELIO-XXXXX` fait 11 caractères ;
+   * la marge absorbe une saisie collée depuis un lien ou une majuscule
+   * accidentelle. La VALIDATION du format (préfixe + 5 caractères de
+   * l'alphabet sans ambiguïtés) n'est PAS faite ici mais par
+   * `normalizeReferralCode`, au moment où le code est rattaché au compte —
+   * un code mal recopié ne doit pas empêcher l'inscription, seulement
+   * créer un parrainage.
+   *
+   * Le champ est OPTIONNEL par nature : un client sans parrain s'inscrit
+   * normalement. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  referralCode?: string;
 }

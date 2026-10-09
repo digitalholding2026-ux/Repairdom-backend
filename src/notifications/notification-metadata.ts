@@ -101,6 +101,23 @@ export interface NotificationMetadata {
    *  `claim_nature` (REWARD_NATURE_REACHED, ACTION : il doit réclamer) ·
    *  `contact_support` (REWARD_MISSION_NOT_COUNTED). */
   rewardAction?: string;
+  /* ── Chantier 4B — parrainage ─────────────────────────────────────────
+   * Les montants du parrainage sont des ENTIERS XAF, jamais formatés : même
+   * règle que le reste du ledger.
+   */
+
+  /** Montant crédité au PARRAIN, XAF ENTIER (REFERRAL_REWARDED). */
+  referralRewardXAF?: NotificationAmountXAF;
+  /** Montant crédité au FILLEUL (bonus de bienvenue), XAF ENTIER
+   *  (REFERRAL_WELCOME). */
+  referralWelcomeXAF?: NotificationAmountXAF;
+  /** Prénom du filleul récompensé (REFERRAL_REWARDED) — permet au parrain de
+   *  reconnaître qui a déclenché la récompense. */
+  referralReferredName?: string;
+  /** Action attendue côté client (REFERRAL_REWARDED) : `view_referrals`
+   *  (consulter / partager davantage) · `view_balance` (REFERRAL_WELCOME,
+   *  simple information). */
+  referralAction?: string;
 }
 
 /**
@@ -152,6 +169,11 @@ const METADATA_KEYS: Array<keyof NotificationMetadata> = [
   'rewardNatureLabel',
   'rewardNatureThresholdXAF',
   'rewardNextTierXAF',
+  /* Chantier 4B — parrainage. */
+  'referralRewardXAF',
+  'referralWelcomeXAF',
+  'referralReferredName',
+  'referralAction',
 ];
 
 /**

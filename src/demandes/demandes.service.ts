@@ -11,6 +11,7 @@ import { DispatchService } from '../dispatch/dispatch.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
 import { RewardsService } from '../rewards/rewards.service.js';
+import { ReferralsService } from '../referrals/referrals.service.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
 // module feuille `./demande-helpers.js` (aucune dépendance de service).
 // Ré-exportés ici pour compatibilité des imports existants.
@@ -81,6 +82,10 @@ export class DemandesService {
      * Côté Nest la résolution est effective (`DemandesModule` importe
      * `RewardsModule`). */
     private readonly rewards?: RewardsService,
+    /* Chantier 4B — nullable pour la même raison que `rewards` : un module
+     * peut monter le service sans ce câblage (tests, assemblages partiels).
+     * L'appel est protégé par `?.` ET par un `try/catch`. */
+    private readonly referrals?: ReferralsService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -539,6 +544,32 @@ export class DemandesService {
       } catch (error) {
         this.logger.error(
           `Comptage des récompenses en échec pour la mission ${id} : ${
+            error instanceof Error ? error.message : 'erreur inconnue'
+          }. La mission reste confirmée et réglée.`,
+        );
+      }
+
+      /* ── Chantier 4B — PARRAINAGE ────────────────────────────────────
+       *
+       * Même montage que les récompenses, même raison : la mission est
+       * CONFIRMÉE et RÉGLÉE, ce qui est un fait acquis. Une récompense de
+       * parrainage en échec ne doit ni faire échouer la confirmation, ni
+       * laisser croire que le règlement a échoué.
+       *
+       * L'ordre est délibéré : les récompenses d'abord (c'est le compte du
+       * client qui vient d'être crédité), le parrainage ensuite. Les deux
+       * écrivent au même ledger ; si le second échoue, le premier reste
+       * acquis et le rattrapage est manuel.
+       *
+       * L'identifiant passé est le CLIENT de la mission, pas le technicien.
+       * `updateStatus` est un endpoint CLIENT (`assertTransition('CLIENT', …)`
+       * et `clientId` issu du JWT) : il n'y a donc pas de contrôle de rôle à
+       * faire ici — un technicien ne peut pas confirmer une mission. */
+      try {
+        await this.referrals?.onReferredMissionConfirmed(clientId);
+      } catch (error) {
+        this.logger.error(
+          `Parrainage en échec pour la mission ${id} : ${
             error instanceof Error ? error.message : 'erreur inconnue'
           }. La mission reste confirmée et réglée.`,
         );

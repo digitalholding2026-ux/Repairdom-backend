@@ -11,6 +11,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import { randomBytes, randomUUID } from 'node:crypto';
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { Response } from 'express';
@@ -28,6 +29,7 @@ import type { LoginDto } from './dto/login.dto.js';
 import type { UpdateMeDto } from './dto/update-me.dto.js';
 import { findActiveCityById, resolveCityId } from '../geo/city-reference.js';
 import { EmailService } from './email.service.js';
+import { ReferralsService } from '../referrals/referrals.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
   MAX_AVATAR_SIZE,
@@ -92,6 +94,19 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly email: EmailService,
     private readonly storage: SupabaseStorageService,
+    /* Chantier 4B — `ModuleRef` sert à résoudre `ReferralsService` AU MOMENT
+     * de l'appel, sans que `AuthModule` importe `ReferralsModule`.
+     *
+     * Un import direct donnerait le cycle `Auth → Referrals → Auth`
+     * (`ReferralsModule` a besoin d'`EmailService`, qui vit dans `AuthModule`),
+     * et un `forwardRef` est exclu par convention dans ce dépôt.
+     *
+     * La résolution lazy n'introduit AUCUNE dépendance à l'initialisation :
+     * aucun module n'a besoin de l'autre pour démarrer. La recherche est
+     * faite à l'exécution, et son échec est absorbé — un compte sans
+     * parrainage doit s'inscrire normalement. `ModuleRef` vient de
+     * `@nestjs/core`, toujours disponible : rien à importer. */
+    private readonly moduleRef: ModuleRef,
   ) {
     this.isProduction = this.config.get<string>('NODE_ENV') === 'production';
     // Base des liens e-mail (vérification). En production, définir
@@ -256,6 +271,43 @@ export class AuthService {
         return created;
       });
 
+      /* ── Chantier 4B — rattachement au parrainage ─────────────────────
+       *
+       * APRÈS la transaction : le compte doit exister pour qu'une ligne
+       * `Referral` le référence (clé étrangère).
+       *
+       * Uniquement pour un CLIENT — un technicien n'a pas de programme de
+       * parrainage, et rattacher un compte technicien consommerait un
+       * emplacement du parrain sans jamais donner lieu à une récompense.
+       *
+       * Le `try/catch` est INDISPENSABLE : le compte est créé et vérifié,
+       * on ne doit pas faire échouer une inscription parce qu'un code de
+       * parrainage est inconnu, déjà utilisé ou auto-référencé. Un code
+       * bidon ne doit RIEN changer au parcours d'inscription. */
+      if (!isTechnician && dto.referralCode?.trim()) {
+        try {
+          const referrals = this.resolveReferrals();
+          if (referrals) {
+            const result = await referrals.registerReferral(
+              user.id,
+              dto.referralCode,
+              user.email,
+            );
+            if (result.success) {
+              this.logger.log(
+                `Compte ${user.id} rattaché au parrainage de ${result.referrerName}.`,
+              );
+            }
+          }
+        } catch (error) {
+          this.logger.warn(
+            `Parrainage non appliqué pour ${user.email} : ${
+              error instanceof Error ? error.message : 'erreur inconnue'
+            }. Le compte est créé normalement.`,
+          );
+        }
+      }
+
       if (requireEmailVerification && emailVerificationToken) {
         const link = `${this.frontendUrl}/client/verification?token=${emailVerificationToken}`;
         await this.email.sendVerificationEmail(user.email, link);
@@ -267,6 +319,24 @@ export class AuthService {
         throw new ConflictException('Un compte existe déjà avec cette adresse e-mail.');
       }
       throw error;
+    }
+  }
+
+  /**
+   * Résout `ReferralsService` sans l'avoir déclaré comme dépendance.
+   *
+   * `strict: false` est INDISPENSABLE : le service est exporté par
+   * `ReferralsModule`, donc il vit dans un CONTENEUR différent de celui
+   * d'`AuthModule`. Sans ce drapeau, la recherche échouerait systématiquement.
+   *
+   * Renvoie `null` plutôt que de lever si le module n'est pas monté : le
+   * parrainage est un confort, jamais une condition d'inscription.
+   */
+  private resolveReferrals(): ReferralsService | null {
+    try {
+      return this.moduleRef.get(ReferralsService, { strict: false });
+    } catch {
+      return null;
     }
   }
 
