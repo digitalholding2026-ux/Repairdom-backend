@@ -999,68 +999,6 @@ export class FinancialService {
     };
   }
 
-  /** Vérifie la réconciliation globale des commissions Relio sur toutes les
-   *  missions du mode : aucune mission ne doit présenter d'écart.
-   *  Missions antérieures (avec CLIENT_FEE legacy) : attendu 100 + 150 = 250.
-   *  Nouvelles missions : attendu = 500 + 4 % du devis (brut débité au client
-   *  moins le transport standard), sans commission client. Les missions
-   *  réglées sous l'ancien barème 2 % restent réconciliées. */
-  async reconcileRepairDomFees(mode: FinancialTransactionMode) {
-    this.ensureModeAllowed(mode);
-    const rows = await this.prisma.financialTransaction.findMany({
-      where: {
-        mode,
-        type: { in: ['CLIENT_MISSION_DEBIT', 'CLIENT_FEE', 'TECHNICIAN_FEE'] },
-      },
-      select: { demandeId: true, type: true, direction: true, amount: true, status: true },
-    });
-
-    const byMission = new Map<
-      string,
-      { clientDebit: number; clientFee: number; technicianFee: number }
-    >();
-    for (const t of rows) {
-      if (!t.demandeId || t.status !== 'VALIDATED') continue;
-      const bucket = byMission.get(t.demandeId) ?? { clientDebit: 0, clientFee: 0, technicianFee: 0 };
-      if (t.type === 'CLIENT_MISSION_DEBIT' && t.direction === 'DEBIT')
-        bucket.clientDebit += t.amount;
-      if (t.type === 'CLIENT_FEE' && t.direction === 'DEBIT') bucket.clientFee += t.amount;
-      if (t.type === 'TECHNICIAN_FEE' && t.direction === 'DEBIT') bucket.technicianFee += t.amount;
-      byMission.set(t.demandeId, bucket);
-    }
-
-    const missions = [...byMission.entries()]
-      .filter(([, fees]) => fees.clientFee > 0 || fees.technicianFee > 0)
-      .map(([demandeId, fees]) => {
-        const isLegacy = fees.clientFee > 0;
-        const expected = isLegacy
-          ? TOTAL_PLATFORM_FEES
-          : fees.clientDebit > 0
-            ? computeExpectedTechnicianFee(fees.clientDebit)
-            : 0;
-        const total = fees.clientFee + fees.technicianFee;
-        const reconciled = isLegacy
-          ? total === TOTAL_PLATFORM_FEES
-          : fees.clientDebit > 0 &&
-            fees.clientFee === 0 &&
-            isTechnicianFeeReconciled(fees.clientDebit, fees.technicianFee);
-        return { demandeId, ...fees, total, expected, legacy: isLegacy, reconciled };
-      });
-
-    const mismatched = missions.filter((m) => !m.reconciled);
-    return {
-      totalMissions: missions.length,
-      mismatches: mismatched,
-      expectedPerMission: {
-        transport: STANDARD_TRANSPORT_FEE,
-        commissionFixedXAF: TECHNICIAN_FEE_FIXED_XAF,
-        commissionRateNumerator: TECHNICIAN_FEE_RATE_NUMERATOR,
-        commissionRateDenominator: TECHNICIAN_FEE_RATE_DENOMINATOR,
-        legacyTotal: TOTAL_PLATFORM_FEES,
-      },
-    };
-  }
-
   /* ── Supervision ADMIN (Sprint 8.7-FIN-UI) ───────────────────── */
 
   /** Synthèse globale « Finances RepairDom » par mode (SIMULATION / REAL).

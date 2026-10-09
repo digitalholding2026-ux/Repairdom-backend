@@ -50,11 +50,31 @@ export class HealthController {
     };
   }
 
-  /* Routes de diagnostic TEMPORAIRES (chantier reset password) : publiques,
-   * sans auth, sans secret — noms et statuts uniquement. À SUPPRIMER au
-   * chantier suivant (voir docs/UX-BACKLOG.md). But : vérifier depuis la
-   * production (simple curl/navigateur) que la migration reset password est
-   * bien appliquée sur Railway, sans accès Postgres direct. */
+  /* ── Routes de diagnostic — CONSERVÉES DÉLIBÉRÉMENT ────────────────────
+   *
+   * Ces deux routes étaient marquées « À SUPPRIMER » depuis le chantier reset
+   * password. Elles sont MAINTENUES, et voici pourquoi : Railway applique les
+   * migrations via le `startCommand`, sans que personne ne puisse voir leur
+   * résultat de l'extérieur. Sans ces routes, la seule façon de savoir si une
+   * migration est passée en production est d'ouvrir un tunnel vers Postgres.
+   *
+   * Ce qu'elles répondent, et ce qu'elles ne répondent PAS :
+   *   • `GET /api/health/db`       → les NOMS de colonnes attendues sur
+   *                                   `User` et leur présence, rien d'autre ;
+   *   • `GET /api/health/migrations` → le NOM et le STATUT de chaque migration
+   *                                   dans `_prisma_migrations`, rien d'autre.
+   *
+   * Aucune valeur, aucun contenu de ligne, aucune clé, aucun secret. C'est ce
+   * qui les rend diagnosticables sans être exploitables : elles disent QUELLE
+   * migration a échoué, jamais CE QU'ELLE contient.
+   *
+   * ⚠️ SI LE PRODUIT INSTALLE UN JOUR UN RÉFÉRENTIEL UTILISATEUR, ces routes
+   * deviendront une fuite d'infrastructure et devront être retirées à ce
+   * moment-là — pas avant. Tant que le seul risque est « un attaquant apprend
+   * qu'une migration a échoué », le coût de les garder est nul et leur
+   * valeur opérationnelle est réelle : c'est le seul moyen de vérifier une
+   * migration depuis un navigateur.
+   */
 
   /** Colonnes reset password réellement présentes sur "User". */
   @Get('db')

@@ -9,15 +9,23 @@ clients et techniciens locaux.
 
 ## Prérequis
 
-- Node.js >= 22
+- **Node.js >= 22** (la version est épinglée dans `.nvmrc` : `nvm use`)
 - PostgreSQL local (ou une base distante comme Railway)
 - npm ou pnpm
+
+> Pourquoi 22 : `package.json` déclare `engines.node >= 22`, et la suite de
+> tests s'appuie sur le runner `.ts` de Vitest avec les chemins `tsconfig`
+> résolus nativement.
 
 ## Installation
 
 ```bash
+nvm use            # lit .nvmrc → Node 22
 npm install        # ou : pnpm install
 cp .env.example .env   # puis renseigner DATABASE_URL
+
+# Installation reproductible (CI, nouveau poste) :
+npm ci            # doit passer : le package-lock.json est à jour
 ```
 
 ## Configuration
