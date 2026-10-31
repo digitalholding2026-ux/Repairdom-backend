@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from './../auth/auth.module.js';
 import { FinancialModule } from './../financial/financial.module.js';
-import { DispatchModule } from './../dispatch/dispatch.module.js';
-import { TechnicianModule } from './../technician/technician.module.js';
 import { DisputesModule } from './../disputes/disputes.module.js';
 import { RealtimeModule } from './../realtime/realtime.module.js';
 import { RewardsModule } from './../rewards/rewards.module.js';
@@ -12,6 +10,8 @@ import { DemandesService } from './demandes.service.js';
 import { DemandeDraftController } from './demande-draft.controller.js';
 import { DemandeDraftService } from './demande-draft.service.js';
 import { DraftThrottleGuard } from './demande-draft-throttle.guard.js';
+import { DemandeMediaService } from './demande-media.service.js';
+import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
 
 /* `RewardsModule` et `ReferralsModule` sont importés ici (et UNIQUEMENT ici)
  * pour câbler, sur la confirmation de mission, le comptage des récompenses et
@@ -34,8 +34,8 @@ import { DraftThrottleGuard } from './demande-draft-throttle.guard.js';
  * `DemandesService` n'est pas exporté : le contrôleur de brouillon vit dans
  * le même module et l'utilise en provider local, donc rien ne sort. */
 @Module({
-  imports: [AuthModule, FinancialModule, DispatchModule, TechnicianModule, DisputesModule, RealtimeModule, RewardsModule, ReferralsModule],
+  imports: [AuthModule, FinancialModule, DisputesModule, RealtimeModule, RewardsModule, ReferralsModule],
   controllers: [DemandesController, DemandeDraftController],
-  providers: [DemandesService, DemandeDraftService, DraftThrottleGuard],
+  providers: [DemandesService, DemandeDraftService, DraftThrottleGuard, DemandeMediaService, SupabaseStorageService],
 })
 export class DemandesModule {}

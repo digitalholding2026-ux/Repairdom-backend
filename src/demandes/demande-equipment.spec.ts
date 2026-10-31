@@ -77,14 +77,12 @@ function mockPrisma() {
       findUnique: vi.fn(async ({ where }: { where: { code: string } }) => FAMILIES[where.code] ?? null),
     },
   };
-  const dispatch = { dispatchWave1: vi.fn(async () => undefined) };
   const service = new DemandesService(
     prisma as never,
     {} as never,
-    dispatch as never,
     { isConfirmationBlocked: vi.fn(async () => false) } as never,
   );
-  return { service, inputs, dispatch };
+  return { service, inputs };
 }
 
 describe('DTO — equipmentFamily borné (code structuré)', () => {
@@ -169,14 +167,6 @@ describe('DemandesService.create — indice structuré si Autre sans domaine', (
     expect(result.equipmentFamily).toBeNull();
   });
 
-  it('dispatch en panne → demande créée quand même (non bloquant)', async () => {
-    const { service } = mockPrisma();
-    (service as unknown as { dispatch: { dispatchWave1: unknown } }).dispatch = {
-      dispatchWave1: vi.fn(async () => Promise.reject(new Error('dispatch down'))),
-    };
-    const result = await service.create('c-1', dto({ equipmentFamily: 'GAME_CONSOLE' }) as never);
-    expect(result.id).toBe('d-1');
-  });
 });
 
 describe('toApiDemande — indice exposé, texte historique conservé', () => {

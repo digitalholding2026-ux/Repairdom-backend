@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
-import { TechnicianModule } from '../technician/technician.module.js';
 import { DisputesModule } from '../disputes/disputes.module.js';
 // Chantier #5A : canaux de la décision KYC (SSE + push web).
 // `AuthModule` exporte déjà `EmailService`. `RealtimeModule` et
@@ -14,10 +13,11 @@ import { CatalogController } from './catalog.controller.js';
 import { CatalogPublicController } from './catalog-public.controller.js';
 import { CityPublicController } from './city-public.controller.js';
 import { CatalogService } from './catalog.service.js';
+import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
 
 @Module({
-  imports: [AuthModule, TechnicianModule, DisputesModule, RealtimeModule, PushModule],
+  imports: [AuthModule, DisputesModule, RealtimeModule, PushModule],
   controllers: [AdminController, CatalogController, CatalogPublicController, CityPublicController],
-  providers: [AdminService, CatalogService],
+  providers: [AdminService, CatalogService, SupabaseStorageService],
 })
 export class AdminModule {}

@@ -224,7 +224,6 @@ function mockWorld(seed: { demandes?: Row[]; disputes?: Row[]; holds?: Row[] } =
   const demandesService = new DemandesService(
     prisma as unknown as PrismaService,
     financial,
-    {} as never,
     disputes,
   );
   return { prisma, tx, financial, disputes, demandesService, store: { demandes, disputes: disputeRows, holds, events, notifications, ledger } };

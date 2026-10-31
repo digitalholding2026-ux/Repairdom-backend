@@ -159,13 +159,12 @@ function mockPrisma() {
     serviceCity: { findMany: vi.fn(async () => []) },
     zone: { findMany: vi.fn(async () => []) },
   };
-  const dispatch = { dispatchWave1: vi.fn(async () => undefined) };
-  return { prisma, dispatch, created, tx };
+  return { prisma, created, tx };
 }
 
-function demandesService(prisma: unknown, dispatch: unknown) {
+function demandesService(prisma: unknown) {
   const disputes = { isConfirmationBlocked: vi.fn(async () => false) };
-  return new DemandesService(prisma as never, {} as never, dispatch as never, disputes as never);
+  return new DemandesService(prisma as never, {} as never, disputes as never);
 }
 
 describe('DemandesService.create — multimédia sans texte', () => {
@@ -188,15 +187,15 @@ describe('DemandesService.create — multimédia sans texte', () => {
    * tests doivent être réactivés (retirer `.skip`) et le service rendu
    * tolérant, dans le même commit. */
   it.skip('ni texte ni média → 400 explicite (état inatteignable via HTTP : description obligatoire)', async () => {
-    const { prisma, dispatch } = mockPrisma();
+    const { prisma } = mockPrisma();
     await expect(
-      demandesService(prisma, dispatch).create('c-1', validDto() as never),
+      demandesService(prisma).create('c-1', validDto() as never),
     ).rejects.toMatchObject({ status: 400 });
   });
 
   it.skip('média seul → SUCCESS, description null, stored=true, chemin lié (état inatteignable via HTTP : description obligatoire)', async () => {
-    const { prisma, dispatch, created } = mockPrisma();
-    const result = await demandesService(prisma, dispatch).create(
+    const { prisma, created } = mockPrisma();
+    const result = await demandesService(prisma).create(
       'c-1',
       validDto({
         medias: [
@@ -216,8 +215,8 @@ describe('DemandesService.create — multimédia sans texte', () => {
   });
 
   it('texte seul → SUCCESS (compatibilité historique)', async () => {
-    const { prisma, dispatch } = mockPrisma();
-    const result = await demandesService(prisma, dispatch).create(
+    const { prisma } = mockPrisma();
+    const result = await demandesService(prisma).create(
       'c-1',
       validDto({ description: 'Le robinet de la cuisine fuit en continu.' }) as never,
     );

@@ -104,7 +104,6 @@ function harness(overrides: Row = {}, referralsImpl?: () => Promise<boolean>) {
   const service = new DemandesService(
     prisma,
     financial as never,
-    { dispatchWave1: vi.fn() } as never,
     { isConfirmationBlocked: vi.fn(async () => false) } as never,
     undefined,
     rewards as never,
@@ -186,7 +185,6 @@ describe('DemandesService.updateStatus — câblage parrainage (chantier 4B)', (
         notification: { create: async () => ({ id: 'n1' }) },
       }) } as never,
       { settleMissionAtConfirmation: vi.fn(), releaseMissionHoldIfAny: vi.fn(), reverseClientDebitIfAny: vi.fn() } as never,
-      { dispatchWave1: vi.fn() } as never,
       { isConfirmationBlocked: vi.fn(async () => true) } as never,
       undefined,
       undefined,
@@ -212,7 +210,6 @@ describe('DemandesService.updateStatus — câblage parrainage (chantier 4B)', (
         notification: { create: async () => ({ id: 'n1' }) },
       }) } as never,
       { settleMissionAtConfirmation: vi.fn(), releaseMissionHoldIfAny: vi.fn(), reverseClientDebitIfAny: vi.fn() } as never,
-      { dispatchWave1: vi.fn() } as never,
       { isConfirmationBlocked: vi.fn(async () => false) } as never,
     );
 

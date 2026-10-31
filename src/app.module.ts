@@ -5,7 +5,6 @@ import { HealthModule } from './health/health.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { DemandesModule } from './demandes/demandes.module.js';
-import { TechnicianModule } from './technician/technician.module.js';
 import { CollaborationModule } from './collaboration/collaboration.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { ReviewsModule } from './reviews/reviews.module.js';
@@ -30,7 +29,6 @@ import { ReferralsModule } from './referrals/referrals.module.js';
     HealthModule,
     AuthModule,
     DemandesModule,
-    TechnicianModule,
     CollaborationModule,
     AdminModule,
     ReviewsModule,

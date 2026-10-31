@@ -289,7 +289,6 @@ function mockWorld(seed: { demandes?: Row[]; quotes?: Row[]; ledger?: Row[] } = 
   const demandesService = new DemandesService(
     prisma as unknown as PrismaService,
     financial,
-    {} as never,
     { isConfirmationBlocked: vi.fn(async () => false) } as never,
   );
   const clientUser = { id: 'c1', role: 'CLIENT' } as const;

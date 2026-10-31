@@ -7,7 +7,6 @@ import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js'
 import { assertTransition } from './demandes-lifecycle.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { DisputesService } from '../disputes/disputes.service.js';
-import { DispatchService } from '../dispatch/dispatch.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
 import { RewardsService } from '../rewards/rewards.service.js';
@@ -70,7 +69,6 @@ export class DemandesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly financial: FinancialService,
-    private readonly dispatch: DispatchService,
     private readonly disputes: DisputesService,
     // Temps réel (socle SSE) : injection optionnelle (tests sans module).
     private readonly realtime?: RealtimeService,
@@ -194,19 +192,6 @@ export class DemandesService {
 
           return created;
         });
-
-        // Sprint DISPATCH-V1 — vague 1 APRÈS commit créateur : un échec du
-        // dispatch (vague, notification, e-mail) ne doit JAMAIS annuler ni
-        // casser la création de la demande (tracé, poursuite en vague 2).
-        try {
-          await this.dispatch.dispatchWave1(demande.id);
-        } catch (error) {
-          this.logger.error(
-            `Dispatch vague 1 impossible pour ${demande.id} : ${
-              error instanceof Error ? error.message : 'erreur inconnue'
-            }.`,
-          );
-        }
 
         return toApiDemande(this.withTechnician(demande));
       } catch (error) {
