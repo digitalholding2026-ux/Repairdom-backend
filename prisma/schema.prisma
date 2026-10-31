@@ -9,7 +9,6 @@ datasource db {
 
 enum Role {
   CLIENT
-  TECHNICIAN
   ADMIN
 }
 
@@ -251,46 +250,6 @@ enum FundsHoldStatus {
   CONSUMED
 }
 
-enum KycStatus {
-  NOT_SUBMITTED
-  PENDING
-  VERIFIED
-  REJECTED
-}
-
-enum KycDocumentType {
-  IDENTITY
-  PROFESSIONAL
-}
-
-// Nature de la pièce d'identité déclarée par le technicien. Stockée au
-// niveau du PROFIL (une seule identité par technicien) et non du document :
-// le type de pièce est un attribut de la personne, pas du fichier uploadé.
-// Le recto/verso, lui, est porté par `KycDocument.side` (un document = une
-// ligne). `PASSPORT` n'a pas de verso : le parcours ne le demande pas.
-enum KycIdentityDocumentType {
-  NATIONAL_ID_CARD
-  PASSPORT
-}
-
-// Face du document. `SINGLE` reste la valeur par défaut : les documents
-// historiques et la preuve professionnelle (facultative) n'ont qu'une face.
-enum KycDocumentSide {
-  RECTO
-  VERSO
-  SINGLE
-}
-
-// Mode d'activité professionnelle du technicien. Structuré (jamais du texte
-// libre) pour être lisible par le backoffice et restitué tel quel au client
-// dans le profil public. `OTHER` couvre tout statut pertinent non listé.
-enum TechnicianActivityType {
-  FREELANCE
-  SALARIED
-  COMPANY
-  OTHER
-}
-
 model User {
   id                           String                 @id @default(dbgenerated("gen_random_uuid()"))
   role                         Role                   @default(CLIENT)
@@ -334,11 +293,6 @@ model User {
   createdAt                    DateTime               @default(now())
   updatedAt                    DateTime               @updatedAt
   demandes                     Demande[]              @relation("ClientDemandes")
-  technicianDemandes           Demande[]              @relation("TechnicianDemandes")
-  technicianProfile            TechnicianProfile?
-  kycDocuments                 KycDocument[]
-  kycReviewsMade               KycReview[]            @relation("KycReviewReviewer")
-  kycReviews                   KycReview[]            @relation("KycReviewTechnician")
   messages                     Message[]
   diagnostics                  Diagnostic[]
   quotes                       Quote[]
@@ -356,7 +310,6 @@ model User {
   pricingHistories             PricingHistory[]       @relation("PricingHistoryAuthor")
   demandeEvents                DemandeEvent[]
   notifications                Notification[]
-  dispatchWaves                DispatchWave[]
   financialTransactions        FinancialTransaction[] @relation("FinancialTransactionOwner")
   financialTransactionsCreated FinancialTransaction[] @relation("FinancialTransactionCreator")
   relioWithdrawals             RelioWithdrawal[]      @relation("RelioWithdrawalRequester")
@@ -379,14 +332,6 @@ model User {
   clientRewardProgress         ClientRewardProgress?
   rewardFraudFlags             RewardFraudFlag[]      @relation("RewardFraudFlagClient")
   rewardFraudFlagsAsTechnician RewardFraudFlag[]      @relation("RewardFraudFlagTechnician")
-  // Chantier 4B — parrainage client. `referralCode` est le code PERSONNEL du
-  // client, généré à la première demande (jamais à l'inscription : un compte
-  // qui n'a jamais parrainé n'a pas besoin de code en base). `referralsMade` /
-  // `referralReceived` sont deux relations NOMMÉES : un compte peut être
-  // parrain ET filleul, et Prisma doit savoir laquelle des deux il occupe.
-  referralCode                 String?               @unique
-  referralsMade                Referral[]            @relation("ReferralReferrer")
-  referralReceived             Referral?             @relation("ReferralReferred")
 }
 
 // Chantier #4A — PROGRESSION DU PROGRAMME DE RÉCOMPENSES (cumulatif à vie,
@@ -521,7 +466,6 @@ model ServiceCity {
   // chaînes textuelles historiques (User.city / Demande.city restent intactes).
   zones       Zone[]              @relation("CityZones")
   clients     User[]              @relation("CityClients")
-  technicians TechnicianProfile[] @relation("CityTechnicians")
   demandes    Demande[]           @relation("CityDemandes")
 }
 
@@ -540,7 +484,6 @@ model Zone {
   updatedAt DateTime @updatedAt
 
   city      ServiceCity              @relation("CityZones", fields: [cityId], references: [id], onDelete: Cascade)
-  coverages TechnicianZoneCoverage[]
   // Sprint 8.8.2 — rattachement structuré optionnel des demandes à une zone.
   // Nullable + SetNull : les demandes historiques restent lisibles avec
   // `zoneId = null`, aucun backfill depuis `neighborhood` (texte conservé).
@@ -549,24 +492,6 @@ model Zone {
   @@unique([cityId, slug])
   @@index([cityId])
   @@index([isActive])
-}
-
-// Sprint 8.7 — Couverture géographique d'un technicien (N ↔ N).
-// Un technicien couvre plusieurs zones ; une zone peut être couverte par
-// plusieurs techniciens. Table de jointure explicite : le matching
-// géographique s'appuiera dessus dans un sprint dédié (celui-ci ne fait que
-// poser la structure, sans toucher au matching textuel existant).
-model TechnicianZoneCoverage {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()"))
-  technicianProfileId String
-  zoneId              String
-  createdAt           DateTime @default(now())
-
-  technicianProfile TechnicianProfile @relation(fields: [technicianProfileId], references: [id], onDelete: Cascade)
-  zone              Zone              @relation(fields: [zoneId], references: [id], onDelete: Cascade)
-
-  @@unique([technicianProfileId, zoneId])
-  @@index([zoneId])
 }
 
 model Demande {
@@ -630,8 +555,6 @@ model Demande {
   technicianArrivedAt     DateTime?
   client                  User                   @relation("ClientDemandes", fields: [clientId], references: [id], onDelete: Cascade)
   clientId                String
-  technician              User?                  @relation("TechnicianDemandes", fields: [technicianId], references: [id], onDelete: SetNull)
-  technicianId            String?
   scheduledAt             DateTime?
   requestedMode           RequestTiming          @default(ASAP)
   requestedAt             DateTime?
@@ -667,7 +590,6 @@ model Demande {
   dispute                 DemandeDispute?
   events                  DemandeEvent[]
   notifications           Notification[]
-  dispatchWaves           DispatchWave[]
   financialTransactions   FinancialTransaction[]
   fundsHolds              FundsHold[]
   // Chantier #4A : signalement anti-fraude portant sur CETTE mission
@@ -677,7 +599,6 @@ model Demande {
   updatedAt               DateTime               @updatedAt
 
   @@index([clientId])
-  @@index([technicianId])
   @@index([status])
   @@index([zoneId])
   @@index([domainId])
@@ -785,129 +706,6 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, readAt])
-}
-
-// Sprint DISPATCH-V1 — suivi des vagues de dispatch (dispatch intelligent).
-//
-// Une ligne = un technicien contacté pour une demande, une vague, un canal.
-// Source de vérité anti-doublon : @@unique([demandeId, wave, userId, channel])
-// (idempotence face aux redémarrages, doubles exécutions scheduler et
-// relances accidentelles).
-// ON DELETE CASCADE des deux côtés : la suppression d'une demande ou d'un
-// compte efface ses traces de dispatch, sans jamais bloquer (aucun Restrict).
-// `channel` reste un texte ('IN_APP' / 'EMAIL') : WhatsApp/SMS hors périmètre
-// V1, aucun nouveau type tant qu'ils ne sont pas décidés.
-// `sentAt` = heure d'envoi effective (référence des +10 minutes vers vague 2).
-model DispatchWave {
-  id        String   @id @default(dbgenerated("gen_random_uuid()"))
-  demandeId String
-  userId    String
-  wave      Int
-  channel   String
-  sentAt    DateTime @default(now())
-  createdAt DateTime @default(now())
-
-  demande Demande @relation(fields: [demandeId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([demandeId, wave, userId, channel])
-  @@index([demandeId, wave])
-  @@index([wave, sentAt])
-}
-
-model TechnicianProfile {
-  id                 String                   @id @default(dbgenerated("gen_random_uuid()"))
-  userId             String                   @unique
-  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  // Sprint 8.7 — `city` texte libre conservé (donnée existante/affichable) ;
-  // `cityId` référence structurée nullable. `zoneCoverages` = couverture N↔N.
-  city               String
-  cityId             String?
-  cityRef            ServiceCity?             @relation("CityTechnicians", fields: [cityId], references: [id], onDelete: SetNull)
-  categories         String[]
-  isAvailable        Boolean                  @default(false)
-  avatarUrl          String?
-  bio                String?
-  experience         String?
-  serviceDescription String?
-  specialties        String[]                 @default([])
-  // ── Chantier « Profil technicien complet + KYC dédié » ──────────────
-  // Activité professionnelle : structurée (voir TechnicianActivityType),
-  // jamais du texte libre. Nullable pour ne pas casser les profils existants.
-  activityType       TechnicianActivityType?
-  // Expérience : nombre d'ANNÉES (structuré). Le champ texte historique
-  // `experience` est conservé tel quel pour l'historique et l'affichage
-  // libre ; `experienceYears` est la valeur exploitable/filtrable.
-  experienceYears    Int?
-  // Compétences par famille d'équipement structurée (§8) : codes de
-  // `EquipmentFamily`. Complète `categories` ( Matching grossier, 7
-  // valeurs) SANS le remplacer : le dispatch utilise toujours `category`,
-  // puis affine par famille quand le client en a choisi une.
-  // Convention de compatibilité (comme `zoneCoverages` vide) : un tableau
-  // VIDE = pas de préférence déclarée, le filtrage famille ne s'applique
-  // pas. Un tableau NON VIDE = filtrage strict sur ces codes.
-  familyCodes        String[]                 @default([])
-  // ── KYC : identité (page dédiée /technicien/kyc) ───────────────────
-  // Date de naissance : source de vérité du contrôle de majorité (18 ans).
-  // Nullable le temps que les techniciens existants la renseignent.
-  birthDate          DateTime?                @db.Date
-  // Nationalité : code ISO 3166-1 alpha-2 en MAJUSCULES (ex. « CM »).
-  // Structuré, jamais du texte libre.
-  nationality        String?
-  // Nature de la pièce d'identité déclarée (voir KycIdentityDocumentType).
-  kycIdentityDocType KycIdentityDocumentType?
-  // ────────────────────────────────────────────────────────────────────
-  kycStatus          KycStatus                @default(NOT_SUBMITTED)
-  kycRejectionReason String?
-  // GPS V1 — dernière position connue transmise explicitement par le
-  // technicien (pas d'historique, pas de tracking). Nullable : aucune
-  // position tant que le technicien ne l'a jamais envoyée.
-  // `locationUpdatedAt` = horodatage de la dernière transmission (distinct
-  // de `updatedAt` qui suit toute modification du profil).
-  lastLatitude       Float?
-  lastLongitude      Float?
-  locationUpdatedAt  DateTime?
-  createdAt          DateTime                 @default(now())
-  updatedAt          DateTime                 @updatedAt
-  zoneCoverages      TechnicianZoneCoverage[]
-}
-
-model KycDocument {
-  id           String          @id @default(dbgenerated("gen_random_uuid()"))
-  technicianId String
-  type         KycDocumentType
-  // Face du document : une CNI produit deux lignes (RECTO + VERSO), un
-  // passeport et la preuve professionnelle en produisent une (SINGLE).
-  // `SINGLE` par défaut : les documents existants restent valides.
-  side         KycDocumentSide @default(SINGLE)
-  storagePath  String
-  originalName String
-  mimeType     String
-  size         Int
-  createdAt    DateTime        @default(now())
-
-  technician User @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-
-  // Une seule pièce par (technicien, type, face) : repasser un recto
-  // remplace le précédent côté service au lieu d'empiler les versions.
-  @@unique([technicianId, type, side])
-  @@index([technicianId])
-}
-
-model KycReview {
-  id             String    @id @default(dbgenerated("gen_random_uuid()"))
-  technicianId   String
-  reviewerId     String
-  previousStatus KycStatus
-  newStatus      KycStatus
-  reason         String?
-  createdAt      DateTime  @default(now())
-
-  technician User @relation("KycReviewTechnician", fields: [technicianId], references: [id], onDelete: Cascade)
-  reviewer   User @relation("KycReviewReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
-
-  @@index([technicianId])
-  @@index([reviewerId])
 }
 
 // Reset password — journal des demandes (rate-limiting en base, sans
@@ -1750,64 +1548,4 @@ model FundsHold {
   @@index([userId, status])
   @@index([demandeId])
   @@index([mode, status])
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Chantier 4B — PARRAINAGE CLIENT
-//
-// Un client partage un lien (`?ref=RELIO-XXXXX`). Son inscription lie un
-// `Referral` en `REGISTERED`. La récompense (500 FCFA chacun) n'est versée
-// qu'à la PREMIÈRE mission `CONFIRMED` du filleul — jamais à l'inscription,
-// ce qui rendrait le parrainage trivial à exploiter (créer un compte, gagner
-// 1 000 FCFA, supprimer le compte).
-//
-// COHÉRENCE ET DURABILITÉ :
-//   - `referredId` est UNIQUE : un client ne peut avoir qu'un parrain. Un
-//     `onDelete: SetNull` conserve la ligne si le filleul est supprimé —
-//     l'historique de la récompense versée au parrain ne doit pas disparaître
-//     avec le compte du filleul.
-//   - `referrerId` est en `Cascade` : les parrainages d'un compte supprimé
-//     n'ont plus de sens.
-//   - `code` est UNIQUE et porte le code UTILISÉ, pas le code du parrain
-//     courant : si le parrain change un jour de code, l'historique reste
-//     lisible.
-//   - `referredEmail` est l'email pré-rempli par le parrain. Il n'est jamais
-//     lu par le backend pour notifier qui que ce soit : la notification part
-//     au `referredId`, une fois le compte réellement créé.
-//
-// MONTANTS : ce modèle ne stocke AUCUN montant. La récompense est un
-// montant du barème (`referrals.config.ts`), et le versement est une écriture
-// de ledger — donc le ledger reste la seule source de vérité financière, comme
-// pour le programme de récompenses.
-model Referral {
-  id            String         @id @default(dbgenerated("gen_random_uuid()"))
-  referrerId    String
-  referrer      User           @relation("ReferralReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
-  // UNIQUE : un client ne peut être filleul que d'un seul parrain.
-  referredId    String?        @unique
-  referred      User?          @relation("ReferralReferred", fields: [referredId], references: [id], onDelete: SetNull)
-  // Code UTILISÉ par le filleul (RELIO-XXXXX), pas le code courant du
-  // parrain : l'historique reste lisible même si le code change un jour.
-  code          String         @unique
-  // Email pré-rempli par le parrain à l'invitation (facultatif). Valeur
-  // informative : elle n'authorise aucun envoi.
-  referredEmail String?
-  status        ReferralStatus @default(PENDING)
-  rewardedAt    DateTime?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-
-  @@index([referrerId])
-  @@index([status])
-}
-
-// `PENDING` : lien partagé / invitation créée, filleul pas encore inscrit.
-// `REGISTERED` : filleul inscrit, on attend sa première mission CONFIRMED.
-// `REWARDED` : récompense versée (écritures ledger créées).
-// `EXPIRED` : parrain à la limite de 5 filleuls, ou lien annulé.
-enum ReferralStatus {
-  PENDING
-  REGISTERED
-  REWARDED
-  EXPIRED
 }
