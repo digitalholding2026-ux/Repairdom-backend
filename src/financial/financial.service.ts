@@ -2177,9 +2177,9 @@ export class FinancialService {
       select: { id: true, role: true },
     });
     if (!target) throw new NotFoundException('Utilisateur introuvable.');
-    if (target.role !== 'CLIENT' && target.role !== 'TECHNICIAN') {
+    if (target.role !== 'CLIENT') {
       throw new BadRequestException(
-        'Les retraits sont réservés aux comptes clients et techniciens.',
+        'Les retraits sont réservés aux comptes clients.',
       );
     }
     const network = options.network ?? null;
@@ -2326,7 +2326,7 @@ export class FinancialService {
         select: { id: true, role: true },
       });
       if (!owner) throw new NotFoundException('Utilisateur introuvable.');
-      const type = owner.role === 'TECHNICIAN' ? 'TECHNICIAN_WITHDRAWAL' : 'CLIENT_WITHDRAWAL';
+      const type = 'CLIENT_WITHDRAWAL';
       await this.lockUserFunds(tx, request.userId);
       /* Option A : le débit suit le NET demandé (= montant du hold, = montant
        * réellement reçu par le bénéficiaire). Voir le commentaire de la

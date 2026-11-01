@@ -15,14 +15,6 @@ export class TrackingService {
         brand: { select: { name: true, slug: true } },
         model: { select: { name: true, slug: true } },
         problem: { select: { name: true, slug: true } },
-        technician: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            technicianProfile: { select: { kycStatus: true } },
-          },
-        },
         events: {
           orderBy: { createdAt: 'asc' },
           take: 50,
@@ -50,16 +42,9 @@ export class TrackingService {
     brand: { name: string; slug: string } | null;
     model: { name: string; slug: string } | null;
     problem: { name: string; slug: string } | null;
-    technician: {
-      id: string;
-      firstName: string;
-      lastName: string | null;
-      technicianProfile: { kycStatus: string } | null;
-    } | null;
     events: { type: string; createdAt: Date }[];
   }) {
     const status = demande.status;
-    const technicianAssigned = demande.technician !== null;
 
     return {
       reference: demande.reference,
@@ -85,17 +70,17 @@ export class TrackingService {
       },
       scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
       submittedAt: demande.createdAt.toISOString(),
-      technicianAssigned,
-      technicianVerified:
-        demande.technician?.technicianProfile?.kycStatus === 'VERIFIED',
       // Sprint 8.3 : chronologie publique sécurisée. Aucun identifiant, nom,
       // adresse, téléphone ou montant n'est exposé : uniquement le type de
       // l'événement, son libellé et sa date.
+      // v2 : aucun technicien n'est assigné ; ces deux champs restent exposés
+      // (contrat public inchangé) et valent toujours false.
+      technicianAssigned: false,
+      technicianVerified: false,
       timeline: this.buildTimeline({
         status,
         createdAt: demande.createdAt,
         scheduledAt: demande.scheduledAt,
-        technicianAssigned,
         events: demande.events,
       }),
     };
@@ -109,7 +94,6 @@ export class TrackingService {
     status: string;
     createdAt: Date;
     scheduledAt: Date | null;
-    technicianAssigned: boolean;
     events: { type: string; createdAt: Date }[];
   }) {
     if (input.events.length > 0) {
@@ -123,13 +107,6 @@ export class TrackingService {
     const timeline: { type: string; label: string; date: string | null }[] = [
       { type: 'CREATED', label: eventLabel('CREATED'), date: input.createdAt.toISOString() },
     ];
-    if (input.technicianAssigned && input.status !== 'CANCELED') {
-      timeline.push({
-        type: 'TECHNICIAN_ACCEPTED',
-        label: eventLabel('TECHNICIAN_ACCEPTED'),
-        date: null,
-      });
-    }
     if (input.scheduledAt) {
       timeline.push({
         type: 'SCHEDULED',

@@ -2144,7 +2144,6 @@ export class CatalogService {
         zones: await this.prisma.zone.count({ where: { cityId: id } }),
         demandes: await this.prisma.demande.count({ where: { cityId: id } }),
         comptes: await this.prisma.user.count({ where: { cityId: id } }),
-        techniciens: await this.prisma.technicianProfile.count({ where: { cityId: id } }),
       }),
       hardDelete: () => this.prisma.serviceCity.delete({ where: { id } }),
       deactivate: () => this.prisma.serviceCity.update({ where: { id }, data: { isActive: false } }),
@@ -2158,7 +2157,6 @@ export class CatalogService {
       notFoundMessage: 'Zone introuvable.',
       find: () => this.prisma.zone.findUnique({ where: { id } }),
       countBlockers: async () => ({
-        couvertures: await this.prisma.technicianZoneCoverage.count({ where: { zoneId: id } }),
         demandes: await this.prisma.demande.count({ where: { zoneId: id } }),
       }),
       hardDelete: () => this.prisma.zone.delete({ where: { id } }),

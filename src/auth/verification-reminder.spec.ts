@@ -145,7 +145,8 @@ describe('VerificationReminderScheduler — sélection', () => {
     const where = (state.findManyCalls[0] as any).where;
     expect(where.emailVerified).toBe(false);
     expect(where.isActive).toBe(true);
-    expect(where.role).toEqual({ in: ['CLIENT', 'TECHNICIAN'] });
+    // v2 : seuls les comptes clients sont créés par l'inscription publique.
+    expect(where.role).toBe('CLIENT');
   });
 
   it('couvre les trois fenêtres dans une seule requête', async () => {

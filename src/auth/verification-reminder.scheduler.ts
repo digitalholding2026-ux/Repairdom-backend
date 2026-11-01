@@ -133,7 +133,7 @@ export class VerificationReminderScheduler implements OnModuleInit, OnModuleDest
            * recevoir d'e-mail. */
           emailVerified: false,
           isActive: true,
-          role: { in: ['CLIENT', 'TECHNICIAN'] },
+          role: 'CLIENT',
           /* Plafond global, en plus du `count` exact vérifié plus bas. */
           verificationReminderCount: { lt: MAX_VERIFICATION_REMINDERS },
           /* `null` (jamais relancé) ou ancien de plus de 20 h. */

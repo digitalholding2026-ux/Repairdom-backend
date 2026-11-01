@@ -125,10 +125,10 @@ describe('register — validation métier', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it('technicien sans téléphone/ville/catégories → 400', async () => {
+  it('client sans ville → 400 (v2 : inscription client uniquement)', async () => {
     const { service } = authService();
     await expect(
-      service.register({ role: 'TECHNICIAN', firstName: 'T', email: 't@x.y', password: 'S3cret!pass' } as never),
+      service.register({ firstName: 'T', lastName: 'U', email: 't@x.y', password: 'S3cret!pass' } as never),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -238,16 +238,16 @@ describe('login — identifiants, état du compte, vérification', () => {
     });
   });
 
-  it('client non vérifié → 401 ; technicien non vérifié → OK', async () => {
+  it('client non vérifié → 401 ; client vérifié → session', async () => {
     const hash = await hashPassword('secret123');
     const unverified = { ...BASE_USER, emailVerified: false };
     const { service } = authService([unverified], hash);
     await expect(service.login({ email: 'awa@example.com', password: 'secret123' } as never)).rejects.toMatchObject({
       status: 401,
     });
-    const tech = authService([{ ...unverified, id: 't-1', role: 'TECHNICIAN' }], hash);
-    const result = await tech.service.login({ email: 'awa@example.com', password: 'secret123' } as never);
-    expect(result.role).toBe('TECHNICIAN');
+    const verified = authService([{ ...unverified, emailVerified: true }], hash);
+    const result = await verified.service.login({ email: 'awa@example.com', password: 'secret123' } as never);
+    expect(result.role).toBe('CLIENT');
   });
 });
 

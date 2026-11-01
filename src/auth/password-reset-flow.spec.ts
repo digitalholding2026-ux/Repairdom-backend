@@ -89,7 +89,6 @@ const fakePrisma = {
       return { ...row };
     }),
   },
-  technicianProfile: { create: vi.fn(async ({ data }: any) => ({ id: 'tp-1', ...data })) },
   serviceCity: {
     findMany: vi.fn(async () => []),
     /* Chantier #5B — l'inscription d'un TECHNICIAN exige désormais une ville
@@ -130,7 +129,7 @@ const fakePrisma = {
     }),
   },
   $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
-    callback({ user: fakePrisma.user, technicianProfile: fakePrisma.technicianProfile }),
+    callback({ user: fakePrisma.user }),
   ),
 };
 
@@ -182,37 +181,37 @@ describe('flow HTTP : login → reset → login → dashboard', () => {
     const server = app.getHttpServer();
     const agent = request.agent(server);
 
-    // 1. Inscription technicien (vérifié d'office → session immédiate).
-    const registered = await agent
+    // 1. Inscription client + vérification e-mail → session immédiate.
+    await agent
       .post('/api/auth/register')
       .send({
-        firstName: 'Tech',
-        lastName: 'Nicien',
-        phone: '690000000',
-        email: 'tech@example.com',
+        firstName: 'Awa',
+        lastName: 'Diallo',
+        email: 'flow@example.com',
         password: 'OldPass123',
-        role: 'TECHNICIAN',
-        /* Chantier #5B : ville de référence structurée. Un texte libre ne
-         * rattache plus le compte au référentiel des villes. */
-        cityId: '11111111-1111-4111-8111-111111111111',
         city: 'Douala',
-        categories: ['plomberie'],
+        address: 'Rue 123',
       })
       .expect(201);
-    // H1 : le JWT posé au register porte tokenVersion = 0.
+    const created = [...store.values()].find((u) => u.email === 'flow@example.com');
+    const verified = await agent
+      .post('/api/auth/verify-email')
+      .send({ token: created?.emailVerificationToken })
+      .expect(200);
+    // H1 : le JWT posé à la vérification porte tokenVersion = 0.
     expect(
-      (jwt.decode(cookieValue(registered.headers['set-cookie'], 'repairdom_token') ?? '') as {
+      (jwt.decode(cookieValue(verified.headers['set-cookie'], 'repairdom_token') ?? '') as {
         tokenVersion?: unknown;
       } | null)?.tokenVersion,
     ).toBe(0);
 
-    // 2. Dashboard accessible : me → 200, JWT v0.
+    // 2. Dashboard accessible : me → 200.
     const me1 = await agent.get('/api/auth/me').expect(200);
-    expect(me1.body.email).toBe('tech@example.com');
+    expect(me1.body.email).toBe('flow@example.com');
 
     // 3. Reset : demande → token → reset.
-    await agent.post('/api/auth/forgot-password').send({ email: 'tech@example.com' }).expect(200);
-    const row = [...store.values()].find((u) => u.email === 'tech@example.com');
+    await agent.post('/api/auth/forgot-password').send({ email: 'flow@example.com' }).expect(200);
+    const row = [...store.values()].find((u) => u.email === 'flow@example.com');
     expect(typeof row?.passwordResetToken).toBe('string');
     const token = row?.passwordResetToken as string;
     await agent.get(`/api/auth/reset-password/${token}/validate`).expect(200, { valid: true });
@@ -229,7 +228,7 @@ describe('flow HTTP : login → reset → login → dashboard', () => {
     const fresh = request.agent(server);
     const login = await fresh
       .post('/api/auth/login')
-      .send({ email: 'tech@example.com', password: 'NewPass123' })
+      .send({ email: 'flow@example.com', password: 'NewPass123' })
       .expect(200);
     // H1 : le JWT posé au login post-reset porte tokenVersion = 1.
     expect(
@@ -238,12 +237,12 @@ describe('flow HTTP : login → reset → login → dashboard', () => {
       } | null)?.tokenVersion,
     ).toBe(1);
     const me2 = await fresh.get('/api/auth/me').expect(200);
-    expect(me2.body.email).toBe('tech@example.com');
+    expect(me2.body.email).toBe('flow@example.com');
 
     // 6. Ancien mot de passe refusé.
     await request(server)
       .post('/api/auth/login')
-      .send({ email: 'tech@example.com', password: 'OldPass123' })
+      .send({ email: 'flow@example.com', password: 'OldPass123' })
       .expect(401);
   });
 
@@ -259,7 +258,6 @@ describe('flow HTTP : login → reset → login → dashboard', () => {
         lastName: 'Diallo',
         email: 'awa@example.com',
         password: 'OldPass123',
-        role: 'CLIENT',
         city: 'Douala',
         address: 'Rue 123',
       })

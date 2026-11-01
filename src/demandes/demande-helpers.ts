@@ -88,7 +88,7 @@ export interface DemandeRecord {
   technicianEnRouteAt?: Date | null;
   technicianArrivedAt?: Date | null;
   clientId: string;
-  technicianId: string | null;
+  technicianId?: string | null;
   scheduledAt: Date | null;
   requestedMode: string;
   requestedAt: Date | null;
@@ -132,7 +132,7 @@ export function toApiDemande(demande: DemandeRecord) {
     // dans `toApiDemandePublic` (opportunités non assignées).
     latitude: demande.latitude ?? null,
     longitude: demande.longitude ?? null,
-    technicianId: demande.technicianId,
+    technicianId: demande.technicianId ?? null,
     technician: demande.technician ?? null,
     scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
     requestedMode: demande.requestedMode,

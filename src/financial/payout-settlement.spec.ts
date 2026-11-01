@@ -271,9 +271,9 @@ describe('SUCCESS : débit unique au charged constaté', () => {
   it('Option A : le débit ne rend jamais le solde négatif (10 000 nets sur 20 000)', async () => {
     const { prisma, store } = mockPrisma();
     const svc = service(prisma);
-    creditLedger(store, { userId: 't1', type: 'TECHNICIAN_REPAIR_REVENUE', direction: 'CREDIT', amount: 20000, reference: 'seed' });
-    const req = await svc.createWithdrawalRequest('t1', 't1', 10_000, { idempotencyKey: 'w-optA' });
-    // SasPay a débité le brut majoré et payé le net exact au technicien.
+    creditLedger(store, { userId: 'c1', type: 'CLIENT_TOPUP', direction: 'CREDIT', amount: 20000, reference: 'seed' });
+    const req = await svc.createWithdrawalRequest('c1', 'c1', 10_000, { idempotencyKey: 'w-optA' });
+    // SasPay a débité le brut majoré et payé le net exact au bénéficiaire.
     await svc.settleWithdrawalSuccess(req.reference, {
       saspayTransactionId: 'po-optA',
       fee: 363,
@@ -281,7 +281,7 @@ describe('SUCCESS : débit unique au charged constaté', () => {
       netAmount: 10_000,
       feeChargeMode: 'DEDUCTED',
     });
-    const balance = await svc.getBalance('t1', 'SIMULATION');
+    const balance = await svc.getBalance('c1', 'SIMULATION');
     expect(balance).toBe(10_000); // et non 20 000 − 10 363 = 9 637
   });
 
@@ -294,14 +294,15 @@ describe('SUCCESS : débit unique au charged constaté', () => {
     expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')[0].amount).toBe(5000);
   });
 
-  it('TECHNICIAN → TECHNICIAN_WITHDRAWAL (séparation des rôles)', async () => {
+  it('compte non-client → 400 (les retraits sont réservés aux clients)', async () => {
     const { prisma, store } = mockPrisma();
     const svc = service(prisma);
     creditLedger(store, { userId: 't1', type: 'TECHNICIAN_REPAIR_REVENUE', direction: 'CREDIT', amount: 30000, reference: 'seed' });
-    const req = await svc.createWithdrawalRequest('t1', 't1', 8000, { idempotencyKey: 'w-tech' });
-    await svc.settleWithdrawalSuccess(req.reference, { saspayTransactionId: 'po-4', chargedAmount: 8000, netAmount: 7850, fee: 150 });
-    expect(store.ledger.filter((t) => t.type === 'TECHNICIAN_WITHDRAWAL')).toHaveLength(1);
+    await expect(
+      svc.createWithdrawalRequest('t1', 't1', 8000, { idempotencyKey: 'w-tech' }),
+    ).rejects.toMatchObject({ status: 400 });
     expect(store.ledger.filter((t) => t.type === 'CLIENT_WITHDRAWAL')).toHaveLength(0);
+    expect(store.ledger.filter((t) => t.type === 'TECHNICIAN_WITHDRAWAL')).toHaveLength(0);
   });
 });
 

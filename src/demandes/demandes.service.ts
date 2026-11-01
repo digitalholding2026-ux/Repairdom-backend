@@ -10,7 +10,6 @@ import { DisputesService } from '../disputes/disputes.service.js';
 import { RealtimeService } from '../realtime/realtime.service.js';
 import { missionChannel } from '../realtime/realtime.types.js';
 import { RewardsService } from '../rewards/rewards.service.js';
-import { ReferralsService } from '../referrals/referrals.service.js';
 // Correctif boucle circulaire DISPATCH-V1 : les helpers purs vivent dans le
 // module feuille `./demande-helpers.js` (aucune dépendance de service).
 // Ré-exportés ici pour compatibilité des imports existants.
@@ -25,7 +24,6 @@ export {
   toApiDemandePublic,
   toApiTravelClient,
   toApiTravelMapClient,
-  toApiTravelTechnician,
 } from './demande-helpers.js';
 export type {
   DemandeCategory,
@@ -36,7 +34,6 @@ export type {
   TravelMapClientView,
   TravelTechnicianView,
 } from './demande-helpers.js';
-import type { DemandeMediaRow, DemandeRecord } from './demande-helpers.js';
 import { resolveRequestedAt, toApiDemande, toApiTravelClient, toApiTravelMapClient } from './demande-helpers.js';
 import {
   findCityMatches,
@@ -44,8 +41,6 @@ import {
   resolveGeoFromText,
 } from '../geo/city-reference.js';
 import {
-  buildNotification,
-  createNotification,
   eventTypeForStatus,
   recordEvent,
 } from '../mission-events/mission-events.js';
@@ -80,10 +75,6 @@ export class DemandesService {
      * Côté Nest la résolution est effective (`DemandesModule` importe
      * `RewardsModule`). */
     private readonly rewards?: RewardsService,
-    /* Chantier 4B — nullable pour la même raison que `rewards` : un module
-     * peut monter le service sans ce câblage (tests, assemblages partiels).
-     * L'appel est protégé par `?.` ET par un `try/catch`. */
-    private readonly referrals?: ReferralsService,
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
@@ -193,7 +184,7 @@ export class DemandesService {
           return created;
         });
 
-        return toApiDemande(this.withTechnician(demande));
+        return toApiDemande(demande);
       } catch (error) {
         // Collision sur la référence générée : on regénère une nouvelle référence.
         if ((error as { code?: string }).code === 'P2002') continue;
@@ -363,7 +354,7 @@ export class DemandesService {
       take: 100,
       include: this.clientInclude(),
     });
-    return demandes.map((demande) => toApiDemande(this.withTechnician(demande)));
+    return demandes.map((demande) => toApiDemande(demande));
   }
 
   async listForClientHistory(clientId: string) {
@@ -376,7 +367,7 @@ export class DemandesService {
       take: 100,
       include: this.clientInclude(),
     });
-    return demandes.map((demande) => toApiDemande(this.withTechnician(demande)));
+    return demandes.map((demande) => toApiDemande(demande));
   }
 
   async findForClient(clientId: string, id: string) {
@@ -391,7 +382,7 @@ export class DemandesService {
     // uniquement si déplacement actif ET position fraîche (jamais de
     // chiffres affichés côté UI). Réservé au détail (jamais les listes).
     return {
-      ...toApiDemande(this.withTechnician(demande)),
+      ...toApiDemande(demande),
       travel: toApiTravelClient(demande),
       travelMap: toApiTravelMapClient(demande),
     };
@@ -400,7 +391,6 @@ export class DemandesService {
   async updateStatus(clientId: string, id: string, dto: UpdateDemandeStatusDto) {
     // Capturés dans la transaction, diffusés après commit.
     let fromStatus: string | null = null;
-    let notifyTechnicianId: string | null = null;
     const result = await this.prisma.$transaction(async (tx) => {
       const current = await tx.demande.findFirst({
         where: { id, clientId },
@@ -441,16 +431,6 @@ export class DemandesService {
           toStatus: dto.status,
         });
 
-        if (type === 'CONFIRMED' && current.technicianId) {
-          await createNotification(tx, {
-            ...buildNotification('CONFIRMED', current.id, current.technicianId, 'TECHNICIAN'),
-            /* Montant final NET perçu par le technicien (devis + frais de
-             * transport, voir `finalAmount`). XAF entier : le frontend le
-             * formate en FCFA et l'affiche avant le paiement des revenus. */
-            metadata: { finalAmountXAF: current.finalAmount ?? null },
-          });
-          notifyTechnicianId = current.technicianId;
-        }
       }
 
       // Règle Relio (SASPAY-02) — règlement financier ATOMIQUE avec la
@@ -478,7 +458,7 @@ export class DemandesService {
         await this.financial.settleMissionAtConfirmation(tx, {
           demandeId: current.id,
           clientId,
-          technicianId: current.technicianId,
+          technicianId: null,
           createdById: clientId,
         });
       }
@@ -505,12 +485,6 @@ export class DemandesService {
       toStatus: dto.status,
       createdAt: new Date().toISOString(),
     });
-    if (notifyTechnicianId) {
-      this.realtime?.publishToUser(notifyTechnicianId, 'notification.created', {
-        demandeId: id,
-        kind: 'CONFIRMED',
-      });
-    }
 
     /* Chantier #4A — PROGRESSION DU PROGRAMME DE RÉCOMPENSES.
      *
@@ -534,34 +508,9 @@ export class DemandesService {
         );
       }
 
-      /* ── Chantier 4B — PARRAINAGE ────────────────────────────────────
-       *
-       * Même montage que les récompenses, même raison : la mission est
-       * CONFIRMÉE et RÉGLÉE, ce qui est un fait acquis. Une récompense de
-       * parrainage en échec ne doit ni faire échouer la confirmation, ni
-       * laisser croire que le règlement a échoué.
-       *
-       * L'ordre est délibéré : les récompenses d'abord (c'est le compte du
-       * client qui vient d'être crédité), le parrainage ensuite. Les deux
-       * écrivent au même ledger ; si le second échoue, le premier reste
-       * acquis et le rattrapage est manuel.
-       *
-       * L'identifiant passé est le CLIENT de la mission, pas le technicien.
-       * `updateStatus` est un endpoint CLIENT (`assertTransition('CLIENT', …)`
-       * et `clientId` issu du JWT) : il n'y a donc pas de contrôle de rôle à
-       * faire ici — un technicien ne peut pas confirmer une mission. */
-      try {
-        await this.referrals?.onReferredMissionConfirmed(clientId);
-      } catch (error) {
-        this.logger.error(
-          `Parrainage en échec pour la mission ${id} : ${
-            error instanceof Error ? error.message : 'erreur inconnue'
-          }. La mission reste confirmée et réglée.`,
-        );
-      }
     }
 
-    return toApiDemande(this.withTechnician(result));
+    return toApiDemande(result);
   }
 
   private clientInclude() {
@@ -573,74 +522,7 @@ export class DemandesService {
       brand: { select: { id: true, name: true, slug: true } },
       model: { select: { id: true, name: true, slug: true } },
       problem: { select: { id: true, name: true, slug: true } },
-      technician: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          phone: true,
-          technicianProfile: { select: { city: true } },
-        },
-      },
     };
   }
 
-  private withTechnician(demande: {
-    id: string;
-    reference: string;
-    status: string;
-    category: string;
-    description: string | null;
-    equipmentType?: string | null;
-    equipmentFamily?: string | null;
-    city: string;
-    cityId: string | null;
-    zoneId: string | null;
-    zoneRef?: { id: string; name: string; slug: string; cityId: string } | null;
-    cityRef?: { id: string; name: string; slug: string } | null;
-    neighborhood: string | null;
-    address: string | null;
-    landmark: string | null;
-    contactPhone: string | null;
-    latitude: number | null;
-    longitude: number | null;
-    clientId: string;
-    technicianId: string | null;
-    scheduledAt: Date | null;
-    requestedMode: string;
-    requestedAt: Date | null;
-    createdAt: Date;
-    domainId: string | null;
-    brandId: string | null;
-    modelId: string | null;
-    problemId: string | null;
-    negotiationRequestedAt: Date | null;
-    finalAmount: number | null;
-    medias: DemandeMediaRow[];
-    domain?: { id: string; name: string; slug: string } | null;
-    brand?: { id: string; name: string; slug: string } | null;
-    model?: { id: string; name: string; slug: string } | null;
-    problem?: { id: string; name: string; slug: string } | null;
-    technician?: {
-      id: string;
-      firstName: string;
-      lastName: string | null;
-      phone: string | null;
-      technicianProfile: { city: string } | null;
-    } | null;
-  }): DemandeRecord {
-    if (!demande.technician) {
-      return { ...demande, technician: null };
-    }
-    return {
-      ...demande,
-      technician: {
-        id: demande.technician.id,
-        firstName: demande.technician.firstName,
-        lastName: demande.technician.lastName,
-        phone: demande.technician.phone,
-        city: demande.technician.technicianProfile?.city ?? null,
-      },
-    };
-  }
 }

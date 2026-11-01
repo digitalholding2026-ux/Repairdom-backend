@@ -88,13 +88,6 @@ describe('données publiques : rien de privé', () => {
           brand: null,
           model: null,
           problem: null,
-          technician: {
-            id: 'tech-1',
-            firstName: 'Awa',
-            lastName: 'S',
-            phone: '+237677000000',
-            technicianProfile: { kycStatus: 'VERIFIED' },
-          },
           events: [],
         })),
       },
@@ -115,8 +108,9 @@ describe('données publiques : rien de privé', () => {
     expect(result).not.toHaveProperty('contactPhone');
     expect(result).not.toHaveProperty('latitude');
     expect(result).not.toHaveProperty('technician');
-    expect(result.technicianAssigned).toBe(true);
-    expect(result.technicianVerified).toBe(true);
+    // v2 : aucun technicien assigné, le contrat public reste stable.
+    expect(result.technicianAssigned).toBe(false);
+    expect(result.technicianVerified).toBe(false);
   });
 
   it('référence inexistante → 404', async () => {

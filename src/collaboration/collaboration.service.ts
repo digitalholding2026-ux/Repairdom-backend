@@ -794,7 +794,6 @@ export class CollaborationService {
         id: true,
         status: true,
         clientId: true,
-        technicianId: true,
         domainId: true,
         brandId: true,
         modelId: true,
@@ -802,19 +801,8 @@ export class CollaborationService {
       },
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
-    if (demande.technicianId !== user.id) throw new NotFoundException('Demande introuvable.');
     this.assertOpen(demande.status);
     this.assertDiagnosticAllowed(demande.status);
-
-    // Barrière KYC : le catalogue (prix auto + négociation) n'est accessible
-    // qu'aux techniciens au profil validé.
-    const profile = await this.prisma.technicianProfile.findUnique({
-      where: { userId: user.id },
-      select: { kycStatus: true },
-    });
-    if (!profile || profile.kycStatus !== 'VERIFIED') {
-      throw new ForbiddenException('Votre dossier KYC doit être validé pour utiliser le catalogue.');
-    }
 
     if (dto.mode === 'CATALOG') {
       if (!dto.catalogDiagnosticId || !dto.catalogInterventionId) {
@@ -1179,15 +1167,6 @@ export class CollaborationService {
         brand: { select: { id: true, name: true, slug: true } },
         model: { select: { id: true, name: true, slug: true } },
         problem: { select: { id: true, name: true, slug: true } },
-        technician: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-            technicianProfile: { select: { city: true } },
-          },
-        },
       },
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
@@ -1218,16 +1197,6 @@ export class CollaborationService {
       take: 200,
     });
 
-    const technician = demande.technician
-      ? {
-          id: demande.technician.id,
-          firstName: demande.technician.firstName,
-          lastName: demande.technician.lastName,
-          phone: demande.technician.phone,
-          city: demande.technician.technicianProfile?.city ?? null,
-        }
-      : null;
-
     return {
       demandeId: demande.id,
       reference: demande.reference,
@@ -1252,7 +1221,6 @@ export class CollaborationService {
         ? demande.negotiationRequestedAt.toISOString()
         : null,
       finalAmount: demande.finalAmount,
-      technician,
       scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
       requestedMode: demande.requestedMode,
       requestedAt: demande.requestedAt ? demande.requestedAt.toISOString() : null,

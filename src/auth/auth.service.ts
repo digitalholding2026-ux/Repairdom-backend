@@ -11,10 +11,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ModuleRef } from '@nestjs/core';
 import { randomBytes, randomUUID } from 'node:crypto';
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import type { Response } from 'express';
+import { resolveCityId } from '../geo/city-reference.js';
 import { PrismaService } from './../prisma/prisma.service.js';
 import { hashPassword, verifyPassword } from './password-hash.js';
 import {
@@ -27,9 +27,7 @@ import {
 import type { RegisterDto } from './dto/register.dto.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { UpdateMeDto } from './dto/update-me.dto.js';
-import { findActiveCityById, resolveCityId } from '../geo/city-reference.js';
 import { EmailService } from './email.service.js';
-import { ReferralsService } from '../referrals/referrals.service.js';
 import {
   AVATAR_EXTENSION_BY_MIME,
   MAX_AVATAR_SIZE,
@@ -94,19 +92,6 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly email: EmailService,
     private readonly storage: SupabaseStorageService,
-    /* Chantier 4B — `ModuleRef` sert à résoudre `ReferralsService` AU MOMENT
-     * de l'appel, sans que `AuthModule` importe `ReferralsModule`.
-     *
-     * Un import direct donnerait le cycle `Auth → Referrals → Auth`
-     * (`ReferralsModule` a besoin d'`EmailService`, qui vit dans `AuthModule`),
-     * et un `forwardRef` est exclu par convention dans ce dépôt.
-     *
-     * La résolution lazy n'introduit AUCUNE dépendance à l'initialisation :
-     * aucun module n'a besoin de l'autre pour démarrer. La recherche est
-     * faite à l'exécution, et son échec est absorbé — un compte sans
-     * parrainage doit s'inscrire normalement. `ModuleRef` vient de
-     * `@nestjs/core`, toujours disponible : rien à importer. */
-    private readonly moduleRef: ModuleRef,
   ) {
     this.isProduction = this.config.get<string>('NODE_ENV') === 'production';
     // Base des liens e-mail (vérification). En production, définir
@@ -166,152 +151,51 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<AuthUser> {
-    const isTechnician = dto.role === 'TECHNICIAN';
-
     // Robustesse alignée sur reset-password : un mot de passe accepté à
     // l'inscription doit aussi être accepté à la réinitialisation.
     assertPasswordStrong(dto.password);
-    if (isTechnician) {
-      if (!dto.phone?.trim()) {
-        throw new BadRequestException('Le téléphone est requis pour un compte technicien.');
-      }
-      /* Chantier #5B — la ville n'est plus un texte : c'est une RÉFÉRENCE
-       * obligatoire. Sans elle, le technicien n'apparaît dans aucun filtre
-       * ville et ne peut couvrant aucune zone : il ne recevrait jamais de
-       * mission. Le texte libre ne suffisait pas (cf. Problème 1 de l'audit :
-       * ville non rattachée au référentiel). */
-      if (!dto.cityId) {
-        throw new BadRequestException('Ville obligatoire pour un compte technicien.');
-      }
-      if (!dto.categories || dto.categories.length === 0) {
-        throw new BadRequestException('Sélectionnez au moins une catégorie de réparation.');
-      }
-    }
 
-    if (!isTechnician) {
-      if (!dto.city?.trim()) {
-        throw new BadRequestException("Veuillez renseigner votre ville.");
-      }
-      if (!dto.address?.trim()) {
-        throw new BadRequestException('Veuillez renseigner votre adresse précise.');
-      }
+    if (!dto.city?.trim()) {
+      throw new BadRequestException('Veuillez renseigner votre ville.');
+    }
+    if (!dto.address?.trim()) {
+      throw new BadRequestException('Veuillez renseigner votre adresse précise.');
     }
 
     const passwordHash = await hashPassword(dto.password);
 
-    /* ── Ville : deux régimes distincts, jamais mélangés ──
-     *
-     * TECHNICIAN (#5B) : la ville est une référence ASSERTÉE. `cityId` est
-     * obligatoire (garde ci-dessus) et DOIT exister et être active : on
-     * refuse l'inscription plutôt que d'enregistrer un compte que le dispatch
-     * ne pourra jamais géolocaliser. Le texte `city` n'est plus une saisie :
-     * il est dérivé du `ServiceCity.name`, ce qui garantit que l'affichage et
-     * le référentiel ne peuvent pas diverger (« Douala » vs « douala »).
-     *
-     * CLIENT : comportement INCHANGÉ. Le texte reste saisi librement et n'est
-     * rattaché au référentiel que si la correspondance est unique (règle D
-     * du sprint 8.8.2, non bloquante) — sinon `cityId` reste null.
-     */
-    let cityText: string | null;
-    let cityId: string | null;
-    if (isTechnician) {
-      const reference = await findActiveCityById(this.prisma, dto.cityId);
-      if (!reference) {
-        throw new BadRequestException('Ville introuvable.');
-      }
-      cityId = reference.id;
-      cityText = reference.name;
-    } else {
-      cityText = dto.city?.trim() || null;
-      cityId = await resolveCityId(this.prisma, cityText);
-    }
+    /* Ville : texte saisi librement par le client, rattaché au référentiel
+     * seulement si la correspondance est unique (règle D du sprint 8.8.2,
+     * non bloquante) — sinon `cityId` reste null. */
+    const cityText = dto.city.trim();
+    const cityId = await resolveCityId(this.prisma, cityText);
 
-    // Comptes CLIENT : vérification email obligatoire avant premier accès.
-    // Les techniciens sont vérifiés d'office (parcours approuvé par l'admin).
-    const requireEmailVerification = !isTechnician;
-    const emailVerificationToken = requireEmailVerification
-      ? randomBytes(24).toString('hex')
-      : null;
+    // Compte CLIENT : vérification e-mail obligatoire avant premier accès.
+    const emailVerificationToken = randomBytes(24).toString('hex');
 
     try {
-      const user = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.user.create({
-          data: {
-            firstName: dto.firstName.trim(),
-            lastName: dto.lastName.trim(),
-            phone: dto.phone ?? null,
-            whatsapp: dto.whatsapp ?? null,
-            city: cityText,
-            cityId,
-            address: dto.address?.trim() ?? null,
-            email: dto.email.toLowerCase().trim(),
-            passwordHash,
-            role: isTechnician ? 'TECHNICIAN' : 'CLIENT',
-            emailVerified: !requireEmailVerification,
-            emailVerificationToken,
-            emailVerificationExpiresAt: requireEmailVerification
-              ? new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS)
-              : null,
-          },
-        });
-
-        if (isTechnician) {
-          await tx.technicianProfile.create({
-            data: {
-              userId: created.id,
-              /* `cityText` vient de `ServiceCity.name` (cf. bloc ville) :
-               * plus de `dto.city!`, qui n'est plus envoyé par le frontend. */
-              city: cityText!,
-              cityId,
-              categories: dto.categories!,
-            },
-          });
-        }
-
-        return created;
+      const user = await this.prisma.user.create({
+        data: {
+          firstName: dto.firstName.trim(),
+          lastName: dto.lastName.trim(),
+          phone: dto.phone ?? null,
+          whatsapp: dto.whatsapp ?? null,
+          city: cityText,
+          cityId,
+          address: dto.address.trim(),
+          email: dto.email.toLowerCase().trim(),
+          passwordHash,
+          role: 'CLIENT',
+          emailVerified: false,
+          emailVerificationToken,
+          emailVerificationExpiresAt: new Date(
+            Date.now() + VERIFICATION_TOKEN_TTL_MS,
+          ),
+        },
       });
 
-      /* ── Chantier 4B — rattachement au parrainage ─────────────────────
-       *
-       * APRÈS la transaction : le compte doit exister pour qu'une ligne
-       * `Referral` le référence (clé étrangère).
-       *
-       * Uniquement pour un CLIENT — un technicien n'a pas de programme de
-       * parrainage, et rattacher un compte technicien consommerait un
-       * emplacement du parrain sans jamais donner lieu à une récompense.
-       *
-       * Le `try/catch` est INDISPENSABLE : le compte est créé et vérifié,
-       * on ne doit pas faire échouer une inscription parce qu'un code de
-       * parrainage est inconnu, déjà utilisé ou auto-référencé. Un code
-       * bidon ne doit RIEN changer au parcours d'inscription. */
-      if (!isTechnician && dto.referralCode?.trim()) {
-        try {
-          const referrals = this.resolveReferrals();
-          if (referrals) {
-            const result = await referrals.registerReferral(
-              user.id,
-              dto.referralCode,
-              user.email,
-            );
-            if (result.success) {
-              this.logger.log(
-                `Compte ${user.id} rattaché au parrainage de ${result.referrerName}.`,
-              );
-            }
-          }
-        } catch (error) {
-          this.logger.warn(
-            `Parrainage non appliqué pour ${user.email} : ${
-              error instanceof Error ? error.message : 'erreur inconnue'
-            }. Le compte est créé normalement.`,
-          );
-        }
-      }
-
-      if (requireEmailVerification && emailVerificationToken) {
-        const link = `${this.frontendUrl}/client/verification?token=${emailVerificationToken}`;
-        await this.email.sendVerificationEmail(user.email, link);
-      }
+      const link = `${this.frontendUrl}/client/verification?token=${emailVerificationToken}`;
+      await this.email.sendVerificationEmail(user.email, link);
 
       return this.toAuthUser(user);
     } catch (error) {
@@ -319,24 +203,6 @@ export class AuthService {
         throw new ConflictException('Un compte existe déjà avec cette adresse e-mail.');
       }
       throw error;
-    }
-  }
-
-  /**
-   * Résout `ReferralsService` sans l'avoir déclaré comme dépendance.
-   *
-   * `strict: false` est INDISPENSABLE : le service est exporté par
-   * `ReferralsModule`, donc il vit dans un CONTENEUR différent de celui
-   * d'`AuthModule`. Sans ce drapeau, la recherche échouerait systématiquement.
-   *
-   * Renvoie `null` plutôt que de lever si le module n'est pas monté : le
-   * parrainage est un confort, jamais une condition d'inscription.
-   */
-  private resolveReferrals(): ReferralsService | null {
-    try {
-      return this.moduleRef.get(ReferralsService, { strict: false });
-    } catch {
-      return null;
     }
   }
 

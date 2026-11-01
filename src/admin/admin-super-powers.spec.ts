@@ -4,10 +4,10 @@ import { CatalogService } from './catalog.service.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
 
 /* Sprint ADMIN SUPER POWERS — vérifications métier (Prisma mocké, aucune
- * base requise) : suppressions catalogue, comptes, message admin. */
+ * base requise) : suppressions catalogue et comptes. */
 
 function adminService(prisma: unknown) {
-  return new AdminService(prisma as PrismaService, {} as never);
+  return new AdminService(prisma as PrismaService);
 }
 
 function catalogService(prisma: unknown) {
@@ -22,7 +22,6 @@ describe('suppressions catalogue : physique si sûr, désactivation sinon', () =
         delete: vi.fn(async () => ({ id: 'z1' })),
         update: vi.fn(),
       },
-      technicianZoneCoverage: { count: vi.fn(async () => 0) },
       demande: { count: vi.fn(async () => 0) },
     };
     const outcome = await catalogService(prisma).deleteZone('z1');
@@ -31,15 +30,14 @@ describe('suppressions catalogue : physique si sûr, désactivation sinon', () =
     expect(prisma.zone.update).not.toHaveBeenCalled();
   });
 
-  it('zone avec couvertures → DEACTIVATED (isActive = false, historique conservé)', async () => {
+  it('zone avec missions → DEACTIVATED (isActive = false, historique conservé)', async () => {
     const prisma = {
       zone: {
         findUnique: vi.fn(async () => ({ id: 'z1', isActive: true })),
         delete: vi.fn(),
         update: vi.fn(async () => ({ id: 'z1', isActive: false })),
       },
-      technicianZoneCoverage: { count: vi.fn(async () => 3) },
-      demande: { count: vi.fn(async () => 0) },
+      demande: { count: vi.fn(async () => 3) },
     };
     const outcome = await catalogService(prisma).deleteZone('z1');
     expect(outcome.action).toBe('DEACTIVATED');
@@ -48,7 +46,7 @@ describe('suppressions catalogue : physique si sûr, désactivation sinon', () =
       where: { id: 'z1' },
       data: { isActive: false },
     });
-    expect(outcome.blockers.couvertures).toBe(3);
+    expect(outcome.blockers.demandes).toBe(3);
   });
 
   it('tarif avec historique → DEACTIVATED + entrée PricingHistory (journal jamais amputé)', async () => {
@@ -85,7 +83,6 @@ describe('suppressions catalogue : physique si sûr, désactivation sinon', () =
   it('élément inexistant → 404', async () => {
     const prisma = {
       zone: { findUnique: vi.fn(async () => null) },
-      technicianZoneCoverage: { count: vi.fn(async () => 0) },
       demande: { count: vi.fn(async () => 0) },
     };
     await expect(catalogService(prisma).deleteZone('nope')).rejects.toMatchObject({
@@ -102,12 +99,8 @@ describe('gestion des comptes : suppression physique ou désactivation', () => {
     quote: { count: vi.fn(async () => 0) },
     notification: { count: vi.fn(async () => 0) },
     financialTransaction: { count: vi.fn(async () => 0) },
-    dispatchWave: { count: vi.fn(async () => 0) },
     demandeEvent: { count: vi.fn(async () => 0) },
     review: { count: vi.fn(async () => 0) },
-    kycDocument: { count: vi.fn(async () => 0) },
-    kycReview: { count: vi.fn(async () => 0) },
-    technicianProfile: { count: vi.fn(async () => 0) },
   };
 
   it('compte sans donnée liée → DELETED (user.delete appelé)', async () => {
@@ -160,72 +153,5 @@ describe('gestion des comptes : suppression physique ou désactivation', () => {
       status: 400,
     });
     expect(prisma.user.delete).not.toHaveBeenCalled();
-  });
-});
-
-describe('message ADMIN → TECHNICIEN par email', () => {
-  const tech = {
-    id: 't1',
-    role: 'TECHNICIAN',
-    firstName: 'Awa',
-    lastName: 'Diallo',
-    email: 'tech@email.com',
-    isActive: true,
-  };
-
-  it('email normalisé (casse + espaces) et notification ADMIN_MESSAGE sans mission', async () => {
-    const prisma = {
-      user: { findUnique: vi.fn(async () => tech) },
-      notification: {
-        create: vi.fn(async (args: { data: Record<string, unknown> }) => ({
-          id: 'n1',
-          createdAt: new Date('2026-09-22T00:00:00Z'),
-          ...args.data,
-        })),
-      },
-    };
-    const result = await adminService(prisma).sendTechnicianMessage(
-      'admin1',
-      '  TECH@Email.COM ',
-      'Votre KYC doit être complété.',
-    );
-    expect(prisma.user.findUnique).toHaveBeenCalledWith({
-      where: { email: 'tech@email.com' },
-      select: expect.anything(),
-    });
-    /* Chantier #2D : `ADMIN_MESSAGE` n'a volontairement AUCUN `metadata` — le
-     * message EST le contenu, et le dupliquer dans le JSON créerait deux
-     * sources pour la même donnée. L'assertion reste donc stricte sur le
-     * payload (une clé `metadata` apparaissant ici serait une régression). */
-    expect(prisma.notification.create).toHaveBeenCalledWith({
-      data: {
-        userId: 't1',
-        demandeId: null,
-        type: 'ADMIN_MESSAGE',
-        title: 'Message de Relio',
-        message: 'Votre KYC doit être complété.',
-      },
-    });
-    expect(result.technician.email).toBe('tech@email.com');
-  });
-
-  it('email inexistant → 404 ; compte CLIENT → 400 ; compte désactivé → 400', async () => {
-    const missing = { user: { findUnique: vi.fn(async () => null) }, notification: { create: vi.fn() } };
-    await expect(adminService(missing).sendTechnicianMessage('a', 'x@y.z', 'msg')).rejects.toMatchObject({ status: 404 });
-
-    const client = {
-      user: { findUnique: vi.fn(async () => ({ ...tech, role: 'CLIENT' })) },
-      notification: { create: vi.fn() },
-    };
-    await expect(adminService(client).sendTechnicianMessage('a', 'x@y.z', 'msg')).rejects.toMatchObject({ status: 400 });
-
-    const inactive = {
-      user: { findUnique: vi.fn(async () => ({ ...tech, isActive: false })) },
-      notification: { create: vi.fn() },
-    };
-    await expect(adminService(inactive).sendTechnicianMessage('a', 'x@y.z', 'msg')).rejects.toMatchObject({ status: 400 });
-    expect(missing.notification.create).not.toHaveBeenCalled();
-    expect(client.notification.create).not.toHaveBeenCalled();
-    expect(inactive.notification.create).not.toHaveBeenCalled();
   });
 });

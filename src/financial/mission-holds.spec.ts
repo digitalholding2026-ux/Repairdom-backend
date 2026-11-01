@@ -373,21 +373,24 @@ describe('CONFIRMED : hold CONSUMED + débit définitif + règlement unique', ()
     return world;
   }
 
-  /* Chantier 4-FONDATIONS-A — le barème est désormais 500 FCFA + 4 % du MONTANT
-   * DU DEVIS (20 000 ici), pas 2 % du brut. Le transport de 2 000 n'est pas
-   * commissionné : commission = 500 + 800 = 1 300 (l'ancien 2 % du brut 22 000
-   * donnait 440). Le débit client de 22 000 est INCHANGÉ — le client ne paie
-   * toujours pas de commission Relio. */
-  it('CONFIRMED → CONSUMED + CLIENT_MISSION_DEBIT + repair/travel/fee (1300 = 500 + 4 % de 20000)', async () => {
+  /* v2 : la confirmation règle le client (débit définitif du montant accepté)
+   * et n'écrit AUCUNE rémunération technicien — le modèle technicien a été
+   * supprimé. Les anciennes missions restent lisibles, mais plus rien n'est
+   * crédité à la confirmation. */
+  it('CONFIRMED → CONSUMED + CLIENT_MISSION_DEBIT (22000), aucune écriture technicien', async () => {
     const world = await acceptFirst();
     await world.demandesService.updateStatus('c1', 'm1', { status: 'CONFIRMED' } as never);
     expect(world.store.holds.get('mission-hold:m1:SIMULATION')?.status).toBe('CONSUMED');
     const debits = world.store.ledger.filter((t) => t.type === 'CLIENT_MISSION_DEBIT');
     expect(debits).toHaveLength(1);
     expect(debits[0].amount).toBe(22000);
-    expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_REPAIR_REVENUE')?.amount).toBe(20000);
-    expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_TRAVEL_REVENUE')?.amount).toBe(2000);
-    expect(world.store.ledger.find((t) => t.type === 'TECHNICIAN_FEE')?.amount).toBe(1300);
+    for (const legacy of [
+      'TECHNICIAN_REPAIR_REVENUE',
+      'TECHNICIAN_TRAVEL_REVENUE',
+      'TECHNICIAN_FEE',
+    ]) {
+      expect(world.store.ledger.filter((t) => t.type === legacy)).toHaveLength(0);
+    }
   });
 
   it('CONFIRMED répété au niveau service → aucun doublon', async () => {
@@ -409,7 +412,8 @@ describe('CONFIRMED : hold CONSUMED + débit définitif + règlement unique', ()
     await world.demandesService.updateStatus('c1', 'm1', { status: 'CONFIRMED' } as never);
     expect(world.store.ledger.filter((t) => t.type === 'CLIENT_MISSION_DEBIT')).toHaveLength(1);
     expect(world.store.holds.size).toBe(0);
-    expect(world.store.ledger.filter((t) => t.type === 'TECHNICIAN_FEE')).toHaveLength(1);
+    // v2 : plus aucune commission technicien n'est écrite à la confirmation.
+    expect(world.store.ledger.filter((t) => t.type === 'TECHNICIAN_FEE')).toHaveLength(0);
   });
 });
 
