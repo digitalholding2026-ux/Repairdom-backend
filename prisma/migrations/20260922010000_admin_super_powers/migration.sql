@@ -2,45 +2,29 @@
 -- Migration strictement ADDITIVE et NON DESTRUCTIVE :
 --
 -- 1. User.isActive (BOOLEAN, défaut true) : désactivation logique des comptes
---    CLIENT/TECHNICIAN quand l'historique métier ou financier interdit une
---    suppression physique. Aucune ligne existante n'est modifiée au-delà du
---    défaut (tous les comptes restent actifs).
--- 2. NotificationType += ADMIN_MESSAGE (message direct admin → technicien,
---    sans mission liée).
--- 3. FinancialTransactionType += RELIO_WITHDRAWAL (écriture ledger immuable
---    adossée à chaque retrait de fonds Relio).
--- 4. RelioWithdrawal : traçabilité des retraits admin (référence UNIQUE
---    RELIO-WD-… = clé d'idempotence). requestedById en RESTRICT : un admin
---    ayant effectué un retrait ne peut pas être supprimé physiquement.
--- Aucune table/colonne existante modifiée, aucune donnée réécrite.
+--    quand l'historique métier ou financier interdit une suppression physique.
+--    Aucune ligne existante n'est modifiée au-delà du défaut (tous les comptes
+--    restent actifs).
+-- 2. NotificationType += ADMIN_MESSAGE (message direct de l'opérateur, sans
+--    dossier lié).
+--
+-- Le retrait de fonds Relio (valeur `RELIO_WITHDRAWAL` et table
+-- `RelioWithdrawal`) est reporté dans 20260927020000_add_relio_withdrawal : il
+-- déclarait les types `FinancialTransactionType`, `FinancialTransactionMode` et
+-- `FinancialTransactionStatus` alors que ceux-ci ne naissent que dans la
+-- migration du moteur financier. Rejouée depuis une base vide, cette migration
+-- levait donc « 42704 — type does not exist » et bloquait toute la chaîne.
+--
+-- Les deux instructions ci-dessous sont sous garde : une tentative antérieure
+-- interrompue a pu laisser l'une d'elles derrière elle, PostgreSQL n'annulant
+-- pas l'ajout d'une valeur d'énumération quand la transaction échoue ensuite.
 
 -- AlterEnum
-ALTER TYPE "NotificationType" ADD VALUE 'ADMIN_MESSAGE';
-
--- AlterEnum
-ALTER TYPE "FinancialTransactionType" ADD VALUE 'RELIO_WITHDRAWAL';
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid WHERE t.typname = 'NotificationType' AND e.enumlabel = 'ADMIN_MESSAGE') THEN
+        ALTER TYPE "NotificationType" ADD VALUE 'ADMIN_MESSAGE';
+    END IF;
+END $$;
 
 -- AlterTable User : ajout de la désactivation logique (défaut : actif).
-ALTER TABLE "User" ADD COLUMN "isActive" BOOLEAN NOT NULL DEFAULT true;
-
--- CreateTable RelioWithdrawal
-CREATE TABLE "RelioWithdrawal" (
-    "id" TEXT NOT NULL DEFAULT gen_random_uuid(),
-    "reference" TEXT NOT NULL,
-    "amount" INTEGER NOT NULL,
-    "note" TEXT,
-    "mode" "FinancialTransactionMode" NOT NULL DEFAULT 'SIMULATION',
-    "status" "FinancialTransactionStatus" NOT NULL DEFAULT 'VALIDATED',
-    "requestedById" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "RelioWithdrawal_pkey" PRIMARY KEY ("id")
-);
-
--- CreateIndex
-CREATE UNIQUE INDEX "RelioWithdrawal_reference_key" ON "RelioWithdrawal"("reference");
-CREATE INDEX "RelioWithdrawal_mode_createdAt_idx" ON "RelioWithdrawal"("mode", "createdAt");
-
--- AddForeignKey
-ALTER TABLE "RelioWithdrawal" ADD CONSTRAINT "RelioWithdrawal_requestedById_fkey"
-    FOREIGN KEY ("requestedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN NOT NULL DEFAULT true;

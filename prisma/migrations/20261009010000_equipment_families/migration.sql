@@ -44,7 +44,7 @@ INSERT INTO "EquipmentFamily" ("code", "label", "icon", "category", "sortOrder",
   ('IMPRIMANTE', 'Imprimante / scanner', '🖨️', 'informatique', 40, CURRENT_TIMESTAMP),
   ('ENERGIE', 'Groupe électrogène / onduleur / solaire', '🔌', 'electricite', 50, CURRENT_TIMESTAMP),
   ('POMPE_EAU', 'Pompe à eau / forage', '💧', 'plomberie', 60, CURRENT_TIMESTAMP),
-  ('VENTILATION', 'Ventilateur / brasseur d'air', '🌀', 'climatisation', 70, CURRENT_TIMESTAMP),
+  ('VENTILATION', 'Ventilateur / brasseur d''air', '🌀', 'climatisation', 70, CURRENT_TIMESTAMP),
   ('COFFRE', 'Coffre-fort / serrure spéciale', '🔐', 'serrurerie', 80, CURRENT_TIMESTAMP),
   ('UNKNOWN', 'Je ne sais pas', '❓', 'autre', 100, CURRENT_TIMESTAMP)
 ON CONFLICT ("code") DO NOTHING;
