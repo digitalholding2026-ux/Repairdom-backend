@@ -8,8 +8,8 @@
  * sous-liste de pays. Une liste tronquée aurait produit deux sources de vérité
  * divergentes (le backend refuserait un pays que l'UI affiche).
  *
- * Le code alpha-2 est la valeur persistée (`TechnicianProfile.nationality`),
- * jamais un texte libre : `FR`, `CM`, `SN`…
+ * Le code alpha-2 est la valeur canonique échangée, jamais un texte libre :
+ * `FR`, `CM`, `SN`…
  */
 
 /** Une entrée de la nomenclature : code alpha-2 + libellé français. */
