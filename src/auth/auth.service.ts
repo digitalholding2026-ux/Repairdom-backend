@@ -22,6 +22,7 @@ import {
   COOKIE_NAME,
   type AuthUser,
   type RequestUser,
+  type UserClientType,
   type UserRole,
 } from './auth.types.js';
 import type { RegisterDto } from './dto/register.dto.js';
@@ -514,7 +515,15 @@ export class AuthService {
       if (presented !== user.tokenVersion) {
         throw new UnauthorizedException('Session invalide ou expirée.');
       }
-      return { id: user.id, email: user.email, role: user.role as UserRole, tokenVersion: user.tokenVersion };
+      return {
+        id: user.id,
+        email: user.email,
+        role: user.role as UserRole,
+        // M1 — lu en base à chaque requête : un compte promu B2B par l'admin
+        // voit son tarif changer immédiatement, sans ré-émission de JWT.
+        clientType: user.clientType as UserClientType,
+        tokenVersion: user.tokenVersion,
+      };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Session invalide ou expirée.');

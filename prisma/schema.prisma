@@ -12,6 +12,22 @@ enum Role {
   ADMIN
 }
 
+// M1 — nature commerciale du compte : un compte B2B voit les tarifs
+// professionnels (`CatalogItem.pricePro`), un compte CLIENT voit les tarifs
+// publics. Aucun rôle distinct : la distinction porte sur le compte, pas sur
+// les droits. La valeur par défaut préserve le comportement des comptes existants.
+enum ClientType {
+  CLIENT
+  B2B
+}
+
+// M1 — les trois prestations vendues par Relio v2.
+enum ServiceCode {
+  SYSTEME
+  SMARTPHONE
+  FRP
+}
+
 enum DemandeStatus {
   SUBMITTED
   PENDING
@@ -253,6 +269,8 @@ enum FundsHoldStatus {
 model User {
   id                           String                 @id @default(dbgenerated("gen_random_uuid()"))
   role                         Role                   @default(CLIENT)
+  // M1 — tarif appliqué à la lecture du catalogue (CLIENT = public, B2B = pro).
+  clientType                   ClientType             @default(CLIENT)
   firstName                    String
   lastName                     String?
   phone                        String?
@@ -1548,4 +1566,66 @@ model FundsHold {
   @@index([userId, status])
   @@index([demandeId])
   @@index([mode, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M1 — Catalogue Relio v2 : 3 prestations, leurs catégories, leurs items et
+// leurs prix. Parcours parallèle au catalogue historique (ServiceDomain /
+// DeviceBrand / DeviceModel / Problem / CatalogIntervention / Pricing), qui
+// reste en place et continu d'alimenter les demandes existantes.
+//
+// `pricePublic` / `pricePro` à NULL = prestation « sur devis » : aucun montant
+// n'est annoncé, le client est recontacté. Les montants sont des entiers XAF
+// (FCFA), formatés uniquement à l'affichage.
+// ─────────────────────────────────────────────────────────────────────────
+
+model Service {
+  id          String      @id @default(cuid())
+  code        ServiceCode @unique
+  label       String
+  description String?
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  categories CatalogCategory[]
+
+  @@index([active])
+}
+
+model CatalogCategory {
+  id        String   @id @default(cuid())
+  serviceId String
+  code      String
+  label     String
+  order     Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  service Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  items   CatalogItem[]
+
+  @@unique([serviceId, code])
+  @@index([serviceId, active, order])
+}
+
+model CatalogItem {
+  id             String   @id @default(cuid())
+  categoryId     String
+  code           String
+  label          String
+  description    String?
+  androidVersion String?
+  active         Boolean  @default(true)
+  order          Int      @default(0)
+  pricePublic    Int?
+  pricePro       Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  category CatalogCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, code])
+  @@index([categoryId, active, order])
 }

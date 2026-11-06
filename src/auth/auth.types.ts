@@ -1,5 +1,8 @@
 export type UserRole = 'CLIENT' | 'TECHNICIAN' | 'ADMIN';
 
+/** M1 — nature commerciale du compte (tarif public vs tarif professionnel). */
+export type UserClientType = 'CLIENT' | 'B2B';
+
 export interface AuthUser {
   id: string;
   role: UserRole;
@@ -21,6 +24,8 @@ export interface RequestUser {
   id: string;
   email: string;
   role: UserRole;
+  /** M1 — tarif applicable (lu en base à chaque requête, jamais depuis le payload). */
+  clientType: UserClientType;
   /** Version de session portée par le JWT vérifié. */
   tokenVersion: number;
 }

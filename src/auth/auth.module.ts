@@ -3,6 +3,7 @@ import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { EmailService } from './email.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { OptionalJwtAuthGuard } from './optional-jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
 import { VerificationReminderScheduler } from './verification-reminder.scheduler.js';
 import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
@@ -18,11 +19,12 @@ import { SupabaseStorageService } from '../technician/supabase-storage.service.j
     EmailService,
     SupabaseStorageService,
     JwtAuthGuard,
+    OptionalJwtAuthGuard,
     RolesGuard,
     VerificationReminderScheduler,
   ],
   // Sprint DISPATCH-V1 — EmailService exporté pour le DispatchService
   // (e-mails « mission disponible », même transport Resend).
-  exports: [AuthService, EmailService, JwtAuthGuard, RolesGuard],
+  exports: [AuthService, EmailService, JwtAuthGuard, OptionalJwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}
