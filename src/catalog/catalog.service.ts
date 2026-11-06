@@ -1,104 +1,150 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import type {
-  CatalogCategoryView,
-  CatalogItemView,
-  CatalogPriceView,
-  CatalogServiceView,
-} from './catalog.types.js';
+import type { CatalogCategoryView, CatalogItemView, CatalogServiceView } from './catalog.types.js';
 
 /**
  * M1 — lecture du catalogue Relio v2 (prestations, catégories, items).
  *
- * Le tarif appliqué n'est jamais choisi par le client : `listItems` reçoit un
- * booléen `forPro` que le contrôleur déduit de la session. Un compte B2B lit
- * `pricePro`, tout autre visiteur lit `pricePublic`.
+ * Le tarif appliqué n'est jamais choisi par le client : les trois lectures
+ * reçoivent la `clientType` de la session, déduite du JWT par le contrôleur.
+ * Un compte B2B lit `pricePro`, tout autre visiteur lit `pricePublic`.
+ *
+ * Une prestation n'est visible que si elle a un prix dans la monnaie du
+ * visiteur : un item sans tarif, un item retiré, une catégorie sans aucun item
+ * tarifé et une prestation sans aucune catégorie tarifée sortent du parcours.
+ * Rien n'est donc affiché « sur devis » — l'administration publie un montant ou
+ * l'item reste hors circuit.
  */
 @Injectable()
 export class CatalogV2Service {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Les prestations proposées, dans l'ordre d'insertion. */
-  async listServices(): Promise<CatalogServiceView[]> {
+  /** Les prestations qui ont au moins un tarif pour ce visiteur. */
+  async listServices(clientType?: string): Promise<CatalogServiceView[]> {
     const services = await this.prisma.service.findMany({
       where: { active: true },
       orderBy: { createdAt: 'asc' },
     });
-    return services.map((service) => ({
-      id: service.id,
-      code: service.code,
-      label: service.label,
-      description: service.description,
-    }));
+    if (services.length === 0) return [];
+
+    const categories = await this.prisma.catalogCategory.findMany({
+      where: { serviceId: { in: services.map((service) => service.id) }, active: true },
+      select: { id: true, serviceId: true },
+    });
+    const pricedCategories = await this.pricedCategoryIds(categories.map((c) => c.id), clientType);
+    const servicesWithPrices = new Set(
+      categories
+        .filter((category) => pricedCategories.has(category.id))
+        .map((category) => category.serviceId),
+    );
+
+    return services
+      .filter((service) => servicesWithPrices.has(service.id))
+      .map((service) => ({
+        id: service.id,
+        code: service.code,
+        label: service.label,
+        description: service.description,
+      }));
   }
 
-  /** Les catégories d'une prestation, par `order` croissant. */
-  async listCategories(serviceCode: string): Promise<CatalogCategoryView[]> {
-    const service = await this.prisma.service.findUnique({ where: { code: serviceCode as never } });
-    if (!service || !service.active) {
-      throw new NotFoundException('Prestation introuvable.');
-    }
+  /** Les catégories tarifées d'une prestation, par `order` croissant. */
+  async listCategories(serviceCode: string, clientType?: string): Promise<CatalogCategoryView[]> {
+    const service = await this.readService(serviceCode);
     const categories = await this.prisma.catalogCategory.findMany({
       where: { serviceId: service.id, active: true },
       orderBy: { order: 'asc' },
     });
-    return categories.map((category) => ({
-      id: category.id,
-      serviceId: category.serviceId,
-      code: category.code,
-      label: category.label,
-      order: category.order,
-    }));
+    if (categories.length === 0) return [];
+
+    const priced = await this.pricedCategoryIds(categories.map((c) => c.id), clientType);
+    return categories
+      .filter((category) => priced.has(category.id))
+      .map((category) => ({
+        id: category.id,
+        serviceId: category.serviceId,
+        code: category.code,
+        label: category.label,
+        order: category.order,
+      }));
   }
 
   /**
-   * Les items d'une catégorie, tarifés selon la nature du visiteur.
+   * Les items tarifés d'une catégorie, dans la monnaie du visiteur.
    * `categoryId` est vérifié rattaché à `serviceCode` : une URL croquant une
    * catégorie d'une autre prestation ne rend rien.
    */
   async listItems(
     serviceCode: string,
     categoryId: string,
-    options: { forPro: boolean },
+    clientType?: string,
   ): Promise<CatalogItemView[]> {
-    const service = await this.prisma.service.findUnique({ where: { code: serviceCode as never } });
+    const service = await this.readService(serviceCode);
+    const category = await this.prisma.catalogCategory.findFirst({
+      where: { id: categoryId, serviceId: service.id, active: true },
+    });
+    if (!category) {
+      throw new NotFoundException('Catégorie introuvable.');
+    }
+
+    const items = await this.prisma.catalogItem.findMany({
+      where: {
+        categoryId: category.id,
+        active: true,
+        [priceColumn(clientType)]: { not: null },
+      },
+      orderBy: { order: 'asc' },
+    });
+
+    return items.map((item) => ({
+      id: item.id,
+      categoryId: item.categoryId,
+      code: item.code,
+      label: item.label,
+      description: item.description,
+      androidVersion: item.androidVersion,
+      order: item.order,
+      price: projectPrice(item, clientType).price,
+    }));
+  }
+
+  /** Colonnes `categoryId` des catégories ayant au moins un item tarifié. */
+  private async pricedCategoryIds(
+    categoryIds: string[],
+    clientType?: string,
+  ): Promise<Set<string>> {
+    if (categoryIds.length === 0) return new Set();
+    const items = await this.prisma.catalogItem.findMany({
+      where: {
+        categoryId: { in: categoryIds },
+        active: true,
+        [priceColumn(clientType)]: { not: null },
+      },
+      select: { categoryId: true },
+    });
+    return new Set(items.map((item) => item.categoryId));
+  }
+
+  private async readService(serviceCode: string) {
+    const service = await this.prisma.service.findUnique({
+      where: { code: serviceCode as never },
+    });
     if (!service || !service.active) {
       throw new NotFoundException('Prestation introuvable.');
     }
-    const category = await this.prisma.catalogCategory.findFirst({
-      where: { id: categoryId, serviceId: service.id },
-    });
-    if (!category || !category.active) {
-      throw new NotFoundException('Catégorie introuvable.');
-    }
-    const items = await this.prisma.catalogItem.findMany({
-      where: { categoryId: category.id, active: true },
-      orderBy: { order: 'asc' },
-    });
-    return items.map((item) => {
-      const price = projectPrice(
-        { pricePublic: item.pricePublic, pricePro: item.pricePro },
-        options.forPro,
-      );
-      return {
-        id: item.id,
-        categoryId: item.categoryId,
-        code: item.code,
-        label: item.label,
-        description: item.description,
-        androidVersion: item.androidVersion,
-        order: item.order,
-        ...price,
-      };
-    });
+    return service;
   }
 }
 
-/** Le tarif retenu, et le drapeau « sur devis » quand il n'existe pas. */
+/** La colonne de tarif lue par ce visiteur : professionnel uniquement pour un compte B2B. */
+export function priceColumn(clientType?: string): 'pricePro' | 'pricePublic' {
+  return clientType === 'B2B' ? 'pricePro' : 'pricePublic';
+}
+
+/** Le tarif retenu pour ce visiteur. */
 export function projectPrice(
   prices: { pricePublic: number | null; pricePro: number | null },
-  forPro: boolean,
-): CatalogPriceView {
-  const price = forPro ? prices.pricePro : prices.pricePublic;
-  return { price, surDevis: price === null };
+  clientType?: string,
+): { price: number | null } {
+  return { price: prices[priceColumn(clientType)] };
 }

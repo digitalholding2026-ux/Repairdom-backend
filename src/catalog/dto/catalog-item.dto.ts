@@ -73,7 +73,11 @@ export class UpdateCatalogItemDto {
   active?: boolean;
 }
 
-/** Les deux tarifs se règlent ensemble ; null explicite = retour « sur devis ». */
+/**
+ * Les deux tarifs se règlent ensemble. `active` est accepté ici pour que
+ * l'activation et la tarification se fassent en une écriture : activer sans
+ * les deux montants est refusé, voir `CatalogAdminService.updatePrices`.
+ */
 export class UpdateCatalogItemPricesDto {
   @IsOptional()
   @IsInt()
@@ -84,4 +88,8 @@ export class UpdateCatalogItemPricesDto {
   @IsInt()
   @Min(0)
   pricePro?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 }

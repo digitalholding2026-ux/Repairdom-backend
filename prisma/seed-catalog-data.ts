@@ -6,12 +6,17 @@
  *
  * Idempotent : chaque écriture est un `upsert` adressé par la contrainte unique
  * naturelle du document (`Service.code`, `CatalogCategory(serviceId, code)`,
- * `CatalogItem(categoryId, code)`). Rejouer le seed met à jour les libellés et
- * les prix, ne crée jamais de doublon. `active` est volontairement absent des
- * `update` : un item désactivé par l'admin le reste après un re-seed.
+ * `CatalogItem(categoryId, code)`). Rejouer le seed met à jour les libellés,
+ * les prix et les drapeaux d'activité, ne crée jamais de doublon.
+ *
+ * Le seed est VOLONTAIREMENT AUTORITAIRE pour les items qu'il déclare : un
+ * libellé, un tarif ou une activité changés à la main par l'administration est
+ * réaligné au déploiement suivant. Les tarifs null et `active: false` sont une
+ * donnée de configuration, pas un accident : un item sans prix n'est servi à
+ * personne, il attend sa tarification.
  */
 
-/** Prix public / professionnel à null = « sur devis ». */
+/** Prix public / professionnel à null = aucun montant annoncé. */
 export type SeedItem = {
   code: string;
   label: string;
@@ -19,6 +24,7 @@ export type SeedItem = {
   androidVersion?: string | null;
   pricePublic: number | null;
   pricePro: number | null;
+  active: boolean;
 };
 
 export type SeedCategory = {
@@ -86,6 +92,7 @@ export const FRP_ITEMS: SeedItem[] = Object.entries(TECNO_BY_ANDROID).flatMap(
       androidVersion,
       pricePublic: 3000,
       pricePro: 1500,
+      active: true,
     })),
 );
 
@@ -98,38 +105,91 @@ export const SERVICES: SeedService[] = [
         code: 'REINSTALL_OS',
         label: 'Réinstallation OS + drivers',
         items: [
-          { code: 'REINSTALL_OS', label: 'Réinstallation OS + drivers', pricePublic: 5000, pricePro: null },
+          {
+            code: 'REINSTALL_OS',
+            label: 'Réinstallation OS + drivers',
+            pricePublic: 5000,
+            pricePro: 2500,
+            active: true,
+          },
         ],
       },
       {
         code: 'DRIVERS',
         label: 'Installation pilotes',
-        items: [{ code: 'DRIVERS', label: 'Installation pilotes', pricePublic: 2500, pricePro: null }],
+        items: [
+          {
+            code: 'DRIVERS',
+            label: 'Installation pilotes',
+            pricePublic: 2500,
+            pricePro: 1250,
+            active: true,
+          },
+        ],
       },
       {
         code: 'SOFTWARE',
         label: 'Installation logiciel',
-        items: [{ code: 'SOFTWARE', label: 'Installation logiciel', pricePublic: null, pricePro: null }],
+        // Non tarifié : hors parcours tant que le barème n'existe pas.
+        items: [
+          {
+            code: 'SOFTWARE',
+            label: 'Installation logiciel',
+            pricePublic: null,
+            pricePro: null,
+            active: false,
+          },
+        ],
       },
       {
         code: 'DEBRIDAGE',
         label: 'Débridage / nettoyage',
-        items: [{ code: 'DEBRIDAGE', label: 'Débridage / nettoyage', pricePublic: null, pricePro: null }],
+        items: [
+          {
+            code: 'DEBRIDAGE',
+            label: 'Débridage / nettoyage',
+            pricePublic: null,
+            pricePro: null,
+            active: false,
+          },
+        ],
       },
     ],
   },
   {
     code: 'SMARTPHONE',
     label: 'Réparation smartphone',
+    // Les quatre postes sont déclarés mais non tarifiés : la prestation reste
+    // invisible jusqu'à la saisie de son barème par l'administration.
     categories: [
-      { code: 'SCREEN', label: 'Écran', items: [{ code: 'SCREEN', label: 'Écran', pricePublic: null, pricePro: null }] },
-      { code: 'BATTERY', label: 'Batterie', items: [{ code: 'BATTERY', label: 'Batterie', pricePublic: null, pricePro: null }] },
+      {
+        code: 'SCREEN',
+        label: 'Écran',
+        items: [{ code: 'SCREEN', label: 'Écran', pricePublic: null, pricePro: null, active: false }],
+      },
+      {
+        code: 'BATTERY',
+        label: 'Batterie',
+        items: [{ code: 'BATTERY', label: 'Batterie', pricePublic: null, pricePro: null, active: false }],
+      },
       {
         code: 'CONNECTOR',
         label: 'Connecteur de charge',
-        items: [{ code: 'CONNECTOR', label: 'Connecteur de charge', pricePublic: null, pricePro: null }],
+        items: [
+          {
+            code: 'CONNECTOR',
+            label: 'Connecteur de charge',
+            pricePublic: null,
+            pricePro: null,
+            active: false,
+          },
+        ],
       },
-      { code: 'OTHER', label: 'Autre', items: [{ code: 'OTHER', label: 'Autre', pricePublic: null, pricePro: null }] },
+      {
+        code: 'OTHER',
+        label: 'Autre',
+        items: [{ code: 'OTHER', label: 'Autre', pricePublic: null, pricePro: null, active: false }],
+      },
     ],
   },
   {
@@ -213,6 +273,7 @@ export async function seedCatalogV2(
             pricePublic: item.pricePublic,
             pricePro: item.pricePro,
             order: (itemIndex + 1) * 10,
+            active: item.active,
           },
           create: {
             categoryId: categoryRow.id,
@@ -223,6 +284,7 @@ export async function seedCatalogV2(
             pricePublic: item.pricePublic,
             pricePro: item.pricePro,
             order: (itemIndex + 1) * 10,
+            active: item.active,
           },
         });
         items += 1;

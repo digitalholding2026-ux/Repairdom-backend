@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { projectPrice } from './catalog.service.js';
-import type { CatalogItemView, CatalogPriceView } from './catalog.types.js';
+import type { CatalogItemView } from './catalog.types.js';
 import type {
   CreateCatalogItemDto,
   UpdateCatalogItemDto,
@@ -31,7 +31,12 @@ type ItemRow = {
  *
  * La suppression est logique (`active = false`) : un item référencé par des
  * demandes doit rester lisible, il disparaît seulement des parcours.
- * Le tarif rendu suit la même règle que la lecture publique, côté B2B.
+ *
+ * Invariant d'écriture : un item actif a un tarif public ET un tarif
+ * professionnel. C'est la condition qui rend la lecture publique fidèle — un
+ * item actif sans montant serait proposé puis affiché sans prix. Elle est
+ * contrôlée à la création, à l'activation et à chaque réglage de tarif, sur
+ * l'état-resultat de l'écriture et pas seulement sur le champ demandé.
  */
 @Injectable()
 export class CatalogAdminService {
@@ -50,6 +55,9 @@ export class CatalogAdminService {
       throw new ConflictException('Un item porte déjà ce code dans cette catégorie.');
     }
 
+    const active = dto.active ?? true;
+    assertPricedWhenActive(active, dto.pricePublic ?? null, dto.pricePro ?? null);
+
     const created = await this.prisma.catalogItem.create({
       data: {
         categoryId: dto.categoryId,
@@ -60,10 +68,10 @@ export class CatalogAdminService {
         pricePublic: dto.pricePublic ?? null,
         pricePro: dto.pricePro ?? null,
         order: dto.order ?? 0,
-        active: dto.active ?? true,
+        active,
       },
     });
-    return toItemView(created, { forPro: false });
+    return toItemView(created);
   }
 
   async updateItem(id: string, dto: UpdateCatalogItemDto): Promise<CatalogItemView> {
@@ -78,6 +86,10 @@ export class CatalogAdminService {
       }
     }
 
+    if (dto.active !== undefined) {
+      assertPricedWhenActive(dto.active, existing.pricePublic, existing.pricePro);
+    }
+
     const updated = await this.prisma.catalogItem.update({
       where: { id },
       data: {
@@ -89,7 +101,7 @@ export class CatalogAdminService {
         ...(dto.active !== undefined ? { active: dto.active } : {}),
       },
     });
-    return toItemView(updated, { forPro: false });
+    return toItemView(updated);
   }
 
   /** Suppression logique : l'item reste en base, il quitte les parcours. */
@@ -99,22 +111,33 @@ export class CatalogAdminService {
       where: { id },
       data: { active: false },
     });
-    return toItemView(updated, { forPro: false });
+    return toItemView(updated);
   }
 
   async updatePrices(
     id: string,
     dto: UpdateCatalogItemPricesDto,
   ): Promise<{ pricePublic: number | null; pricePro: number | null }> {
-    if (dto.pricePublic === undefined && dto.pricePro === undefined) {
+    if (
+      dto.pricePublic === undefined &&
+      dto.pricePro === undefined &&
+      dto.active === undefined
+    ) {
       throw new BadRequestException('Aucun tarif à mettre à jour.');
     }
-    await this.getItem(id);
+    const existing = await this.getItem(id);
+
+    const pricePublic = dto.pricePublic !== undefined ? dto.pricePublic : existing.pricePublic;
+    const pricePro = dto.pricePro !== undefined ? dto.pricePro : existing.pricePro;
+    const active = dto.active !== undefined ? dto.active : existing.active;
+    assertPricedWhenActive(active, pricePublic, pricePro);
+
     const updated = await this.prisma.catalogItem.update({
       where: { id },
       data: {
-        ...(dto.pricePublic !== undefined ? { pricePublic: dto.pricePublic } : {}),
-        ...(dto.pricePro !== undefined ? { pricePro: dto.pricePro } : {}),
+        pricePublic,
+        pricePro,
+        ...(dto.active !== undefined ? { active: dto.active } : {}),
       },
     });
     return { pricePublic: updated.pricePublic, pricePro: updated.pricePro };
@@ -127,7 +150,18 @@ export class CatalogAdminService {
   }
 }
 
-function toItemView(item: ItemRow, options: { forPro: boolean }): CatalogItemView {
+/** Un item proposé aux clients doit avoir ses deux tarifs ; sinon il reste hors circuit. */
+function assertPricedWhenActive(
+  active: boolean,
+  pricePublic: number | null,
+  pricePro: number | null,
+): void {
+  if (active && (pricePublic === null || pricePro === null)) {
+    throw new BadRequestException('Un item actif doit avoir un prix public et un prix pro');
+  }
+}
+
+function toItemView(item: ItemRow): CatalogItemView {
   return {
     id: item.id,
     categoryId: item.categoryId,
@@ -136,13 +170,6 @@ function toItemView(item: ItemRow, options: { forPro: boolean }): CatalogItemVie
     description: item.description,
     androidVersion: item.androidVersion,
     order: item.order,
-    ...toPriceView(item, options),
+    ...projectPrice(item),
   };
-}
-
-function toPriceView(
-  item: { pricePublic: number | null; pricePro: number | null },
-  options: { forPro: boolean },
-): CatalogPriceView {
-  return projectPrice(item, options.forPro);
 }

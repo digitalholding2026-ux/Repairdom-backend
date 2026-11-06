@@ -3,12 +3,6 @@
  * le formatage « FCFA » n'existe qu'à l'affichage, côté frontend.
  */
 
-/** `price` null = prestation sans tarif annoncé, chiffrée après contact. */
-export interface CatalogPriceView {
-  price: number | null;
-  surDevis: boolean;
-}
-
 export interface CatalogServiceView {
   id: string;
   code: string;
@@ -24,6 +18,11 @@ export interface CatalogCategoryView {
   order: number;
 }
 
+/**
+ * Un item servi a toujours un montant : la lecture filtre les items dont le
+ * tarif du visiteur est absent. `price` reste `number | null` parce que
+ * l'administration, elle, liste aussi les items non tarifés.
+ */
 export interface CatalogItemView {
   id: string;
   categoryId: string;
@@ -33,5 +32,4 @@ export interface CatalogItemView {
   androidVersion: string | null;
   order: number;
   price: number | null;
-  surDevis: boolean;
 }
