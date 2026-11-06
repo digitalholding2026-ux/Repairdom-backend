@@ -6,6 +6,7 @@
  * but the DDL has already been applied (only the seed failed).
  * 
  * This script:
+ * 0. Exits successfully when the history table does not exist yet (fresh DB)
  * 1. Checks if migration 20261009010000_equipment_families is in FAILED state
  * 2. If so, runs the seed INSERT (idempotent with ON CONFLICT DO NOTHING)
  * 3. Marks the migration as applied via prisma migrate resolve --applied
@@ -31,6 +32,20 @@ async function main() {
   console.log('🔍 Checking migration status...');
 
   try {
+    // On a brand-new database the Prisma history table has not been created
+    // yet: `migrate deploy` is what creates it. Reading it before that point
+    // raises Postgres 42P01, this script exits 1, and the container restarts
+    // forever without ever reaching the migration step. An absent history
+    // table is a normal state here, not a failure.
+    const historyTable = await prisma.$queryRaw`
+      SELECT to_regclass('public._prisma_migrations') AS "table"
+    `;
+
+    if (!historyTable || historyTable.length === 0 || !historyTable[0].table) {
+      console.log('ℹ️ Fresh database: _prisma_migrations does not exist yet. Nothing to recover.');
+      return;
+    }
+
     // Check if migration exists and is in failed state
     const migration = await prisma.$queryRaw`
       SELECT migration_name, finished_at, rolled_back_at, logs
