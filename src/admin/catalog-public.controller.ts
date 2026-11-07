@@ -3,7 +3,6 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
 import { CatalogService } from './catalog.service.js';
-import { NATIONALITIES } from '../technician/nationalities.js';
 
 /* Catalogue public — Sprint 8.1, rendu réellement public au chantier FIX.
  *
@@ -88,10 +87,4 @@ export class CatalogPublicController {
    * protégée : la garder fermée ne coûte rien et évite d'ouvrir par
    * inadvertance une route du KYC. Les guards sont donc posés au niveau
    * méthode, puisque ceux de la classe ont été retirés. */
-  @Get('nationalities')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CLIENT', 'TECHNICIAN', 'ADMIN')
-  listNationalities() {
-    return NATIONALITIES;
-  }
 }

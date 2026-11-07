@@ -27,7 +27,14 @@ import { ResendVerificationDto } from './dto/resend-verification.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateMeDto } from './dto/update-me.dto.js';
-import { MAX_AVATAR_SIZE, isAllowedAvatarMimetype, type UploadedAvatarFile } from '../technician/avatar-file.js';
+
+/* Type minimale pour un fichier uploadé (remplace l'import supprimé de
+ * `technician/avatar-file.ts`). Seul le sous-ensemble utilisé est typé. */
+export interface MulterFile {
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+}
 
 @Controller('auth')
 export class AuthController {
@@ -125,9 +132,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { files: 1, fileSize: MAX_AVATAR_SIZE },
+      limits: { files: 1, fileSize: 5 * 1024 * 1024 },
       fileFilter(_request, file, callback) {
-        if (!isAllowedAvatarMimetype(file.mimetype)) {
+        const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+        if (!allowed.includes(file.mimetype)) {
           callback(
             new BadRequestException('Format non supporté. Formats acceptés : JPG, PNG, WEBP.'),
             false,
@@ -138,7 +146,7 @@ export class AuthController {
       },
     }),
   )
-  uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file?: UploadedAvatarFile) {
+  uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file?: MulterFile) {
     return this.authService.uploadAvatar(user.id, file);
   }
 

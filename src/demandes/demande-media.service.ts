@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
   SupabaseStorageService,
-} from '../technician/supabase-storage.service.js';
+} from '../storage/supabase-storage.service.js';
 
 /* Dépôt de panne multimédia — pièces jointes réelles (photos, vidéos,
  * vocaux). Fourni + exporté par `TechnicianModule` (à côté de
@@ -156,7 +156,7 @@ export class DemandeMediaService {
     if (!demande) throw new NotFoundException('Fichier introuvable.');
     const allowed =
       (actor.role === 'CLIENT' && demande.clientId === actor.userId) ||
-      (actor.role === 'TECHNICIAN' && demande.technicianId === actor.userId);
+      (actor.role === 'ADMIN' && demande.technicianId === actor.userId);
     if (!allowed) throw new NotFoundException('Fichier introuvable.');
     const diagnostic = await this.prisma.diagnostic.findFirst({
       where: { id: diagnosticId, demandeId: demande.id },
@@ -175,12 +175,12 @@ export class DemandeMediaService {
     if (!demande) throw new NotFoundException('Fichier introuvable.');
     const allowed =
       (actor.role === 'CLIENT' && demande.clientId === actor.userId) ||
-      (actor.role === 'TECHNICIAN' && demande.technicianId === actor.userId) ||
+      (actor.role === 'ADMIN' && demande.technicianId === actor.userId) ||
       // Mission ouverte non assignée : le technicien peut écouter/voir les
       // médias AVANT d'accepter (détail d'opportunité éligible). Les IDs
       // étant des UUID imprévisibles, aucune énumération n'est possible ;
       // adresse/téléphone/GPS restent masqués par la vue publique.
-      (actor.role === 'TECHNICIAN' &&
+      (actor.role === 'ADMIN' &&
         demande.technicianId === null &&
         (demande.status === 'SUBMITTED' || demande.status === 'PENDING'));
     if (!allowed) throw new NotFoundException('Fichier introuvable.');

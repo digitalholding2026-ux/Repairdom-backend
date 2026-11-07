@@ -7,7 +7,7 @@ import { PushModule } from '../push/push.module.js';
 import { CollaborationController } from './collaboration.controller.js';
 import { CollaborationService } from './collaboration.service.js';
 import { DemandeMediaService } from '../demandes/demande-media.service.js';
-import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
+import { SupabaseStorageService } from '../storage/supabase-storage.service.js';
 
 @Module({
   imports: [AuthModule, FinancialModule, DisputesModule, RealtimeModule, PushModule],

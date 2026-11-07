@@ -78,7 +78,7 @@ export class ReviewsService {
     // déduite automatiquement comme étant l'autre partie de la demande.
     const isAuthorized =
       (user.role === 'CLIENT' && demande.clientId === user.id) ||
-      (user.role === 'TECHNICIAN' && demande.technicianId === user.id);
+      (user.role === 'ADMIN' && demande.technicianId === user.id);
     if (!isAuthorized) {
       throw new ForbiddenException('Vous ne pouvez pas évaluer cette intervention.');
     }
@@ -166,7 +166,7 @@ export class ReviewsService {
   async getClientReputation(user: RequestUser, targetId: string): Promise<ReputationDto> {
     const isOwner = user.role === 'CLIENT' && user.id === targetId;
     const isMissionTechnician =
-      user.role === 'TECHNICIAN' &&
+      user.role === 'ADMIN' &&
       (await this.prisma.demande.findFirst({
         where: { clientId: targetId, technicianId: user.id },
         select: { id: true },

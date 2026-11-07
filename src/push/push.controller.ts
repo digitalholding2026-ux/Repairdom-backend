@@ -37,7 +37,7 @@ export class PushController {
 
   @Post('subscribe')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CLIENT', 'TECHNICIAN', 'ADMIN')
+  @Roles('CLIENT', 'ADMIN', 'ADMIN')
   @HttpCode(HttpStatus.CREATED)
   async subscribe(
     @CurrentUser() user: RequestUser,
@@ -57,7 +57,7 @@ export class PushController {
 
   @Delete('subscribe')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CLIENT', 'TECHNICIAN', 'ADMIN')
+  @Roles('CLIENT', 'ADMIN', 'ADMIN')
   @HttpCode(HttpStatus.NO_CONTENT)
   async unsubscribe(
     @CurrentUser() user: RequestUser,
@@ -68,7 +68,7 @@ export class PushController {
 
   @Post('test')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('CLIENT', 'TECHNICIAN', 'ADMIN')
+  @Roles('CLIENT', 'ADMIN', 'ADMIN')
   @HttpCode(HttpStatus.OK)
   async test(@CurrentUser() user: RequestUser) {
     return this.push.sendToUser(

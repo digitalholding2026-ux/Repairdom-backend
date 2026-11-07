@@ -9,7 +9,7 @@ import { CreateReviewDto } from './dto/create-review.dto.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('CLIENT', 'TECHNICIAN')
+@Roles('CLIENT', 'ADMIN')
 export class ReviewsController {
   constructor(private readonly reviewsService: ReviewsService) {}
 

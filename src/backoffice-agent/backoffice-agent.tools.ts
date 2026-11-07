@@ -27,7 +27,7 @@ const DEMANDE_STATUSES = [
   'CANCELED',
 ] as const;
 
-const USER_ROLES = ['CLIENT', 'TECHNICIAN', 'ADMIN'] as const;
+const USER_ROLES = ['CLIENT', 'ADMIN', 'ADMIN'] as const;
 
 const DISPUTE_STATUSES = ['OPEN', 'UNDER_REVIEW', 'RESOLVED', 'REJECTED'] as const;
 

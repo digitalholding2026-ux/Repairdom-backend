@@ -212,7 +212,7 @@ export function buildNotification(
   type: NotificationType,
   demandeId: string | null,
   userId: string,
-  audience: 'CLIENT' | 'TECHNICIAN',
+  audience: 'CLIENT' | 'ADMIN',
 ): NotificationInput {
   const content: Record<NotificationType, { title: string; message: string }> = {
     TECHNICIAN_ACCEPTED: {
@@ -238,7 +238,7 @@ export function buildNotification(
     SCHEDULED: {
       title: 'Rendez-vous planifié',
       message:
-        audience === 'TECHNICIAN'
+        audience === 'ADMIN'
           ? 'Votre intervention est planifiée.'
           : 'L’intervention a été planifiée : consultez la date du rendez-vous.',
     },
@@ -254,7 +254,7 @@ export function buildNotification(
     MISSION_AVAILABLE: {
       title: 'Nouvelle mission disponible',
       message:
-        audience === 'TECHNICIAN'
+        audience === 'ADMIN'
           ? 'Une intervention correspondant à votre zone est disponible. Consultez les détails pour accepter la mission.'
           : 'Une nouvelle mission est disponible.',
     },
@@ -265,7 +265,7 @@ export function buildNotification(
     DISPUTE_OPENED: {
       title: 'Litige ouvert',
       message:
-        audience === 'TECHNICIAN'
+        audience === 'ADMIN'
           ? 'Le client a ouvert un litige sur une mission terminée. Consultez le dossier.'
           : 'Un litige a été ouvert sur cette mission. L’administration va l’examiner.',
     },

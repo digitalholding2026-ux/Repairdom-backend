@@ -15,7 +15,7 @@ import { DisputesService } from '../disputes/disputes.service.js';
 
 @Controller('demandes')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('CLIENT', 'TECHNICIAN')
+@Roles('CLIENT', 'ADMIN')
 export class CollaborationController {
   constructor(
     private readonly collaborationService: CollaborationService,
@@ -55,7 +55,7 @@ export class CollaborationController {
    * réel AVANT création, lié en transaction (aucune ligne orpheline).
    * 25 Mo max, formats audio validés côté service. */
   @Post(':demandeId/diagnostics/audio/upload')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(
     FileInterceptor('file', {
@@ -70,7 +70,7 @@ export class CollaborationController {
   }
 
   @Delete(':demandeId/diagnostics/audio/upload')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   deleteDiagnosticAudio(
     @CurrentUser() user: RequestUser,
@@ -96,13 +96,13 @@ export class CollaborationController {
   }
 
   @Get(':demandeId/catalog/suggestions')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   suggestDiagnostics(@CurrentUser() user: RequestUser, @Param('demandeId') demandeId: string) {
     return this.collaborationService.suggestDiagnostics(user, demandeId);
   }
 
   @Post(':demandeId/diagnostic/select')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   selectCatalogDiagnostic(
     @CurrentUser() user: RequestUser,
     @Param('demandeId') demandeId: string,

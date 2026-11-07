@@ -27,7 +27,7 @@ const TECHNICIAN_TRANSITIONS: Record<string, readonly string[]> = {
   IN_PROGRESS: ['COMPLETED'],
 };
 
-export type LifecycleActor = 'CLIENT' | 'TECHNICIAN';
+export type LifecycleActor = 'CLIENT' | 'ADMIN';
 
 export function assertTransition(
   actor: LifecycleActor,

@@ -23,7 +23,7 @@ export class FinanceController {
 
   /** Revenus SIMULATION du technicien connecté. */
   @Get('technician/me')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   technicianSummary(@CurrentUser() user: RequestUser) {
     return this.financial.getTechnicianFinanceSummary(user.id);
   }

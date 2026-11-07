@@ -1,4 +1,4 @@
-export type UserRole = 'CLIENT' | 'TECHNICIAN' | 'ADMIN';
+export type UserRole = 'CLIENT' | 'ADMIN';
 
 /** M1 — nature commerciale du compte (tarif public vs tarif professionnel). */
 export type UserClientType = 'CLIENT' | 'B2B';

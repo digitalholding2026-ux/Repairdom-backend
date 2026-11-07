@@ -123,7 +123,7 @@ export class DisputesService {
           'DISPUTE_OPENED',
           demandeId,
           demande.technicianId as string,
-          'TECHNICIAN',
+          'ADMIN',
         ),
         /* Identifiant et catégorie du litige : sans eux, l'admin doit ouvrir
          * chaque mission pour découvrir de quel litige il s'agit. */
@@ -317,7 +317,7 @@ export class DisputesService {
               'DISPUTE_RESOLVED',
               dispute.demandeId,
               parties.technicianId,
-              'TECHNICIAN',
+              'ADMIN',
             ),
             ...(metadata ? { metadata } : {}),
           });

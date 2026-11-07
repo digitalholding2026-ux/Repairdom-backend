@@ -6,7 +6,7 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { OptionalJwtAuthGuard } from './optional-jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
 import { VerificationReminderScheduler } from './verification-reminder.scheduler.js';
-import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
+import { SupabaseStorageService } from '../storage/supabase-storage.service.js';
 
 @Module({
   controllers: [AuthController],

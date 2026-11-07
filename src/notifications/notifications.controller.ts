@@ -16,7 +16,7 @@ import type { RequestUser } from './../auth/auth.types.js';
 
 @Controller('notifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('CLIENT', 'TECHNICIAN')
+@Roles('CLIENT', 'ADMIN')
 export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 

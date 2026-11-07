@@ -29,7 +29,7 @@ import { SasPayPayoutService } from './saspay-payout.service.js';
  *  (metadata de l'écriture ledger + `WithdrawalRequest.fee`). */
 @Controller('finances/withdrawals')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('CLIENT', 'TECHNICIAN')
+@Roles('CLIENT', 'ADMIN')
 export class WithdrawalController {
   constructor(
     private readonly financial: FinancialService,

@@ -46,7 +46,7 @@ export class RealtimeController {
 
   /** Flux personnel : notifications + statuts des missions de l'utilisateur. */
   @Get('user')
-  @Roles('CLIENT', 'TECHNICIAN', 'ADMIN')
+  @Roles('CLIENT', 'ADMIN', 'ADMIN')
   streamUser(@CurrentUser() user: RequestUser, @Req() req: Request, @Res() res: Response): void {
     sseHeaders(res);
     this.realtime.subscribe(user.id, user.role, [userChannel(user.id)], res, req);
@@ -63,7 +63,7 @@ export class RealtimeController {
    * inexistant), alors que tout le reste de l'API masque. Le frontend
    * absorbait ces 403 de toute façon (bascule SSE → `polling`). */
   @Get('missions/:demandeId')
-  @Roles('CLIENT', 'TECHNICIAN')
+  @Roles('CLIENT', 'ADMIN')
   async streamMission(
     @CurrentUser() user: RequestUser,
     @Param('demandeId') demandeId: string,
@@ -84,7 +84,7 @@ export class RealtimeController {
 
   /** Flux des missions disponibles (techniciens uniquement) + personnel. */
   @Get('technician/stream')
-  @Roles('TECHNICIAN')
+  @Roles('ADMIN')
   streamTechnician(@CurrentUser() user: RequestUser, @Req() req: Request, @Res() res: Response): void {
     sseHeaders(res);
     this.realtime.subscribe(

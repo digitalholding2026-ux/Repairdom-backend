@@ -10,7 +10,7 @@ import { PrismaModule } from '../prisma/prisma.module.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { EmailService } from './email.service.js';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
+import { SupabaseStorageService } from '../storage/supabase-storage.service.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 
 /* DEBUG — scénario « login → reset → login → dashboard » en HTTP réel

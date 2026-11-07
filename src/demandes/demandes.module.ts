@@ -10,7 +10,7 @@ import { DemandeDraftController } from './demande-draft.controller.js';
 import { DemandeDraftService } from './demande-draft.service.js';
 import { DraftThrottleGuard } from './demande-draft-throttle.guard.js';
 import { DemandeMediaService } from './demande-media.service.js';
-import { SupabaseStorageService } from '../technician/supabase-storage.service.js';
+import { SupabaseStorageService } from '../storage/supabase-storage.service.js';
 
 /* `RewardsModule` est importé ici (et UNIQUEMENT ici) pour câbler, sur la
  * confirmation de mission, le comptage des récompenses client. Pas de cycle :

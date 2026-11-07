@@ -25,7 +25,7 @@ import {
 /* Phase A (frontend) — le technicien assigné voit le barème (fourchette
  * min/ref/max + frais, SANS historique ni données internes) dès le choix du
  * diagnostic, pour un devis aligné au catalogue. Endpoint déjà réservé au
- * technicien assigné (TECHNICIAN + contrôle d'assignation). */
+ * technicien assigné (ADMIN + contrôle d'assignation). */
 import { toTechnicianPricing } from '../admin/pricing-visibility.js';
 import {
   buildNotification,
@@ -345,7 +345,7 @@ export class CollaborationService {
   }
 
   async createDiagnostic(user: RequestUser, demandeId: string, dto: CreateDiagnosticDto) {
-    if (user.role !== 'TECHNICIAN') {
+    if (user.role !== 'ADMIN') {
       throw new ForbiddenException('Seul le technicien assigné peut ajouter un diagnostic.');
     }
     const demande = await this.requireAccess(user, demandeId);
@@ -392,7 +392,7 @@ export class CollaborationService {
   }
 
   async createQuote(user: RequestUser, demandeId: string, dto: CreateQuoteDto) {
-    if (user.role !== 'TECHNICIAN') {
+    if (user.role !== 'ADMIN') {
       throw new ForbiddenException('Seul le technicien assigné peut proposer un tarif.');
     }
     const demande = await this.requireAccess(user, demandeId);
@@ -597,7 +597,7 @@ export class CollaborationService {
             action === 'accept' ? 'QUOTE_ACCEPTED' : 'QUOTE_REJECTED',
             demandeId,
             demande.technicianId,
-            'TECHNICIAN',
+            'ADMIN',
           ),
           /* Montant du devis en XAF entier (formaté en FCFA côté frontend).
            * Utile au technicien pour savoir d'un coup d'œil de quel montant
@@ -652,7 +652,7 @@ export class CollaborationService {
    *  Reçues par le technicien assigné ; hiérarchisées par spécificité
    *  (problème exact > problème générique ; marque puis modèle ancrés). */
   async suggestDiagnostics(user: RequestUser, demandeId: string) {
-    if (user.role !== 'TECHNICIAN') {
+    if (user.role !== 'ADMIN') {
       throw new ForbiddenException('Seul le technicien assigné peut consulter les propositions.');
     }
     const demande = await this.prisma.demande.findUnique({
@@ -785,7 +785,7 @@ export class CollaborationService {
     demandeId: string,
     dto: SelectCatalogDiagnosticDto,
   ) {
-    if (user.role !== 'TECHNICIAN') {
+    if (user.role !== 'ADMIN') {
       throw new ForbiddenException('Seul le technicien assigné peut enregistrer le diagnostic.');
     }
     const demande = await this.prisma.demande.findUnique({
@@ -1033,7 +1033,7 @@ export class CollaborationService {
             'NEGOTIATION_REQUESTED',
             demandeId,
             demande.technicianId,
-            'TECHNICIAN',
+            'ADMIN',
           ),
           /* Montant en cours de négociation (XAF entier) : le technicien voit
            * immédiatement de quel devis il s'agit sans ouvrir la mission. */

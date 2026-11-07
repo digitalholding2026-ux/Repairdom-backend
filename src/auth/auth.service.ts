@@ -28,15 +28,9 @@ import {
 import type { RegisterDto } from './dto/register.dto.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { UpdateMeDto } from './dto/update-me.dto.js';
+import type { MulterFile } from './auth.controller.js';
 import { EmailService } from './email.service.js';
-import {
-  AVATAR_EXTENSION_BY_MIME,
-  MAX_AVATAR_SIZE,
-  isAllowedAvatarMimetype,
-  isImageBuffer,
-  type UploadedAvatarFile,
-} from '../technician/avatar-file.js';
-import { AVATAR_BUCKET, SupabaseStorageService } from '../technician/supabase-storage.service.js';
+import { AVATAR_BUCKET, SupabaseStorageService } from '../storage/supabase-storage.service.js';
 
 const EMAIL_INVALID_OR_EXPIRED =
   'Ce lien de vérification est invalide ou a expiré. Demandez un nouveau lien.';
@@ -445,24 +439,30 @@ export class AuthService {
     return this.toAuthUser(updated);
   }
 
-  async uploadAvatar(userId: string, file: UploadedAvatarFile | undefined): Promise<AuthUser> {
+  async uploadAvatar(userId: string, file: MulterFile | undefined): Promise<AuthUser> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('Compte introuvable.');
     if (!file) throw new BadRequestException('Fichier manquant.');
-    if (!isAllowedAvatarMimetype(file.mimetype)) {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(file.mimetype)) {
       throw new BadRequestException('Format non supporté. Formats acceptés : JPG, PNG, WEBP.');
     }
-    if (file.size > MAX_AVATAR_SIZE) {
+    if (file.size > 5 * 1024 * 1024) {
       throw new BadRequestException('Le fichier dépasse 5 Mo.');
     }
-    if (!isImageBuffer(file.buffer)) {
+    if (!file.buffer || !(file.buffer as Buffer).length) {
       throw new BadRequestException('Le fichier n’est pas une image valide.');
     }
     if (!this.storage.isConfigured) {
       throw new ServiceUnavailableException('L’upload de photo n’est pas disponible pour le moment.');
     }
 
-    const extension = AVATAR_EXTENSION_BY_MIME[file.mimetype];
+    const extensionByMime: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+    };
+    const extension = extensionByMime[file.mimetype];
     const path = `clients/${userId}/${randomUUID()}.${extension}`;
     await this.storage.uploadObject(path, file.buffer, file.mimetype);
     const avatarUrl = this.storage.publicUrl(path);
