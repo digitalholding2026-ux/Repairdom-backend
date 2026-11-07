@@ -1580,13 +1580,14 @@ model FundsHold {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Service {
-  id          String      @id @default(cuid())
-  code        ServiceCode @unique
-  label       String
-  description String?
-  active      Boolean     @default(true)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id           String      @id @default(cuid())
+  code         ServiceCode @unique
+  label        String
+  description  String?
+  active       Boolean     @default(true)
+  proAvailable Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   categories CatalogCategory[]
 

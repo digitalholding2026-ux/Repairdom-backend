@@ -11,7 +11,10 @@ import { CatalogAdminService } from './catalog-admin.service.js';
 import { seedCatalogV2 } from '../../prisma/seed-catalog-data.js';
 import { createCatalogDouble } from '../../test/catalog-double.js';
 
-/* M1 — règle d'écriture du catalogue v2 : un item actif a ses deux tarifs.
+/* M1 — règles d'écriture du catalogue v2 : un item actif a un tarif public,
+ * et un tarif professionnel quand sa prestation est ouverte aux professionnels.
+ * Quand les deux tarifs existent, le professionnel ne dépasse pas la moitié du
+ * public.
  *
  * La lecture publique ne sert que des items dont le montant du visiteur est
  * renseigné ; l'invariant inverse — actif sans montant — créerait une
@@ -23,7 +26,9 @@ import { createCatalogDouble } from '../../test/catalog-double.js';
  * AUCUNE INFRASTRUCTURE : le double en mémoire de `test/catalog-double.ts`
  * reçoit réellement les écritures, et les fixtures viennent du seed. */
 
-const MESSAGE = 'Un item actif doit avoir un prix public et un prix pro';
+const PUBLIC_MESSAGE = 'Un item actif doit avoir un prix public';
+const PRO_MESSAGE = 'Un item actif doit avoir un prix pro';
+const HALF_MESSAGE = 'Le prix pro doit être inférieur ou égal à la moitié du prix public';
 
 const { client, stores } = createCatalogDouble();
 let service: CatalogAdminService;
@@ -70,11 +75,11 @@ describe('Catalogue v2 admin — création', () => {
         label: 'Installation Word',
         pricePro: 1000,
       } as never),
-    ).rejects.toThrow(MESSAGE);
+    ).rejects.toThrow(PUBLIC_MESSAGE);
     expect(stores.items.some((entry) => entry.code === 'WORD')).toBe(false);
   });
 
-  it('refuse un item actif dont le tarif professionnel manque', async () => {
+  it('refuse un item actif dont le tarif professionnel manque (prestation ouverte aux pros)', async () => {
     const category = stores.categories.find((entry) => entry.code === 'SOFTWARE');
     await expect(
       service.createItem({
@@ -83,7 +88,36 @@ describe('Catalogue v2 admin — création', () => {
         label: 'Installation Excel',
         pricePublic: 1000,
       } as never),
-    ).rejects.toThrow(MESSAGE);
+    ).rejects.toThrow(PRO_MESSAGE);
+  });
+
+  it('accepte un item actif sans tarif pro sur une prestation réservée aux particuliers', async () => {
+    const category = stores.categories.find((entry) => entry.code === 'OTHER');
+    const created = await service.createItem({
+      categoryId: category.id,
+      code: 'VITRE',
+      label: 'Vitre arrière',
+      pricePublic: 4000,
+    } as never);
+    expect(created).toMatchObject({ price: 4000 });
+    expect(stores.items.find((entry) => entry.code === 'VITRE')).toMatchObject({
+      pricePro: null,
+      active: true,
+    });
+  });
+
+  it('refuse un tarif professionnel supérieur à la moitié du tarif public', async () => {
+    const category = stores.categories.find((entry) => entry.code === 'SOFTWARE');
+    await expect(
+      service.createItem({
+        categoryId: category.id,
+        code: 'OFFICE',
+        label: 'Installation Office',
+        pricePublic: 4000,
+        pricePro: 2001,
+      } as never),
+    ).rejects.toThrow(HALF_MESSAGE);
+    expect(stores.items.some((entry) => entry.code === 'OFFICE')).toBe(false);
   });
 
   it('accepte un item retiré sans aucun tarif', async () => {
@@ -115,7 +149,7 @@ describe('Catalogue v2 admin — activation', () => {
   it('refuse d’activer un item sans tarif', async () => {
     const software = itemOf('SOFTWARE');
     expect(software.active).toBe(false);
-    await expect(service.updateItem(software.id, { active: true })).rejects.toThrow(MESSAGE);
+    await expect(service.updateItem(software.id, { active: true })).rejects.toThrow(PUBLIC_MESSAGE);
     expect(software.active).toBe(false);
   });
 
@@ -123,7 +157,7 @@ describe('Catalogue v2 admin — activation', () => {
     const software = itemOf('SOFTWARE');
     await expect(
       service.updatePrices(software.id, { pricePublic: 3000, active: true }),
-    ).rejects.toThrow(MESSAGE);
+    ).rejects.toThrow(PRO_MESSAGE);
     expect(software).toMatchObject({ pricePublic: null, active: false });
   });
 
@@ -141,7 +175,15 @@ describe('Catalogue v2 admin — activation', () => {
   it('refuse de retirer un tarif à un item actif', async () => {
     await expect(
       service.updatePrices(itemOf('DRIVERS').id, { pricePublic: null }),
-    ).rejects.toThrow(MESSAGE);
+    ).rejects.toThrow(PUBLIC_MESSAGE);
+  });
+
+  it('refuse un réglage de tarif pro au-dessus de la moitié du public', async () => {
+    const drivers = itemOf('DRIVERS');
+    await expect(
+      service.updatePrices(drivers.id, { pricePro: 1251 }),
+    ).rejects.toThrow(HALF_MESSAGE);
+    expect(drivers.pricePro).toBe(1250);
   });
 
   it('laisse retirer un item actif sans rien tarifier', async () => {
@@ -165,15 +207,15 @@ describe('Catalogue v2 admin — activation', () => {
 });
 
 describe('Catalogue v2 admin — route HTTP', () => {
-  it('PATCH prix : 400 et message lisible quand active=true sans les deux tarifs', async () => {
-    const screen = itemOf('SCREEN');
+  it('PATCH prix : 400 et message lisible quand active=true sans tarif public', async () => {
+    const other = itemOf('OTHER');
     const response = await request(app.getHttpServer())
-      .patch(`/admin/catalog/items/${screen.id}/prices`)
-      .send({ pricePublic: 5000, active: true });
+      .patch(`/admin/catalog/items/${other.id}/prices`)
+      .send({ active: true });
 
     expect(response.status).toBe(400);
-    expect(response.body.message).toBe(MESSAGE);
-    expect(screen).toMatchObject({ pricePublic: null, active: false });
+    expect(response.body.message).toBe(PUBLIC_MESSAGE);
+    expect(other).toMatchObject({ pricePublic: null, active: false });
   });
 
   it('PATCH prix : 200 quand active=true s’accompagne des deux montants', async () => {
@@ -188,13 +230,13 @@ describe('Catalogue v2 admin — route HTTP', () => {
   });
 
   it('PATCH item : 400 à l’activation d’un item non tarifié', async () => {
-    const battery = itemOf('BATTERY');
+    const other = itemOf('OTHER');
     const response = await request(app.getHttpServer())
-      .patch(`/admin/catalog/items/${battery.id}`)
+      .patch(`/admin/catalog/items/${other.id}`)
       .send({ active: true });
 
     expect(response.status).toBe(400);
-    expect(response.body.message).toBe(MESSAGE);
+    expect(response.body.message).toBe(PUBLIC_MESSAGE);
   });
 
   it('POST item : 400 à la création d’un item actif sans tarif', async () => {
@@ -204,6 +246,36 @@ describe('Catalogue v2 admin — route HTTP', () => {
       .send({ categoryId: category.id, code: 'NO_PRICE', label: 'Sans tarif' });
 
     expect(response.status).toBe(400);
-    expect(response.body.message).toBe(MESSAGE);
+    expect(response.body.message).toBe(PUBLIC_MESSAGE);
+  });
+});
+
+describe('Catalogue v2 admin — ouverture d’une prestation', () => {
+  it('refuse d’ouvrir une prestation sans aucun item actif', async () => {
+    const smartphone = stores.services.find((entry) => entry.code === 'SMARTPHONE');
+    const categories = stores.categories.filter((entry) => entry.serviceId === smartphone.id);
+    const items = stores.items.filter((entry) =>
+      categories.some((category) => category.id === entry.categoryId),
+    );
+    for (const item of items) item.active = false;
+
+    await expect(service.setServiceActive('SMARTPHONE', true)).rejects.toThrow(
+      'Activez au moins un item avant d’ouvrir cette prestation.',
+    );
+    expect(smartphone.active).toBe(true);
+
+    items[0].active = true;
+    const response = await request(app.getHttpServer())
+      .patch('/admin/catalog/services/SMARTPHONE')
+      .send({ active: true });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ code: 'SMARTPHONE', active: true });
+  });
+
+  it('ferme puis rouvre une prestation qui a un item actif', async () => {
+    const closed = await service.setServiceActive('FRP', false);
+    expect(closed).toMatchObject({ code: 'FRP', active: false });
+    const reopened = await service.setServiceActive('FRP', true);
+    expect(reopened).toMatchObject({ code: 'FRP', active: true });
   });
 });

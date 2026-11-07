@@ -32,11 +32,13 @@ type ItemRow = {
  * La suppression est logique (`active = false`) : un item référencé par des
  * demandes doit rester lisible, il disparaît seulement des parcours.
  *
- * Invariant d'écriture : un item actif a un tarif public ET un tarif
- * professionnel. C'est la condition qui rend la lecture publique fidèle — un
- * item actif sans montant serait proposé puis affiché sans prix. Elle est
- * contrôlée à la création, à l'activation et à chaque réglage de tarif, sur
- * l'état-resultat de l'écriture et pas seulement sur le champ demandé.
+ * Invariant d'écriture : un item actif a un tarif public, et un tarif
+ * professionnel quand sa prestation est ouverte aux professionnels. C'est la
+ * condition qui rend la lecture publique fidèle — un item actif sans montant
+ * serait proposé puis affiché sans prix. Quand les deux tarifs existent, le
+ * tarif professionnel ne dépasse jamais la moitié du tarif public. Ces règles
+ * sont contrôlées à la création, à l'activation et à chaque réglage de tarif,
+ * sur l'état-resultat de l'écriture et pas seulement sur le champ demandé.
  */
 @Injectable()
 export class CatalogAdminService {
@@ -56,7 +58,8 @@ export class CatalogAdminService {
     }
 
     const active = dto.active ?? true;
-    assertPricedWhenActive(active, dto.pricePublic ?? null, dto.pricePro ?? null);
+    const proAvailable = await this.serviceProAvailable(category.serviceId);
+    assertItemPrices(active, dto.pricePublic ?? null, dto.pricePro ?? null, proAvailable);
 
     const created = await this.prisma.catalogItem.create({
       data: {
@@ -87,7 +90,8 @@ export class CatalogAdminService {
     }
 
     if (dto.active !== undefined) {
-      assertPricedWhenActive(dto.active, existing.pricePublic, existing.pricePro);
+      const proAvailable = await this.categoryProAvailable(existing.categoryId);
+      assertItemPrices(dto.active, existing.pricePublic, existing.pricePro, proAvailable);
     }
 
     const updated = await this.prisma.catalogItem.update({
@@ -130,7 +134,8 @@ export class CatalogAdminService {
     const pricePublic = dto.pricePublic !== undefined ? dto.pricePublic : existing.pricePublic;
     const pricePro = dto.pricePro !== undefined ? dto.pricePro : existing.pricePro;
     const active = dto.active !== undefined ? dto.active : existing.active;
-    assertPricedWhenActive(active, pricePublic, pricePro);
+    const proAvailable = await this.categoryProAvailable(existing.categoryId);
+    assertItemPrices(active, pricePublic, pricePro, proAvailable);
 
     const updated = await this.prisma.catalogItem.update({
       where: { id },
@@ -143,21 +148,77 @@ export class CatalogAdminService {
     return { pricePublic: updated.pricePublic, pricePro: updated.pricePro };
   }
 
+  /**
+   * Ouverture / fermeture d'une prestation. L'ouverture exige au moins un item
+   * actif : une prestation ouverte sans aucun item serait un parcours vide.
+   */
+  async setServiceActive(code: string, active: boolean): Promise<{ code: string; active: boolean }> {
+    const service = await this.prisma.service.findUnique({ where: { code: code as never } });
+    if (!service) throw new NotFoundException('Prestation introuvable.');
+
+    if (active) {
+      const categories = await this.prisma.catalogCategory.findMany({
+        where: { serviceId: service.id },
+        select: { id: true },
+      });
+      const activeItem = await this.prisma.catalogItem.findFirst({
+        where: { categoryId: { in: categories.map((category) => category.id) }, active: true },
+        select: { id: true },
+      });
+      if (!activeItem) {
+        throw new BadRequestException(
+          'Activez au moins un item avant d’ouvrir cette prestation.',
+        );
+      }
+    }
+
+    const updated = await this.prisma.service.update({
+      where: { id: service.id },
+      data: { active },
+    });
+    return { code: updated.code, active: updated.active };
+  }
+
   private async getItem(id: string): Promise<ItemRow> {
     const item = await this.prisma.catalogItem.findUnique({ where: { id } });
     if (!item) throw new NotFoundException('Item introuvable.');
     return item;
   }
+
+  private async categoryProAvailable(categoryId: string): Promise<boolean> {
+    const category = await this.prisma.catalogCategory.findUnique({ where: { id: categoryId } });
+    if (!category) throw new NotFoundException('Catégorie introuvable.');
+    return this.serviceProAvailable(category.serviceId);
+  }
+
+  private async serviceProAvailable(serviceId: string): Promise<boolean> {
+    const service = await this.prisma.service.findUnique({ where: { id: serviceId } });
+    if (!service) throw new NotFoundException('Prestation introuvable.');
+    return service.proAvailable;
+  }
 }
 
-/** Un item proposé aux clients doit avoir ses deux tarifs ; sinon il reste hors circuit. */
-function assertPricedWhenActive(
+/**
+ * Règles de tarif d'un item : actif = tarif public obligatoire, plus tarif
+ * professionnel si la prestation est ouverte aux professionnels ; deux tarifs
+ * présents = professionnel au plus à la moitié du public.
+ */
+function assertItemPrices(
   active: boolean,
   pricePublic: number | null,
   pricePro: number | null,
+  proAvailable: boolean,
 ): void {
-  if (active && (pricePublic === null || pricePro === null)) {
-    throw new BadRequestException('Un item actif doit avoir un prix public et un prix pro');
+  if (active && pricePublic === null) {
+    throw new BadRequestException('Un item actif doit avoir un prix public');
+  }
+  if (active && proAvailable && pricePro === null) {
+    throw new BadRequestException('Un item actif doit avoir un prix pro');
+  }
+  if (pricePublic !== null && pricePro !== null && pricePro > pricePublic / 2) {
+    throw new BadRequestException(
+      'Le prix pro doit être inférieur ou égal à la moitié du prix public',
+    );
   }
 }
 

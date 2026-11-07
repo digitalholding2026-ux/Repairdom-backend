@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
@@ -78,6 +78,19 @@ export class DemandesService {
   ) {}
 
   async create(clientId: string, dto: CreateDemandeDto) {
+    // Certaines prestations sont réservées aux particuliers : le refus est
+    // serveur, le type de compte est relu en base et jamais cru sur parole.
+    if (dto.serviceType === 'SMARTPHONE') {
+      const client = await this.prisma.user.findUnique({
+        where: { id: clientId },
+        select: { clientType: true },
+      });
+      if (client?.clientType === 'B2B') {
+        throw new ForbiddenException(
+          'Le service Réparation smartphone est réservé aux clients particuliers.',
+        );
+      }
+    }
     const medias = dto.medias ?? [];
     /* Le DTO impose déjà une description de 10 caractères minimum. Ce garde
      * reste une SECONDE LIGNE DE DÉFENSE, à deux titres :

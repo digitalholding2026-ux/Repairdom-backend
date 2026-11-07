@@ -42,9 +42,9 @@ describe('Catalogue v2 — visibilité', () => {
 
   it('un item sans montant n’apparaît ni côté B2C ni côté B2B', async () => {
     const { service, stores } = await seeded();
-    const screen = categoryRow(stores, 'SCREEN');
-    expect(await service.listItems('SMARTPHONE', screen.id, undefined)).toEqual([]);
-    expect(await service.listItems('SMARTPHONE', screen.id, 'B2B')).toEqual([]);
+    const other = categoryRow(stores, 'OTHER');
+    expect(await service.listItems('SMARTPHONE', other.id, undefined)).toEqual([]);
+    expect(await service.listItems('SMARTPHONE', other.id, 'B2B')).toEqual([]);
   });
 
   it('un item retiré mais tarifié reste invisible', async () => {
@@ -67,10 +67,40 @@ describe('Catalogue v2 — visibilité', () => {
     expect(proItems.map((entry) => entry.price)).toEqual([1250]);
   });
 
-  it('listServices ne renvoie pas SMARTPHONE tant que ses items sont retirés', async () => {
+  it('listServices côté B2C renvoie les trois prestations', async () => {
     const { service } = await seeded();
-    const codes = (await service.listServices(undefined)).map((entry) => entry.code);
+    const codes = (await service.listServices('B2C')).map((entry) => entry.code);
+    expect(codes).toEqual(['SYSTEME', 'SMARTPHONE', 'FRP']);
+  });
+
+  it('listServices côté B2B exclut la prestation réservée aux particuliers', async () => {
+    const { service } = await seeded();
+    const codes = (await service.listServices('B2B')).map((entry) => entry.code);
     expect(codes).toEqual(['SYSTEME', 'FRP']);
+  });
+
+  it('listCategories côté B2B refuse la prestation réservée aux particuliers (403)', async () => {
+    const { service } = await seeded();
+    await expect(service.listCategories('SMARTPHONE', 'B2B')).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+
+  it('le poste Écran se lit 9000 côté B2C et reste invisible côté B2B', async () => {
+    const { service, stores } = await seeded();
+    const screen = categoryRow(stores, 'SCREEN');
+    const publicItems = await service.listItems('SMARTPHONE', screen.id, 'B2C');
+    expect(publicItems).toHaveLength(1);
+    expect(publicItems[0].price).toBe(9000);
+    expect(await service.listItems('SMARTPHONE', screen.id, 'B2B')).toEqual([]);
+  });
+
+  it('la réinstallation OS se lit au tarif professionnel côté B2B (2500)', async () => {
+    const { service, stores } = await seeded();
+    const reinstall = categoryRow(stores, 'REINSTALL_OS');
+    const items = await service.listItems('SYSTEME', reinstall.id, 'B2B');
+    expect(items).toHaveLength(1);
+    expect(items[0].price).toBe(2500);
   });
 
   it('une catégorie sans item tarifié sort de listCategories', async () => {
@@ -122,8 +152,31 @@ describe('Catalogue v2 — seed', () => {
       pricePro: 1250,
       active: true,
     });
-    for (const code of ['SOFTWARE', 'DEBRIDAGE', 'SCREEN', 'BATTERY', 'CONNECTOR', 'OTHER']) {
+    for (const code of ['SOFTWARE', 'DEBRIDAGE', 'OTHER']) {
       expect(byCode.get(code)).toMatchObject({ pricePublic: null, pricePro: null, active: false });
+    }
+    expect(byCode.get('SCREEN')).toMatchObject({
+      label: 'Écran (Tecno / Infinix / itel)',
+      pricePublic: 9000,
+      pricePro: null,
+      active: true,
+    });
+    expect(byCode.get('BATTERY')).toMatchObject({
+      label: 'Batterie (Tecno / Infinix / itel)',
+      pricePublic: 5000,
+      pricePro: null,
+      active: true,
+    });
+    expect(byCode.get('CONNECTOR')).toMatchObject({
+      label: 'Module de charge (Tecno / Infinix / itel)',
+      pricePublic: 2000,
+      pricePro: null,
+      active: true,
+    });
+    const smartphone = stores.services.find((entry) => entry.code === 'SMARTPHONE');
+    expect(smartphone.proAvailable).toBe(false);
+    for (const code of ['SYSTEME', 'FRP']) {
+      expect(stores.services.find((entry) => entry.code === code).proAvailable).toBe(true);
     }
 
     const frpItems = stores.items.filter((entry) => entry.code.startsWith('TECNO_'));

@@ -8,6 +8,7 @@ import {
   UpdateCatalogItemDto,
   UpdateCatalogItemPricesDto,
 } from './dto/catalog-item.dto.js';
+import { UpdateCatalogServiceDto } from './dto/catalog-service.dto.js';
 
 /** M1 — tenue du catalogue v2 par l'administration (les clients lisent, ils n'écrivent pas). */
 @Controller('admin/catalog')
@@ -34,5 +35,10 @@ export class CatalogAdminController {
   @Patch('items/:id/prices')
   updatePrices(@Param('id') id: string, @Body() dto: UpdateCatalogItemPricesDto) {
     return this.catalog.updatePrices(id, dto);
+  }
+
+  @Patch('services/:code')
+  setServiceActive(@Param('code') code: string, @Body() dto: UpdateCatalogServiceDto) {
+    return this.catalog.setServiceActive(code, dto.active);
   }
 }

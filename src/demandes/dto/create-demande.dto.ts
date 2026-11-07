@@ -64,6 +64,13 @@ export class RequestMediaDto {
  *
  * Ne restent ici que les champs propres à la demande AUTHENTIFIÉE. */
 export class CreateDemandeDto extends BaseDemandeDto {
+  /* Prestation du catalogue v2 choisie par le client. Optionnelle : les
+   * parcours historiques n'en produisent pas. Le service refuse un compte
+   * professionnel sur une prestation réservée aux particuliers. */
+  @IsOptional()
+  @IsIn(['SYSTEME', 'SMARTPHONE', 'FRP'])
+  serviceType?: 'SYSTEME' | 'SMARTPHONE' | 'FRP';
+
   /* `modelId` / `problemId` : acceptés pour compatibilité (anciens clients,
    * flux technicien) mais jamais produits par le wizard client. */
   @IsOptional()

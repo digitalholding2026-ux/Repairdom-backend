@@ -36,6 +36,7 @@ export type SeedCategory = {
 export type SeedService = {
   code: string;
   label: string;
+  proAvailable: boolean;
   categories: SeedCategory[];
 };
 
@@ -100,6 +101,7 @@ export const SERVICES: SeedService[] = [
   {
     code: 'SYSTEME',
     label: 'Réparation système',
+    proAvailable: true,
     categories: [
       {
         code: 'REINSTALL_OS',
@@ -159,18 +161,36 @@ export const SERVICES: SeedService[] = [
   {
     code: 'SMARTPHONE',
     label: 'Réparation smartphone',
-    // Les quatre postes sont déclarés mais non tarifiés : la prestation reste
-    // invisible jusqu'à la saisie de son barème par l'administration.
+    proAvailable: false,
+    // Barème public uniquement : la prestation est réservée aux particuliers,
+    // aucun tarif professionnel n'est annoncé. « Autre » reste hors parcours
+    // tant que son barème n'existe pas.
     categories: [
       {
         code: 'SCREEN',
         label: 'Écran',
-        items: [{ code: 'SCREEN', label: 'Écran', pricePublic: null, pricePro: null, active: false }],
+        items: [
+          {
+            code: 'SCREEN',
+            label: 'Écran (Tecno / Infinix / itel)',
+            pricePublic: 9000,
+            pricePro: null,
+            active: true,
+          },
+        ],
       },
       {
         code: 'BATTERY',
         label: 'Batterie',
-        items: [{ code: 'BATTERY', label: 'Batterie', pricePublic: null, pricePro: null, active: false }],
+        items: [
+          {
+            code: 'BATTERY',
+            label: 'Batterie (Tecno / Infinix / itel)',
+            pricePublic: 5000,
+            pricePro: null,
+            active: true,
+          },
+        ],
       },
       {
         code: 'CONNECTOR',
@@ -178,10 +198,10 @@ export const SERVICES: SeedService[] = [
         items: [
           {
             code: 'CONNECTOR',
-            label: 'Connecteur de charge',
-            pricePublic: null,
+            label: 'Module de charge (Tecno / Infinix / itel)',
+            pricePublic: 2000,
             pricePro: null,
-            active: false,
+            active: true,
           },
         ],
       },
@@ -195,6 +215,7 @@ export const SERVICES: SeedService[] = [
   {
     code: 'FRP',
     label: 'Déblocage FRP',
+    proAvailable: true,
     categories: [{ code: 'TECNO', label: 'Modèles Tecno', items: FRP_ITEMS }],
   },
 ];
@@ -245,8 +266,8 @@ export async function seedCatalogV2(
   for (const service of SERVICES) {
     const serviceRow = await prisma.service.upsert({
       where: { code: service.code },
-      update: { label: service.label },
-      create: { code: service.code, label: service.label },
+      update: { label: service.label, proAvailable: service.proAvailable },
+      create: { code: service.code, label: service.label, proAvailable: service.proAvailable },
     });
     services += 1;
 

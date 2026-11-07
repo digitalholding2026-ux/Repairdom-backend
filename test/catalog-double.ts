@@ -53,6 +53,11 @@ export function createCatalogDouble() {
         sortRows(services.filter((row) => matches(row, where ?? {})), orderBy),
       findUnique: async ({ where }: any) =>
         services.find((row) => row.id === where.id || row.code === where.code) ?? null,
+      update: async ({ where, data }: any): Promise<Row> => {
+        const row = services.find((entry) => entry.id === where.id);
+        if (!row) throw new Error(`Service ${where.id} absent du double`);
+        return Object.assign(row, data);
+      },
     },
     catalogCategory: {
       upsert: async ({ where, update, create }: any): Promise<Row> => {

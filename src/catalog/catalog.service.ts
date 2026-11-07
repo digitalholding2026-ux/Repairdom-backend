@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { CatalogCategoryView, CatalogItemView, CatalogServiceView } from './catalog.types.js';
 
@@ -12,6 +12,7 @@ import type { CatalogCategoryView, CatalogItemView, CatalogServiceView } from '.
  * Une prestation n'est visible que si elle a un prix dans la monnaie du
  * visiteur : un item sans tarif, un item retiré, une catégorie sans aucun item
  * tarifé et une prestation sans aucune catégorie tarifée sortent du parcours.
+ * Une prestation fermée aux professionnels sort en plus du parcours B2B.
  * Rien n'est donc affiché « sur devis » — l'administration publie un montant ou
  * l'item reste hors circuit.
  */
@@ -19,10 +20,10 @@ import type { CatalogCategoryView, CatalogItemView, CatalogServiceView } from '.
 export class CatalogV2Service {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Les prestations qui ont au moins un tarif pour ce visiteur. */
+  /** Les prestations ouvertes à ce visiteur et qui ont au moins un tarif pour lui. */
   async listServices(clientType?: string): Promise<CatalogServiceView[]> {
     const services = await this.prisma.service.findMany({
-      where: { active: true },
+      where: clientType === 'B2B' ? { active: true, proAvailable: true } : { active: true },
       orderBy: { createdAt: 'asc' },
     });
     if (services.length === 0) return [];
@@ -51,6 +52,9 @@ export class CatalogV2Service {
   /** Les catégories tarifées d'une prestation, par `order` croissant. */
   async listCategories(serviceCode: string, clientType?: string): Promise<CatalogCategoryView[]> {
     const service = await this.readService(serviceCode);
+    if (clientType === 'B2B' && !service.proAvailable) {
+      throw new ForbiddenException('Cette prestation est réservée aux clients particuliers.');
+    }
     const categories = await this.prisma.catalogCategory.findMany({
       where: { serviceId: service.id, active: true },
       orderBy: { order: 'asc' },
