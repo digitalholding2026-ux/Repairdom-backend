@@ -18,6 +18,7 @@ import { RealtimeModule } from './realtime/realtime.module.js';
 import { PushModule } from './push/push.module.js';
 import { RewardsModule } from './rewards/rewards.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
+import { InvoiceModule } from './invoice/invoice.module.js';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { CatalogModule } from './catalog/catalog.module.js';
     PushModule,
     RewardsModule,
     CatalogModule,
+    InvoiceModule,
   ],
 })
 export class AppModule {}

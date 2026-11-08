@@ -553,6 +553,10 @@ model Demande {
   address                 String?
   landmark                String?
   contactPhone            String?
+  // M2 — horodatage de démarrage de l'escrow (smartphone). Défini au moment
+  // du paiement Escrow ; sert au calcul du délai de 48h avant remboursement
+  // automatique. Null si aucune mise sous séquestre (système, déblocage).
+  escrowStartedAt         DateTime?
   // GPS V1 — position de la demande (nullable : demandes historiques sans
   // GPS). Complète city/cityId/zone/adresse (jamais remplacés). Bornes
   // validées côté API (-90..90 / -180..180).
@@ -610,6 +614,7 @@ model Demande {
   notifications           Notification[]
   financialTransactions   FinancialTransaction[]
   fundsHolds              FundsHold[]
+  invoices                Invoice[]
   // Chantier #4A : signalement anti-fraude portant sur CETTE mission
   // (au plus un : la détection est unique par mission).
   rewardFraudFlag         RewardFraudFlag?
@@ -1566,6 +1571,28 @@ model FundsHold {
   @@index([userId, status])
   @@index([demandeId])
   @@index([mode, status])
+}
+
+// M2 — Facture générée à la clôture d'une demande.
+enum InvoiceStatus {
+  PENDING
+  PAID
+  REFUNDED
+}
+
+model Invoice {
+  id            String   @id @default(dbgenerated("gen_random_uuid()"))
+  demandeId     String   @unique
+  demande       Demande  @relation(fields: [demandeId], references: [id], onDelete: Cascade)
+  invoiceNumber String   @unique
+  amount        Int      // montant en XAF (FCFA)
+  pdfUrl        String?  // URL du PDF généré (Supabase / stockage)
+  status        InvoiceStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([demandeId])
+  @@index([status])
 }
 
 // ─────────────────────────────────────────────────────────────────────────
