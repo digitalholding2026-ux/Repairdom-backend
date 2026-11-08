@@ -50,7 +50,7 @@ export class EscrowCronService implements OnModuleInit, OnModuleDestroy {
     const holds = await this.prisma.fundsHold.findMany({
       where: {
         status: FundsHoldStatus.ACTIVE,
-        purpose: 'escrow-smartphone',
+        demandeId: { not: null },
       },
       include: {
         demande: {
