@@ -375,7 +375,7 @@ export class InvoiceService {
       }),
     ]);
 
-    const invoice = await this.generateInvoice(demandeId, actorUserId);
+    const invoice = await this.generateInvoice(demandeId, _actorUserId);
 
     logger.log(
       `Demande ${demandeId} clôturée (COMPLETED), hold libéré, facture générée.`,
