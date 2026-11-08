@@ -26,6 +26,21 @@ export class AdminController {
     private readonly disputes: DisputesService,
   ) {}
 
+  /* Supervision globale des demandes (liste paginée, filtre par statut).
+   * Alimente la page "Demandes" du cockpit admin. */
+  @Get('demandes')
+  listAdminDemandes(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.listAdminDemandes({
+      status: status?.trim() || undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
   @Get('demandes/reference/:reference')
   getDemandeByReference(@Param('reference') reference: string) {
     return this.adminService.getDemandeByReference(reference);

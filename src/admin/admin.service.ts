@@ -5,15 +5,91 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { Role } from '../generated/prisma/enums.js';
+import { Role, DemandeStatus } from '../generated/prisma/enums.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
 
 /* Nombre max de comptes clients retournés par la recherche admin. */
 export const ADMIN_CLIENT_SEARCH_LIMIT = 20;
 
+export const ADMIN_DEMANDE_PAGE_LIMIT = 50;
+
 @Injectable()
 export class AdminService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /* ── Supervision des demandes (liste globale admin) ────────────────────── */
+  /* Liste paginée de toutes les demandes, avec filtre optionnel par statut.
+   * Lecture seule, réservée à l'admin. Le frontend appelle
+   * `GET /api/admin/demandes` pour alimenter la page "Demandes" du cockpit. */
+
+  async listAdminDemandes(params: {
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(params.page ?? 1, 1);
+    const limit = Math.min(Math.max(params.limit ?? ADMIN_DEMANDE_PAGE_LIMIT, 1), 100);
+    const where = params.status ? { status: params.status as DemandeStatus } : {};
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.demande.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          reference: true,
+          status: true,
+          category: true,
+          description: true,
+          city: true,
+          neighborhood: true,
+          address: true,
+          landmark: true,
+          contactPhone: true,
+          domainId: true,
+          brandId: true,
+          modelId: true,
+          problemId: true,
+          clientId: true,
+          finalAmount: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.demande.count({ where }),
+    ]);
+
+    return {
+      items: items.map((d) => ({
+        id: d.id,
+        reference: d.reference,
+        status: d.status,
+        category: d.category,
+        description: d.description ?? '',
+        contact: {
+          city: d.city,
+          neighborhood: d.neighborhood ?? null,
+          address: d.address ?? null,
+          contactPhone: d.contactPhone ?? null,
+        },
+        device: {
+          domain: null,
+          brand: null,
+          model: null,
+          problem: null,
+        },
+        client: null,
+        finalAmount: d.finalAmount ?? null,
+        createdAt: d.createdAt.toISOString(),
+        updatedAt: d.updatedAt.toISOString(),
+      })),
+      page,
+      limit,
+      total,
+    };
+  }
 
   /* ── Supervision des missions (Sprint 8.6.5) ────────────────── */
   /* Recherche d'une mission par sa référence publique « RD-XXXXXX ».
