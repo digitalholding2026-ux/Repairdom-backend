@@ -41,50 +41,7 @@ export type SeedService = {
 };
 
 /** Modèles Tecno débloquables, groupés par version d'Android embarquée. */
-export const TECNO_BY_ANDROID: Record<string, string[]> = {
-  '7.0': ['Spark 2', 'Camon CX', 'Camon CX Air', 'W2', 'L9', 'Pouvoir 2', 'Pouvoir 2 Pro'],
-  '8.0': ['Spark 3', 'Camon X', 'Camon X Pro', 'Pouvoir 3', 'F1', 'Pop 2', 'Camon i'],
-  '9': ['Spark 4', 'Camon 11', 'Camon 11 Pro', 'Camon 12', 'Camon 12 Air', 'Pouvoir 4'],
-  '10': ['Spark 5', 'Spark 5 Pro', 'Spark 6', 'Camon 15', 'Camon 15 Air', 'Camon 16', 'Pova', 'Pouvoir 5'],
-  '11': [
-    'Spark 7',
-    'Spark 7 Pro',
-    'Spark 8',
-    'Camon 17',
-    'Camon 17 Pro',
-    'Camon 18',
-    'Pova 2',
-    'Pova Neo',
-    'Pouvoir 6',
-  ],
-  '12': ['Spark 9', 'Spark 9 Pro', 'Camon 19', 'Camon 19 Pro', 'Pova 3', 'Pova 4', 'Pova Neo 2'],
-  '13': [
-    'Spark 10',
-    'Spark 10 Pro',
-    'Camon 20',
-    'Camon 20 Pro',
-    'Phantom X2',
-    'Pova 5',
-    'Pova 5 Pro',
-    'Pova Neo 3',
-  ],
-  '14': [
-    'Spark 20',
-    'Spark 20 Pro',
-    'Camon 30',
-    'Camon 30 Pro',
-    'Phantom V Fold',
-    'Pova 6',
-    'Pova 6 Pro',
-  ],
-};
-
-/** "Camon 30 Pro" -> TECNO_CAMON_30_PRO */
-export function itemCode(modelName: string): string {
-  return `TECNO_${modelName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`;
-}
-
-export const FRP_ITEMS: SeedItem[] = Object.entries(TECNO_BY_ANDROID).flatMap(
+export const TECNO_FRp_ITEMS: SeedItem[] = Object.entries(TECNO_BY_ANDROID).flatMap(
   ([androidVersion, models]) =>
     models.map((modelName) => ({
       code: itemCode(modelName),
@@ -96,6 +53,50 @@ export const FRP_ITEMS: SeedItem[] = Object.entries(TECNO_BY_ANDROID).flatMap(
       active: true,
     })),
 );
+
+/** Quelques modèles Infinix débloquables (parcours grand public, à compléter). */
+export const INFINIX_ITEMS: SeedItem[] = [
+  {
+    code: 'INFINIX_NOTE_30',
+    label: 'Infinix Note 30',
+    description: null,
+    androidVersion: '13',
+    pricePublic: 3000,
+    pricePro: 1500,
+    active: true,
+  },
+  {
+    code: 'INFINIX_HOT_30',
+    label: 'Infinix Hot 30',
+    description: null,
+    androidVersion: '13',
+    pricePublic: 3000,
+    pricePro: 1500,
+    active: true,
+  },
+];
+
+/** Quelques modèles Itel débloquables (parcours grand public, à compléter). */
+export const ITEL_ITEMS: SeedItem[] = [
+  {
+    code: 'ITEL_A70',
+    label: 'Itel A70',
+    description: null,
+    androidVersion: '13',
+    pricePublic: 3000,
+    pricePro: 1500,
+    active: true,
+  },
+  {
+    code: 'ITEL_S23',
+    label: 'Itel S23',
+    description: null,
+    androidVersion: '12',
+    pricePublic: 3000,
+    pricePro: 1500,
+    active: true,
+  },
+];
 
 export const SERVICES: SeedService[] = [
   {
@@ -214,9 +215,13 @@ export const SERVICES: SeedService[] = [
   },
   {
     code: 'FRP',
-    label: 'Déblocage FRP',
+    label: 'Déblocage',
     proAvailable: true,
-    categories: [{ code: 'TECNO', label: 'Modèles Tecno', items: FRP_ITEMS }],
+    categories: [
+      { code: 'TECNO', label: 'Tecno', items: TECNO_FRp_ITEMS },
+      { code: 'INFINIX', label: 'Infinix', items: INFINIX_ITEMS },
+      { code: 'ITEL', label: 'Itel', items: ITEL_ITEMS },
+    ],
   },
 ];
 
