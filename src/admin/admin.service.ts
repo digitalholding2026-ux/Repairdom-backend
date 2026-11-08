@@ -2,16 +2,19 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { Role, DemandeStatus, FinancialTransactionStatus } from '../generated/prisma/enums.js';
+import { Role, DemandeStatus, ConfirmationStatus, FinancialTransactionStatus, FundsHoldStatus } from '../generated/prisma/enums.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
 
 /* Nombre max de comptes clients retournés par la recherche admin. */
 export const ADMIN_CLIENT_SEARCH_LIMIT = 20;
 
 export const ADMIN_DEMANDE_PAGE_LIMIT = 50;
+
+const logger = new Logger('AdminService');
 
 @Injectable()
 export class AdminService {
@@ -154,6 +157,73 @@ export class AdminService {
         createdAt: d.createdAt.toISOString(),
       })),
     };
+  }
+
+  /* ── Confirmation de rendez-vous (workflow WhatsApp, M2) ────────────────── */
+  /* Confirme le RDV d'une demande. Pour le service SMARTPHONE, l'escrow doit
+   * être payé (FundsHold ACTIVE) avant de pouvoir confirmer. */
+
+  async confirmDemande(demandeId: string, actorUserId: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      select: { id: true, reference: true, category: true, confirmationStatus: true, clientId: true },
+    });
+    if (!demande) throw new NotFoundException('Demande introuvable.');
+    if (demande.confirmationStatus === ConfirmationStatus.CONFIRMED) {
+      throw new BadRequestException('Le rendez-vous est déjà confirmé.');
+    }
+
+    /* Smartphone : l'escrow doit être payé (FundsHold ACTIVE) avant confirmation. */
+    if (demande.category === 'SMARTPHONE') {
+      const hold = await this.prisma.fundsHold.findFirst({
+        where: { demandeId, status: FundsHoldStatus.ACTIVE },
+        select: { id: true },
+      });
+      if (!hold) {
+        throw new ForbiddenException(
+          "L'escrow smartphone doit être payé avant de confirmer le rendez-vous.",
+        );
+      }
+    }
+
+    const updated = await this.prisma.demande.update({
+      where: { id: demandeId },
+      data: { confirmationStatus: ConfirmationStatus.CONFIRMED },
+      select: { id: true, reference: true, confirmationStatus: true },
+    });
+
+    logger.log(
+      `Demande ${demande.reference} : confirmationStatus -> CONFIRMED (acteur ${actorUserId}).`,
+    );
+    return updated;
+  }
+
+  /* Marque une demande comme « client injoignable / no-show » :
+   * confirmationStatus = CANCELLED_BY_ADMIN et statut global = CANCELED. */
+
+  async noShowDemande(demandeId: string, actorUserId: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      select: { id: true, reference: true, confirmationStatus: true, status: true },
+    });
+    if (!demande) throw new NotFoundException('Demande introuvable.');
+    if (demande.status === DemandeStatus.CANCELED) {
+      throw new BadRequestException('La demande est déjà annulée.');
+    }
+
+    const updated = await this.prisma.demande.update({
+      where: { id: demandeId },
+      data: {
+        confirmationStatus: ConfirmationStatus.CANCELLED_BY_ADMIN,
+        status: DemandeStatus.CANCELED,
+      },
+      select: { id: true, reference: true, status: true, confirmationStatus: true },
+    });
+
+    logger.log(
+      `Demande ${demande.reference} : NO_SHOW -> statut CANCELED (acteur ${actorUserId}).`,
+    );
+    return updated;
   }
 
   /* ── Supervision des missions (Sprint 8.6.5) ────────────────── */

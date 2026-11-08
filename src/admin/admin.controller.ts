@@ -53,6 +53,20 @@ export class AdminController {
     return this.adminService.getDemandeByReference(reference);
   }
 
+  /* Confirme le rendez-vous d'une demande (workflow WhatsApp, M2).
+   * Pour le SMARTPHONE, l'escrow doit être payé au préalable. */
+  @Patch('demandes/:id/confirm')
+  confirmDemande(@Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.adminService.confirmDemande(id, user.id);
+  }
+
+  /* Marque une demande comme « client injoignable » (no-show) :
+   * confirmationStatus = CANCELLED_BY_ADMIN, statut global = CANCELED. */
+  @Patch('demandes/:id/no-show')
+  noShowDemande(@Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.adminService.noShowDemande(id, user.id);
+  }
+
   @Get('users/clients')
   searchClients(@Query('q') q?: string) {
     return this.adminService.searchClientUsers(q ?? '');
