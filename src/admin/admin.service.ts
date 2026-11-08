@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { Role, DemandeStatus } from '../generated/prisma/enums.js';
+import { Role, DemandeStatus, FinancialTransactionStatus } from '../generated/prisma/enums.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
 
 /* Nombre max de comptes clients retournés par la recherche admin. */
@@ -88,6 +88,71 @@ export class AdminService {
       page,
       limit,
       total,
+    };
+  }
+
+  /* ── Tableau de bord admin (indicateurs cockpit opérateur) ──────────────── */
+  /* Lecture seule, réservée à l'ADMIN. Alimente GET /api/admin/dashboard/stats. */
+
+  async getDashboardStats() {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    /* Demandes en attente : reçues (SUBMITTED, PENDING) ou devis (ACCEPTED). */
+    const demandesEnAttente = await this.prisma.demande.count({
+      where: {
+        status: {
+          in: [DemandeStatus.SUBMITTED, DemandeStatus.PENDING, DemandeStatus.ACCEPTED],
+        },
+      },
+    });
+
+    /* Demandes en cours : planifiées ou en intervention. */
+    const demandesEnCours = await this.prisma.demande.count({
+      where: {
+        status: {
+          in: [DemandeStatus.SCHEDULED, DemandeStatus.IN_PROGRESS],
+        },
+      },
+    });
+
+    /* CA du mois : écritures ledger VALIDATED liées à une mission, ce mois-ci. */
+    const caResult = await this.prisma.financialTransaction.aggregate({
+      where: {
+        status: FinancialTransactionStatus.VALIDATED,
+        demandeId: { not: null },
+        createdAt: { gte: monthStart },
+      },
+      _sum: { amount: true },
+    });
+    const caMois = caResult._sum.amount ?? 0;
+
+    /* 5 dernières demandes avec client et service. */
+    const dernieresDemandes = await this.prisma.demande.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        reference: true,
+        status: true,
+        category: true,
+        createdAt: true,
+        client: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+
+    return {
+      demandesEnAttente,
+      demandesEnCours,
+      caMois,
+      dernieresDemandes: dernieresDemandes.map((d) => ({
+        id: d.id,
+        reference: d.reference,
+        status: d.status,
+        service: d.category,
+        client: d.client ? `${d.client.firstName} ${d.client.lastName ?? ''}`.trim() : '—',
+        createdAt: d.createdAt.toISOString(),
+      })),
     };
   }
 

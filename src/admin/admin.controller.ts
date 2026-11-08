@@ -26,6 +26,13 @@ export class AdminController {
     private readonly disputes: DisputesService,
   ) {}
 
+  /* Indicateurs globaux du tableau de bord admin (cockpit opérateur).
+   * Lecture seule, protégée par @Roles('ADMIN') via le contrôleur parent. */
+  @Get('dashboard/stats')
+  getDashboardStats() {
+    return this.adminService.getDashboardStats();
+  }
+
   /* Supervision globale des demandes (liste paginée, filtre par statut).
    * Alimente la page "Demandes" du cockpit admin. */
   @Get('demandes')
