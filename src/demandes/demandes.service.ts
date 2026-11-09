@@ -386,9 +386,22 @@ export class DemandesService {
   async findForClient(clientId: string, id: string) {
     const demande = await this.prisma.demande.findFirst({
       where: { id, clientId },
-      include: this.clientInclude(),
+      include: {
+        ...this.clientInclude(),
+        fundsHolds: { select: { id: true, status: true } },
+      },
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
+    // M2 — statut de l'escrow pour le timer côté client.
+    const activeHold = demande.fundsHolds?.some((h) => h.status === 'ACTIVE');
+    const fundsHoldStatus = demande.escrowStartedAt
+      ? activeHold
+        ? 'ACTIVE'
+        : demande.status === 'COMPLETED'
+          ? 'COMPLETED'
+          : 'REFUNDED'
+      : null;
+
     // GPS V3 — vue déplacement SANS coordonnées brutes (jamais exposées
     // au client) : statut, fraîcheur et distance approximative uniquement.
     // GPS V4 — `travelMap` : point technicien pour le RENDU carte,
@@ -396,6 +409,7 @@ export class DemandesService {
     // chiffres affichés côté UI). Réservé au détail (jamais les listes).
     return {
       ...toApiDemande(demande),
+      escrowStatus: fundsHoldStatus,
       travel: toApiTravelClient(demande),
       travelMap: toApiTravelMapClient(demande),
     };

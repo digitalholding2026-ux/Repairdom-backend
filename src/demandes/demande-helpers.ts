@@ -99,6 +99,9 @@ export interface DemandeRecord {
   problemId: string | null;
   negotiationRequestedAt: Date | null;
   finalAmount: number | null;
+  // M2 — escrow smartphone : horaire de mise sous séquestre et statut du hold.
+  escrowStartedAt: Date | null;
+  fundsHoldStatus?: string | null;
   medias: DemandeMediaRow[];
   technician?: DemandeTechnicianInfo | null;
   domain?: { id: string; name: string; slug: string } | null;
@@ -153,6 +156,12 @@ export function toApiDemande(demande: DemandeRecord) {
       ? demande.negotiationRequestedAt.toISOString()
       : null,
     finalAmount: demande.finalAmount,
+    // M2 — escrow smartphone.
+    escrowStartedAt: demande.escrowStartedAt ?? null,
+    escrowEndsAt: demande.escrowStartedAt
+      ? new Date(demande.escrowStartedAt.getTime() + 48 * 60 * 60 * 1000).toISOString()
+      : null,
+    escrowStatus: demande.fundsHoldStatus ?? null,
     medias: demande.medias.map((media) => ({
       id: media.id,
       kind: media.kind,
