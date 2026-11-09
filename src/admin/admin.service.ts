@@ -198,30 +198,45 @@ export class AdminService {
     return updated;
   }
 
-  /* Marque une demande comme « client injoignable / no-show » :
-   * confirmationStatus = CANCELLED_BY_ADMIN et statut global = CANCELED. */
+  /* Marque une demande comme « client absent » (no-show) :
+   * isNoShow = true, libération du FundsHold de dépôt (frais de déplacement)
+   * en faveur de Relio, statut global = CANCELED. */
 
   async noShowDemande(demandeId: string, actorUserId: string) {
     const demande = await this.prisma.demande.findUnique({
       where: { id: demandeId },
-      select: { id: true, reference: true, confirmationStatus: true, status: true },
+      select: { id: true, reference: true, status: true, clientId: true },
     });
     if (!demande) throw new NotFoundException('Demande introuvable.');
     if (demande.status === DemandeStatus.CANCELED) {
       throw new BadRequestException('La demande est déjà annulée.');
     }
 
+    /* Libère le hold de dépôt (frais de déplacement) s'il est encore ACTIVE.
+     * Aucun écriture ledger : restitution interne, le hold n'est plus déduit
+     * du disponible. Les fonds restent acquis à Relio. */
+    const activeHold = await this.prisma.fundsHold.findFirst({
+      where: { demandeId, status: FundsHoldStatus.ACTIVE },
+      select: { id: true },
+    });
+    if (activeHold) {
+      await this.prisma.fundsHold.update({
+        where: { id: activeHold.id },
+        data: { status: FundsHoldStatus.RELEASED, releasedAt: new Date() },
+      });
+    }
+
     const updated = await this.prisma.demande.update({
       where: { id: demandeId },
       data: {
-        confirmationStatus: ConfirmationStatus.CANCELLED_BY_ADMIN,
+        isNoShow: true,
         status: DemandeStatus.CANCELED,
       },
-      select: { id: true, reference: true, status: true, confirmationStatus: true },
+      select: { id: true, reference: true, status: true, isNoShow: true },
     });
 
     logger.log(
-      `Demande ${demande.reference} : NO_SHOW -> statut CANCELED (acteur ${actorUserId}).`,
+      `Demande ${demande.reference} : NO_SHOW -> isNoShow, hold libéré, statut CANCELED (acteur ${actorUserId}).`,
     );
     return updated;
   }
@@ -307,6 +322,9 @@ export class AdminService {
       status: demande.status,
       category: demande.category,
       description: demande.description,
+      depositAmount: demande.depositAmount ?? null,
+      depositPaid: demande.depositPaid,
+      isNoShow: demande.isNoShow,
       contact: {
         city: demande.city,
         neighborhood: demande.neighborhood,

@@ -600,6 +600,12 @@ model Demande {
   negotiationRequestedAt  DateTime?
   // Traçabilité : montant final accepté (quote ACCEPTED) de la mission.
   finalAmount             Int?
+  // Frais de déplacement (booking fee) : montant à réserver à la validation
+  // pour FRP / Système (ex. 1 000 XAF). Le reste est payé après la réparation.
+  depositAmount           Int?
+  depositPaid             Boolean   @default(false)
+  // Client absent au rendez-vous (no-signal) : marque acquise à Relio.
+  isNoShow                Boolean   @default(false)
   medias                  DemandeMedia[]
   // IA-7 — avertissements tarifaires de la mission (consultation admin).
   aiWarnings              AiWarning[]
@@ -1662,6 +1668,10 @@ model CatalogItem {
   order          Int      @default(0)
   pricePublic    Int?
   pricePro       Int?
+  // Frais de déplacement (booking fee) applicables à l'item (ex. 1 000 XAF
+  // pour le déblocage FRP/Système). Payés à la validation, le reste après la
+  // réparation. NULL = aucun frais de déplacement.
+  travelFee      Int?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

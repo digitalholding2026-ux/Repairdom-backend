@@ -24,6 +24,7 @@ type ItemRow = {
   order: number;
   pricePublic: number | null;
   pricePro: number | null;
+  travelFee: number | null;
 };
 
 /**
@@ -121,10 +122,11 @@ export class CatalogAdminService {
   async updatePrices(
     id: string,
     dto: UpdateCatalogItemPricesDto,
-  ): Promise<{ pricePublic: number | null; pricePro: number | null }> {
+  ): Promise<{ pricePublic: number | null; pricePro: number | null; travelFee: number | null }> {
     if (
       dto.pricePublic === undefined &&
       dto.pricePro === undefined &&
+      dto.travelFee === undefined &&
       dto.active === undefined
     ) {
       throw new BadRequestException('Aucun tarif à mettre à jour.');
@@ -133,6 +135,7 @@ export class CatalogAdminService {
 
     const pricePublic = dto.pricePublic !== undefined ? dto.pricePublic : existing.pricePublic;
     const pricePro = dto.pricePro !== undefined ? dto.pricePro : existing.pricePro;
+    const travelFee = dto.travelFee !== undefined ? dto.travelFee : existing.travelFee;
     const active = dto.active !== undefined ? dto.active : existing.active;
     const proAvailable = await this.categoryProAvailable(existing.categoryId);
     assertItemPrices(active, pricePublic, pricePro, proAvailable);
@@ -142,10 +145,11 @@ export class CatalogAdminService {
       data: {
         pricePublic,
         pricePro,
+        travelFee,
         ...(dto.active !== undefined ? { active: dto.active } : {}),
       },
     });
-    return { pricePublic: updated.pricePublic, pricePro: updated.pricePro };
+    return { pricePublic: updated.pricePublic, pricePro: updated.pricePro, travelFee: updated.travelFee };
   }
 
   /**

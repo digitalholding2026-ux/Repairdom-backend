@@ -90,6 +90,11 @@ export class UpdateCatalogItemPricesDto {
   pricePro?: number | null;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  travelFee?: number | null;
+
+  @IsOptional()
   @IsBoolean()
   active?: boolean;
 }

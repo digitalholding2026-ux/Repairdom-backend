@@ -323,10 +323,26 @@ export class InvoiceService {
     });
   }
 
-  /** Crée le FundsHold ACTIVE et définit escrowStartedAt sur la demande. */
-  async createEscrowHold(demande: any, _actorUserId: string) {
-    const amount = Number(demande.finalAmount);
+  /** Crée le FundsHold ACTIVE et définit escrowStartedAt sur la demande.
+   *  `options.amount` surcharge le montant réservé (dépôt FRP/Système au lieu
+   *  du total smartphone). Quand `markDepositPaid` est vrai, la demande est
+   *  marquée `depositPaid = true`. */
+  async createEscrowHold(
+    demande: any,
+    _actorUserId: string,
+    options: {
+      amount: number;
+      purpose: string;
+      markDepositPaid?: boolean;
+    } = { amount: Number(demande.finalAmount), purpose: 'escrow-smartphone' },
+  ) {
+    const amount = options.amount;
     const reference = `ESCROW-${demande.reference ?? demande.id.slice(-6)}-${Date.now()}`;
+
+    const updateData: Record<string, unknown> = { escrowStartedAt: new Date() };
+    if (options.markDepositPaid) {
+      updateData['depositPaid'] = true;
+    }
 
     const [hold, updated] = await this.prisma.$transaction([
       this.prisma.fundsHold.create({
@@ -340,14 +356,14 @@ export class InvoiceService {
           status: FundsHoldStatus.ACTIVE,
           createdById: _actorUserId,
           metadata: {
-            purpose: 'escrow-smartphone',
+            purpose: options.purpose,
             demandeReference: demande.reference,
           },
         },
       }),
       this.prisma.demande.update({
         where: { id: demande.id },
-        data: { escrowStartedAt: new Date() },
+        data: updateData,
       }),
     ]);
 
