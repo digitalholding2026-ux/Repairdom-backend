@@ -116,6 +116,7 @@ export class AuthService {
   private toAuthUser(user: {
     id: string;
     role: string;
+    clientType?: string | null;
     firstName: string;
     lastName: string | null;
     phone: string | null;
@@ -125,6 +126,8 @@ export class AuthService {
     city: string | null;
     address: string | null;
     whatsapp: string | null;
+    companyName?: string | null;
+    codePro?: string | null;
     createdAt: Date;
     tokenVersion: number;
   }): AuthUser {
