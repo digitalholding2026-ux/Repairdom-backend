@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { Role, DemandeStatus, ConfirmationStatus, FinancialTransactionStatus, FundsHoldStatus } from '../generated/prisma/enums.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
+import { V2_TO_DEMANDE_STATUS, V2_TO_EVENT_TYPE, type AdminDemandeStatus } from './dto/update-admin-demande-status.dto.js';
 
 /* Nombre max de comptes clients retournés par la recherche admin. */
 export const ADMIN_CLIENT_SEARCH_LIMIT = 20;
@@ -238,6 +239,48 @@ export class AdminService {
 
     logger.log(
       `Demande ${demande.reference} : NO_SHOW -> confirmationStatus=CANCELLED_BY_ADMIN, isNoShow, hold libéré, statut CANCELED (acteur ${actorUserId}).`,
+    );
+    return updated;
+  }
+
+  /* Met à jour le statut d'une demande (workflow V2 admin).
+   * Accepte RECEIVED, IN_PROGRESS, COMPLETED, CANCELLED et les mappe vers
+   * l'enum Prisma DemandeStatus. Enregistre un événement DemandeEvent à
+   * chaque changement pour l'historique de suivi public. */
+  async updateDemandeStatus(demandeId: string, v2Status: AdminDemandeStatus, actorUserId: string) {
+    const cible = V2_TO_DEMANDE_STATUS[v2Status];
+    const demande = await this.prisma.demande.findUnique({
+      where: { id: demandeId },
+      select: { id: true, reference: true, status: true, clientId: true },
+    });
+    if (!demande) throw new NotFoundException('Demande introuvable.');
+    if (demande.status === cible) {
+      throw new BadRequestException(`La demande est déjà en statut ${v2Status}.`);
+    }
+
+    /* Transitions autorisées côté admin : depuis n'importe quel statut vers
+     * n'importe quel statut V2 (l'admin supervise tout le cycle). */
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const d = await tx.demande.update({
+        where: { id: demandeId },
+        data: { status: cible as DemandeStatus },
+        select: { id: true, reference: true, status: true },
+      });
+      await tx.demandeEvent.create({
+        data: {
+          demandeId,
+          actorUserId,
+          type: V2_TO_EVENT_TYPE[v2Status] as any,
+          fromStatus: demande.status,
+          toStatus: cible as DemandeStatus,
+          metadata: { source: 'admin_status_update' },
+        },
+      });
+      return d;
+    });
+
+    logger.log(
+      `Demande ${demande.reference} : statut ${demande.status} → ${cible} (acteur ${actorUserId}).`,
     );
     return updated;
   }

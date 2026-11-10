@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { DemandesService } from './demandes.service.js';
 import { DemandeMediaService, DEMANDE_MEDIA_MAX_BYTES } from './demande-media.service.js';
@@ -11,6 +11,7 @@ import { CreateDemandeDto } from './dto/create-demande.dto.js';
 import { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { OpenDisputeDto } from '../disputes/dto/open-dispute.dto.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 
 @Controller('demandes')
 export class DemandesController {
@@ -18,6 +19,7 @@ export class DemandesController {
     private readonly demandesService: DemandesService,
     private readonly mediaService: DemandeMediaService,
     private readonly disputesService: DisputesService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /* Dépôt multimédia — upload réel AVANT création (aucune ligne créée ;
@@ -116,5 +118,48 @@ export class DemandesController {
   @Roles('CLIENT')
   getDispute(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.disputesService.getForParty(user, id);
+  }
+
+  /* Suivi public anonyme par token (client invité, pas de compte) :
+   * Renvoie le statut, l'historique des événements et les infos de base.
+   * Aucune authentification requise. */
+  @Get('tracking/:trackingToken')
+  async trackByToken(@Param('trackingToken') token: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { trackingToken: token },
+      include: {
+        domain: { select: { name: true } },
+        brand: { select: { name: true } },
+        model: { select: { name: true } },
+        problem: { select: { name: true } },
+        events: {
+          orderBy: { createdAt: 'asc' },
+          take: 200,
+          select: { type: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!demande) {
+      throw new NotFoundException('Aucune demande ne correspond à ce lien de suivi.');
+    }
+
+    return {
+      reference: demande.reference,
+      status: demande.status,
+      category: demande.domain ? demande.domain.name : demande.category,
+      model: demande.model ? demande.model.name : null,
+      problem: demande.problem ? demande.problem.name : null,
+      price: demande.finalAmount ?? null,
+      createdAt: demande.createdAt.toISOString(),
+      address: demande.address ?? null,
+      city: demande.city,
+      contactPhone: demande.contactPhone ?? null,
+      timeline: demande.events.map((e) => ({
+        type: e.type,
+        label: e.type,
+        date: e.createdAt.toISOString(),
+      })),
+    };
   }
 }

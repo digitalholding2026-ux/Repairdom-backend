@@ -4,6 +4,7 @@ import { FinancialModule } from './../financial/financial.module.js';
 import { DisputesModule } from './../disputes/disputes.module.js';
 import { RealtimeModule } from './../realtime/realtime.module.js';
 import { RewardsModule } from './../rewards/rewards.module.js';
+import { PrismaModule } from './../prisma/prisma.module.js';
 import { DemandesController } from './demandes.controller.js';
 import { DemandesService } from './demandes.service.js';
 import { DemandeDraftController } from './demande-draft.controller.js';
@@ -30,7 +31,7 @@ import { SupabaseStorageService } from '../storage/supabase-storage.service.js';
  * `DemandesService` n'est pas exporté : le contrôleur de brouillon vit dans
  * le même module et l'utilise en provider local, donc rien ne sort. */
 @Module({
-  imports: [AuthModule, FinancialModule, DisputesModule, RealtimeModule, RewardsModule],
+  imports: [AuthModule, FinancialModule, DisputesModule, RealtimeModule, RewardsModule, PrismaModule],
   controllers: [DemandesController, DemandeDraftController],
   providers: [DemandesService, DemandeDraftService, DraftThrottleGuard, DemandeMediaService, SupabaseStorageService],
 })

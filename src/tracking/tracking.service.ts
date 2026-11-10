@@ -63,6 +63,8 @@ export class TrackingService {
     requestedAt: Date | null;
     scheduledAt: Date | null;
     createdAt: Date;
+    address: string | null;
+    contactPhone: string | null;
     domain: { name: string; slug: string } | null;
     brand: { name: string; slug: string } | null;
     model: { name: string; slug: string } | null;
@@ -95,6 +97,8 @@ export class TrackingService {
       },
       scheduledAt: demande.scheduledAt ? demande.scheduledAt.toISOString() : null,
       submittedAt: demande.createdAt.toISOString(),
+      address: demande.address,
+      contactPhone: demande.contactPhone,
       // Sprint 8.3 : chronologie publique sécurisée. Aucun identifiant, nom,
       // adresse, téléphone ou montant n'est exposé : uniquement le type de
       // l'événement, son libellé et sa date.

@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { RequestUser } from '../auth/auth.types.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { ReviewDisputeDto } from '../disputes/dto/review-dispute.dto.js';
+import { UpdateAdminDemandeStatusDto } from './dto/update-admin-demande-status.dto.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -66,6 +67,14 @@ export class AdminController {
   @Patch('demandes/:id/no-show')
   noShowDemande(@Param('id') id: string, @CurrentUser() user: RequestUser) {
     return this.adminService.noShowDemande(id, user.id);
+  }
+
+  /* Met à jour le statut d'une demande (workflow V2 admin) :
+   * RECEIVED → IN_PROGRESS → COMPLETED, ou CANCELLED depuis RECEIVED/IN_PROGRESS.
+   * Enregistre un événement DemandeEvent à chaque changement. */
+  @Patch('demandes/:id/status')
+  updateDemandeStatus(@Param('id') id: string, @Body() dto: UpdateAdminDemandeStatusDto, @CurrentUser() user: RequestUser) {
+    return this.adminService.updateDemandeStatus(id, dto.status, user.id);
   }
 
   @Get('users/clients')
