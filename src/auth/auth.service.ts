@@ -131,6 +131,7 @@ export class AuthService {
     return {
       id: user.id,
       role: user.role as UserRole,
+      clientType: user.clientType as UserClientType,
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone,
@@ -140,6 +141,8 @@ export class AuthService {
       city: user.city,
       address: user.address,
       whatsapp: user.whatsapp,
+      companyName: user.companyName ?? null,
+      codePro: user.codePro ?? null,
       createdAt: user.createdAt,
       tokenVersion: user.tokenVersion,
     };
@@ -482,6 +485,37 @@ export class AuthService {
     }
 
     return this.me(userId);
+  }
+
+  /** Changement de mot de passe par l'utilisateur connecté.
+   *  Vérifie l'ancien mot de passe, valide la force du nouveau,
+   *  met à jour le hash et incrémente tokenVersion pour invalider
+   *  toutes les autres sessions. */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const found = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!found) throw new NotFoundException('Compte introuvable.');
+    if (!found.passwordHash) {
+      throw new BadRequestException(
+        'Ce compte ne dispose pas de mot de passe. Utilisez la réinitialisation par e-mail.',
+      );
+    }
+    const valid = await verifyPassword(currentPassword, found.passwordHash);
+    if (!valid) {
+      throw new BadRequestException('L\'ancien mot de passe est incorrect.');
+    }
+    assertPasswordStrong(newPassword);
+    const passwordHash = await hashPassword(newPassword);
+    await this.prisma.user.update({
+      where: { id },
+      data: {
+        passwordHash,
+        tokenVersion: { increment: 1 },
+      },
+    });
   }
 
   private extractObjectPath(publicUrl: string): string | null {

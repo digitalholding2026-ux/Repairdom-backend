@@ -281,6 +281,9 @@ model User {
   cityRef                      ServiceCity?           @relation("CityClients", fields: [cityId], references: [id], onDelete: SetNull)
   address                      String?
   whatsapp                     String?
+  // M1 — informations commerciales B2B (uniquement si clientType = B2B).
+  companyName                  String?   @db.VarChar(200)
+  codePro                      String?   @db.VarChar(50) @unique
   avatarUrl                    String?
   email                        String                 @unique
   emailVerified                Boolean                @default(true)

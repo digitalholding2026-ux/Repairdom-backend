@@ -28,6 +28,7 @@ import { ResendVerificationDto } from './dto/resend-verification.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateMeDto } from './dto/update-me.dto.js';
+import { ChangePasswordDto } from './dto/change-password.dto.js';
 
 /* Type minimale pour un fichier uploadé (remplace l'import supprimé de
  * `technician/avatar-file.ts`). Seul le sous-ensemble utilisé est typé. */
@@ -151,6 +152,17 @@ export class AuthController {
   )
   uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file?: MulterFile) {
     return this.authService.uploadAvatar(user.id, file);
+  }
+
+  @Patch('change-password')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    await this.authService.changePassword(user.id, dto.currentPassword, dto.newPassword);
+    return { ok: true };
   }
 
   @Post('logout')

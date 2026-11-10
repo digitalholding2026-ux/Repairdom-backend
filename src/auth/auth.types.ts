@@ -6,6 +6,7 @@ export type UserClientType = 'CLIENT' | 'B2B';
 export interface AuthUser {
   id: string;
   role: UserRole;
+  clientType?: UserClientType;
   firstName: string;
   lastName: string | null;
   phone: string | null;
@@ -15,6 +16,8 @@ export interface AuthUser {
   city: string | null;
   address: string | null;
   whatsapp: string | null;
+  companyName: string | null;
+  codePro: string | null;
   createdAt: Date;
   /** Version de session (reset password) : comparée au payload JWT. */
   tokenVersion: number;
