@@ -631,10 +631,12 @@ export class FinancialService {
 
   /** Synthèse client « Mon solde » (Sprint 8.7-FIN-UI).
    *  Le solde, les totaux et l'historique sont calculés côté backend ;
-   *  le frontend ne recalcule JAMAIS le solde depuis des données partielles. */
+   *  le frontend ne recalcule JAMAIS le solde depuis des données partielles.
+   *  `heldAmount` = fonds bloqués en garantie (holds ACTIVE) pour l'utilisateur. */
   async getClientFinanceSummary(userId: string) {
     const mode = this.getMode();
     const balance = await this.getClientBalance(userId, mode);
+    const heldAmount = await this.getReservedAmount(userId, mode);
 
     const rows = await this.prisma.financialTransaction.findMany({
       where: { userId, mode },
@@ -727,6 +729,7 @@ export class FinancialService {
       mode,
       currency: FINANCIAL_CURRENCY,
       balance,
+      heldAmount,
       totals: { credit: totalCredit, debit: totalDebit, net: totalCredit - totalDebit },
       missions: [...missions.values()].sort((a, b) =>
         (b.scheduledAt ?? '').localeCompare(a.scheduledAt ?? ''),
