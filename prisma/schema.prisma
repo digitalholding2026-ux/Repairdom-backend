@@ -1683,3 +1683,13 @@ model CatalogItem {
   @@unique([categoryId, code])
   @@index([categoryId, active, order])
 }
+
+model PlatformSetting {
+  id            String   @id @default("default")
+  adminName     String   @default("Technicien Relio")
+  adminWhatsApp String   @default("237600000000")
+  adminAvatarUrl String?
+  supportEmail  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

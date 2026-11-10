@@ -19,6 +19,7 @@ import { PushModule } from './push/push.module.js';
 import { RewardsModule } from './rewards/rewards.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { InvoiceModule } from './invoice/invoice.module.js';
+import { SettingsModule } from './settings/settings.module.js';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { InvoiceModule } from './invoice/invoice.module.js';
     RewardsModule,
     CatalogModule,
     InvoiceModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}
