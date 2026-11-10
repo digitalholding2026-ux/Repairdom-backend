@@ -510,7 +510,7 @@ export class AuthService {
     assertPasswordStrong(newPassword);
     const passwordHash = await hashPassword(newPassword);
     await this.prisma.user.update({
-      where: { id },
+      where: { id: userId },
       data: {
         passwordHash,
         tokenVersion: { increment: 1 },
