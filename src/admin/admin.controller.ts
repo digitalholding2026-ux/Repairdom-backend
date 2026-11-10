@@ -5,7 +5,6 @@ import {
   Get,
   Param,
   Patch,
-  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -62,9 +61,9 @@ export class AdminController {
   }
 
   /* Marque une demande comme « client absent » (no-show) :
-   * isNoShow = true, libération du FundsHold de dépôt en faveur de Relio,
+   * confirmationStatus = CANCELLED_BY_ADMIN, isNoShow = true,
    * statut global = CANCELED. */
-  @Post('demandes/:id/no-show')
+  @Patch('demandes/:id/no-show')
   noShowDemande(@Param('id') id: string, @CurrentUser() user: RequestUser) {
     return this.adminService.noShowDemande(id, user.id);
   }

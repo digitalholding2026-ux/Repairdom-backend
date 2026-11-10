@@ -229,14 +229,15 @@ export class AdminService {
     const updated = await this.prisma.demande.update({
       where: { id: demandeId },
       data: {
+        confirmationStatus: ConfirmationStatus.CANCELLED_BY_ADMIN,
         isNoShow: true,
         status: DemandeStatus.CANCELED,
       },
-      select: { id: true, reference: true, status: true, isNoShow: true },
+      select: { id: true, reference: true, status: true, isNoShow: true, confirmationStatus: true },
     });
 
     logger.log(
-      `Demande ${demande.reference} : NO_SHOW -> isNoShow, hold libéré, statut CANCELED (acteur ${actorUserId}).`,
+      `Demande ${demande.reference} : NO_SHOW -> confirmationStatus=CANCELLED_BY_ADMIN, isNoShow, hold libéré, statut CANCELED (acteur ${actorUserId}).`,
     );
     return updated;
   }
