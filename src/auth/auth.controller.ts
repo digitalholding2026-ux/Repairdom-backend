@@ -43,6 +43,7 @@ export class AuthController {
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const user = await this.authService.register(dto);
     /* Chantier D2.5 — la session est posée SYSTÉMATIQUEMENT, y compris pour
