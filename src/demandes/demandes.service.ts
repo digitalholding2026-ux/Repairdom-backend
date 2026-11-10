@@ -3,6 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
+import type { TrackSearchDto } from './dto/track-search.dto.js';
 import { assertTransition } from './demandes-lifecycle.js';
 import { FinancialService } from '../financial/financial.service.js';
 import { DisputesService } from '../disputes/disputes.service.js';
@@ -339,4 +340,41 @@ export class DemandesService {
     };
   }
 
+  /* Recherche publique des demandes par numéro de téléphone (client invité,
+   * pas de compte). Retourne toutes les demandes liées à ce numéro, triées
+   * par date décroissante. */
+  async searchByPhone(dto: TrackSearchDto) {
+    // Normalisation : garder les chiffres uniquement pour le matching.
+    const digits = dto.phone.replace(/\D/g, '');
+    if (!digits) {
+      throw new BadRequestException('Numéro de téléphone invalide.');
+    }
+
+    const demandes = await this.prisma.demande.findMany({
+      where: {
+        contactPhone: { contains: digits },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        trackingToken: true,
+        reference: true,
+        category: true,
+        status: true,
+        createdAt: true,
+        finalAmount: true,
+      },
+    });
+
+    return demandes.map((d) => ({
+      id: d.id,
+      trackingToken: d.trackingToken,
+      reference: d.reference,
+      service: d.category,
+      status: d.status,
+      createdAt: d.createdAt.toISOString(),
+      price: d.finalAmount ?? null,
+    }));
+  }
 }

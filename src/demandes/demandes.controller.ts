@@ -9,6 +9,7 @@ import { CurrentUser } from './../auth/current-user.decorator.js';
 import type { RequestUser } from './../auth/auth.types.js';
 import { CreateDemandeDto } from './dto/create-demande.dto.js';
 import { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
+import { TrackSearchDto } from './dto/track-search.dto.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { OpenDisputeDto } from '../disputes/dto/open-dispute.dto.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -161,5 +162,13 @@ export class DemandesController {
         date: e.createdAt.toISOString(),
       })),
     };
+  }
+
+  /* Recherche publique des demandes par numéro de téléphone (client invité,
+   * pas de compte). Renvoie la liste des demandes liées à ce numéro,
+   * triées par date décroissante. Aucune authentification requise. */
+  @Post('tracking/search')
+  async searchByPhone(@Body() dto: TrackSearchDto) {
+    return this.demandesService.searchByPhone(dto);
   }
 }
