@@ -259,27 +259,16 @@ export class DemandeDraftService {
 
   private readonly conversions = new Map<string, Promise<ConvertedDemande>>();
 
-  private async runConversion(draft: DraftRow, userId: string, medias: RequestMediaDto[]) {
+  private async runConversion(draft: DraftRow, userId: string, _medias: RequestMediaDto[]) {
     /* On réutilise `DemandesService.create` À L'IDENTIQUE : validation du
      * domaine / de la marque / de la ville, génération de la référence unique,
      * création des médias, événement `CREATED` et déclenchement du dispatch
      * vague 1. Toute la logique de création reste en un seul endroit. */
     const demandeDto: CreateDemandeDto = {
-      categoryId: draft.categoryId,
-      description: draft.description,
-      city: draft.city,
-      ...(draft.domainId ? { domainId: draft.domainId } : {}),
-      ...(draft.brandId ? { brandId: draft.brandId } : {}),
-      ...(draft.equipmentFamily ? { equipmentFamily: draft.equipmentFamily } : {}),
-      ...(draft.neighborhood ? { neighborhood: draft.neighborhood } : {}),
-      ...(draft.address ? { address: draft.address } : {}),
-      ...(draft.landmark ? { landmark: draft.landmark } : {}),
-      ...(draft.contactPhone ? { contactPhone: draft.contactPhone } : {}),
-      ...(draft.latitude !== null ? { latitude: draft.latitude } : {}),
-      ...(draft.longitude !== null ? { longitude: draft.longitude } : {}),
-      ...(draft.requestedAt ? { requestedAt: draft.requestedAt.toISOString() } : {}),
-      requestedMode: this.normalizeRequestedMode(draft.requestedMode),
-      ...(medias.length > 0 ? { medias } : {}),
+      serviceCode: draft.categoryId,
+      description: draft.description ?? undefined,
+      address: draft.address ?? '',
+      phone: draft.contactPhone ?? '',
     };
 
     /* `DemandesService.create` possède sa propre transaction : impossible de

@@ -1,7 +1,6 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomInt, randomUUID } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
-import type { MediaKind } from './../generated/prisma/enums.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
 import { assertTransition } from './demandes-lifecycle.js';
@@ -34,12 +33,7 @@ export type {
   TravelMapClientView,
   TravelTechnicianView,
 } from './demande-helpers.js';
-import { resolveRequestedAt, toApiDemande, toApiTravelClient, toApiTravelMapClient } from './demande-helpers.js';
-import {
-  findCityMatches,
-  resolveCityIdFromCandidates,
-  resolveGeoFromText,
-} from '../geo/city-reference.js';
+import { toApiDemande, toApiTravelClient, toApiTravelMapClient } from './demande-helpers.js';
 import {
   eventTypeForStatus,
   recordEvent,
@@ -78,21 +72,6 @@ export class DemandesService {
   ) {}
 
   async create(clientId: string | null, dto: CreateDemandeDto) {
-    // Certaines prestations sont réservées aux particuliers : le refus est
-    // serveur, le type de compte est relu en base et jamais cru sur parole.
-    // Un client anonyme (clientId === null) est traité comme un particulier.
-    if (dto.serviceType === 'SMARTPHONE' && clientId !== null) {
-      const client = await this.prisma.user.findUnique({
-        where: { id: clientId },
-        select: { clientType: true },
-      });
-      if (client?.clientType === 'B2B') {
-        throw new ForbiddenException(
-          'Le service Réparation smartphone est réservé aux clients particuliers.',
-        );
-      }
-    }
-
     /* Résolution du client pour une demande anonyme (pas de JWT) :
      * - rechercher un utilisateur existant avec ce numéro de téléphone ;
      * - sinon, créer un utilisateur "fantôme" (CLIENT, B2C, sans mot de passe,
@@ -101,9 +80,9 @@ export class DemandesService {
     let resolvedClientId: string;
     if (clientId !== null) {
       resolvedClientId = clientId;
-    } else if (dto.contactPhone) {
+    } else if (dto.phone) {
       const existing = await this.prisma.user.findFirst({
-        where: { phone: dto.contactPhone },
+        where: { phone: dto.phone },
         select: { id: true },
       });
       if (existing) {
@@ -115,7 +94,7 @@ export class DemandesService {
             clientType: 'CLIENT',
             firstName: 'Client',
             lastName: 'Invité',
-            phone: dto.contactPhone,
+            phone: dto.phone,
             email: `guest-${randomUUID()}@relio.local`,
             passwordHash: null,
             emailVerified: true,
@@ -131,271 +110,36 @@ export class DemandesService {
       );
     }
 
-    const medias = dto.medias ?? [];
-    /* Le DTO impose déjà une description de 10 caractères minimum. Ce garde
-     * reste une SECONDE LIGNE DE DÉFENSE, à deux titres :
-     *  - `description` est trimée : une saisie de 10 espaces passe le DTO et
-     *    se vide ici ;
-     *  - le service reste appelable en interne (hors pipeline HTTP), où le
-     *    ValidationPipe global ne s'applique pas.
-     * Le message mentionne les médias, car un appelant direct qui n'a pas de
-     * description peut encore en fournir. */
-    const description = dto.description.trim() ? dto.description.trim() : null;
-    if (!description && medias.length === 0) {
-      throw new BadRequestException(
-        'Décrivez votre problème (10 caractères minimum) ou ajoutez un message vocal, une vidéo ou une photo.',
-      );
-    }
-    const requestedMode = dto.requestedMode ?? 'ASAP';
-    const requestedAt = resolveRequestedAt(requestedMode, dto.requestedAt);
-    const device = await this.resolveDevice(dto);
-    // Parcours « Autre appareil » : indice structuré obligatoire quand il n'y
-    // a pas de domaine catalogue et que la catégorie vaut `autre`. La famille
-    // doit exister et être active ; sa catégorie métier devient la catégorie
-    // de la demande (dispatch via le matching existant, sans IA). Le texte
-    // libre historique (`equipmentType`) n'est plus accepté en création.
-    let equipmentFamily: string | null = null;
-    const familyCode = dto.equipmentFamily?.trim() ? dto.equipmentFamily.trim().toUpperCase() : null;
-    if (device.domainId && familyCode) {
-      throw new BadRequestException(
-        'Un indice d’équipement ne s’applique qu’aux demandes hors catalogue.',
-      );
-    }
-    if (!device.domainId && (device.category === 'autre' || familyCode)) {
-      if (!familyCode) {
-        throw new BadRequestException(
-          'Sélectionnez le type d’appareil qui correspond le mieux à votre situation.',
-        );
-      }
-      const family = await this.prisma.equipmentFamily.findUnique({ where: { code: familyCode } });
-      if (!family || !family.isActive) {
-        throw new BadRequestException('Type d’appareil indisponible.');
-      }
-      equipmentFamily = family.code;
-      device.category = family.category;
-    }
-    // Sprint 8.8.2 (règles D + E) — rattachement géographique structuré,
-    // résolu AVANT la transaction : ville non bloquante + validation zone.
-    const geo = await this.resolveDemandeGeo(dto);
-
     const trackingToken = randomUUID();
+    const reference = generateReference();
 
-    for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
-      const reference = generateReference();
-      try {
-        const demande = await this.prisma.$transaction(async (tx) => {
-          const created = await tx.demande.create({
-            data: {
-              reference,
-              category: device.category,
-              description,
-              equipmentType: null,
-              equipmentFamily,
-              city: dto.city,
-              cityId: geo.cityId,
-              zoneId: geo.zoneId,
-              neighborhood: dto.neighborhood ?? null,
-              address: dto.address ?? null,
-              landmark: dto.landmark ?? null,
-              contactPhone: dto.contactPhone ?? null,
-              // GPS V1 — transmis tel quel si fourni, sinon null.
-              latitude: dto.latitude ?? null,
-              longitude: dto.longitude ?? null,
-              clientId: resolvedClientId,
-              requestedMode,
-              requestedAt,
-              domainId: device.domainId,
-              brandId: device.brandId,
-              modelId: device.modelId,
-              problemId: device.problemId,
-              trackingToken,
-              medias:
-                medias.length > 0
-                  ? {
-                      create: medias.map((media) => ({
-                        kind: media.kind as MediaKind,
-                        fileName: media.name,
-                        mimeType: media.mimeType,
-                        sizeBytes: media.sizeBytes,
-                        // Chemin lié en transaction : à la création, les
-                        // octets sont déjà stockés (accès technicien immédiat,
-                        // jamais de demande vide).
-                        storagePath: media.storagePath ?? null,
-                        stored: !!media.storagePath,
-                      })),
-                    }
-                  : undefined,
-            },
-            include: this.clientInclude(),
-          });
-
-          // Sprint 8.3 : premier événement du journal métier de la mission.
-          await recordEvent(tx, {
-            demandeId: created.id,
-            type: 'CREATED',
-            actorUserId: resolvedClientId,
-            toStatus: 'SUBMITTED',
-          });
-
-          return created;
-        });
-
-        return { ...toApiDemande(demande), trackingToken: demande.trackingToken };
-      } catch (error) {
-        // Collision sur la référence générée : on regénère une nouvelle référence.
-        if ((error as { code?: string }).code === 'P2002') continue;
-        throw error;
-      }
-    }
-
-    throw new Error('Impossible de générer une référence unique. Réessayez.');
-  }
-
-  /* Résolution du contexte appareil (Sprint 8.1) :
-   * - le problème est prioritaire pour déterminer le domaine ;
-   * - le domaine actif fournit la catégorie métier (category) ;
-   * - marque/modèle/problème doivent appartenir au bon parent sinon 400. */
-  private async resolveDevice(dto: CreateDemandeDto): Promise<{
-    domainId: string | null;
-    brandId: string | null;
-    modelId: string | null;
-    problemId: string | null;
-    category: string;
-  }> {
-    let domainId = dto.domainId ?? null;
-    let brandId = dto.brandId ?? null;
-    let modelId = dto.modelId ?? null;
-    let problemId = dto.problemId ?? null;
-    let category = dto.categoryId;
-
-    if (domainId) {
-      const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
-      if (!domain) throw new BadRequestException('Domaine d\'appareil introuvable.');
-      if (!domain.isActive) {
-        throw new BadRequestException('Ce domaine d\'appareil n\'est plus disponible.');
-      }
-      if (domain.category) category = domain.category;
-    }
-
-    if (brandId) {
-      const brand = await this.prisma.deviceBrand.findUnique({ where: { id: brandId } });
-      if (!brand) throw new BadRequestException('Marque introuvable.');
-      if (!brand.isActive) throw new BadRequestException('Cette marque n\'est plus disponible.');
-      if (domainId && brand.domainId !== domainId) {
-        throw new BadRequestException('La marque ne dépend pas de ce domaine.');
-      }
-      domainId = brand.domainId;
-    }
-
-    if (modelId) {
-      const model = await this.prisma.deviceModel.findUnique({ where: { id: modelId } });
-      if (!model) throw new BadRequestException('Modèle introuvable.');
-      if (!model.isActive) throw new BadRequestException('Ce modèle n\'est plus disponible.');
-      if (brandId && model.brandId !== brandId) {
-        throw new BadRequestException('Le modèle ne dépend pas de cette marque.');
-      }
-      brandId = model.brandId;
-    }
-
-    if (problemId) {
-      const problem = await this.prisma.problem.findUnique({ where: { id: problemId } });
-      if (!problem) throw new BadRequestException('Problème introuvable.');
-      if (!problem.isActive) throw new BadRequestException('Ce problème n\'est plus disponible.');
-      if (domainId && problem.domainId !== domainId) {
-        throw new BadRequestException('Le problème ne dépend pas de ce domaine.');
-      }
-      domainId = problem.domainId;
-      if (problem.brandId && brandId && problem.brandId !== brandId) {
-        throw new BadRequestException(
-          'Le problème sélectionné ne correspond pas à la marque de l\'appareil.',
-        );
-      }
-      if (problem.brandId && !brandId) brandId = problem.brandId;
-      if (problem.modelId && modelId && problem.modelId !== modelId) {
-        throw new BadRequestException(
-          'Le problème sélectionné ne correspond pas au modèle de l\'appareil.',
-        );
-      }
-      if (problem.modelId && !modelId) modelId = problem.modelId;
-    }
-
-    if (domainId) {
-      const domain = await this.prisma.serviceDomain.findUnique({ where: { id: domainId } });
-      if (domain?.category) category = domain.category;
-    }
-
-    // Parcours client simplifié : avec un domaine du catalogue, une marque
-    // réellement enregistrée et active est obligatoire (plus d'option
-    // « toutes les marques », plus de dépôt sans marque). Sans domaine
-    // (appareil hors catalogue), l'équipement déclaré reste l'ancre.
-    if (domainId && !brandId) {
-      throw new BadRequestException(
-        'Sélectionnez une marque disponible pour cette catégorie.',
-      );
-    }
-
-    return { domainId, brandId, modelId, problemId, category };
-  }
-
-  /* Rattachement géographique structuré (canonique, non bloquant).
-   * - Sans `zoneId` : `resolveGeoFromText` (ville exacte → tête « ville,
-   *   région » → nom de zone seul → typo sûre, chaque niveau exigeant
-   *   unicité + activité ; sinon { null, null }, texte conservé).
-   * - Avec `zoneId` : la zone doit exister et être active ; si la demande a
-   *   déjà un `cityId`, la zone doit appartenir à cette ville ; sinon le
-   *   `cityId` est dérivé de la zone, sauf contradiction explicite entre le
-   *   texte de ville (résolu sans ambiguïté vers une AUTRE ville) et la zone.
-   * Le texte original (`dto.city`) n'est jamais modifié ni remplacé. */
-  private async resolveDemandeGeo(dto: CreateDemandeDto): Promise<{
-    cityId: string | null;
-    zoneId: string | null;
-  }> {
-    const cities = await this.prisma.serviceCity.findMany({
-      where: { isActive: true },
-      select: { id: true, name: true, slug: true, isActive: true },
-    });
-
-    if (!dto.zoneId) {
-      const zones = await this.prisma.zone.findMany({
-        where: { isActive: true },
-        select: { id: true, name: true, slug: true, cityId: true, isActive: true },
+    const demande = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.demande.create({
+        data: {
+          reference,
+          category: dto.serviceCode,
+          description: dto.description?.trim() || null,
+          address: dto.address,
+          contactPhone: dto.phone,
+          city: dto.address,
+          clientId: resolvedClientId,
+          trackingToken,
+        },
+        include: this.clientInclude(),
       });
-      return resolveGeoFromText(cities, zones, dto.city);
-    }
 
-    const resolvedCityId = resolveCityIdFromCandidates(cities, dto.city);
+      // Premier événement du journal métier de la mission.
+      await recordEvent(tx, {
+        demandeId: created.id,
+        type: 'CREATED',
+        actorUserId: resolvedClientId,
+        toStatus: 'SUBMITTED',
+      });
 
-    const zone = await this.prisma.zone.findUnique({
-      where: { id: dto.zoneId },
-      include: { city: { select: { id: true, isActive: true } } },
+      return created;
     });
-    if (!zone) throw new NotFoundException('Zone introuvable.');
-    if (!zone.isActive) {
-      throw new BadRequestException('Cette zone n’est plus disponible.');
-    }
-    if (!zone.city.isActive) {
-      throw new BadRequestException('La ville de cette zone n’est plus disponible.');
-    }
 
-    if (resolvedCityId) {
-      if (zone.cityId !== resolvedCityId) {
-        throw new BadRequestException(
-          'La zone sélectionnée n’appartient pas à la ville de la demande.',
-        );
-      }
-      return { cityId: resolvedCityId, zoneId: zone.id };
-    }
-
-    // Pas de `cityId` résolu : le texte reste la référence d'affichage, la
-    // zone devient la référence structurée — sauf si le texte désigne sans
-    // ambiguïté une AUTRE ville du référentiel (contradiction explicite).
-    const textMatches = findCityMatches(cities, dto.city);
-    if (textMatches.length === 1 && textMatches[0].id !== zone.cityId) {
-      throw new BadRequestException(
-        'La zone sélectionnée n’appartient pas à la ville de la demande.',
-      );
-    }
-    return { cityId: zone.cityId, zoneId: zone.id };
+    return { ...toApiDemande(demande), trackingToken: demande.trackingToken };
   }
 
   /* Missions actives : tout sauf le terminal (confirmé / annulé).
