@@ -93,6 +93,7 @@ export interface DemandeRecord {
   requestedMode: string;
   requestedAt: Date | null;
   createdAt: Date;
+  trackingToken: string | null;
   domainId: string | null;
   brandId: string | null;
   modelId: string | null;
@@ -175,6 +176,7 @@ export function toApiDemande(demande: DemandeRecord) {
     mediaPersisted: false,
     storageStatus: 'metadata-only',
     createdAt: demande.createdAt.toISOString(),
+    trackingToken: demande.trackingToken ?? null,
   };
 }
 
@@ -192,6 +194,7 @@ export function toApiDemandePublic(demande: DemandeRecord) {
     contactPhone: null,
     latitude: null,
     longitude: null,
+    trackingToken: null,
     medias: [],
   };
 }

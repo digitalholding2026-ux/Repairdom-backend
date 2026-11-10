@@ -286,7 +286,7 @@ model User {
   emailVerified                Boolean                @default(true)
   emailVerificationToken       String?
   emailVerificationExpiresAt   DateTime?
-  passwordHash                 String
+  passwordHash                 String?
   // Reset password — token à usage unique (convention identique à la
   // vérification e-mail : token opaque stocké en base, expiration courte,
   // effacé après usage). `tokenVersion` invalide tous les JWT émis avant
@@ -562,6 +562,9 @@ model Demande {
   // ligne). Pour le Smartphone, passe CONFIRMED uniquement si l'escrow est
   // payé.
   confirmationStatus      ConfirmationStatus @default(PENDING)
+  // Jeton de suivi public (UUID v4) pour les clients sans compte (invités).
+  // Permet de consulter sa demande via `/suivi/[token]` sans s'authentifier.
+  trackingToken           String?            @unique
   // GPS V1 — position de la demande (nullable : demandes historiques sans
   // GPS). Complète city/cityId/zone/adresse (jamais remplacés). Bornes
   // validées côté API (-90..90 / -180..180).

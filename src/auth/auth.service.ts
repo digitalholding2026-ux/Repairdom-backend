@@ -213,6 +213,7 @@ export class AuthService {
       throw new ForbiddenException('Ce compte a été désactivé. Contactez Relio.');
     }
 
+    if (!found.passwordHash) throw new UnauthorizedException('Identifiants invalides.');
     const valid = await verifyPassword(dto.password, found.passwordHash);
     if (!valid) throw new UnauthorizedException('Identifiants invalides.');
 

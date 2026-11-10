@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { MediaKind } from './../generated/prisma/enums.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
@@ -77,10 +77,11 @@ export class DemandesService {
     private readonly rewards?: RewardsService,
   ) {}
 
-  async create(clientId: string, dto: CreateDemandeDto) {
+  async create(clientId: string | null, dto: CreateDemandeDto) {
     // Certaines prestations sont réservées aux particuliers : le refus est
     // serveur, le type de compte est relu en base et jamais cru sur parole.
-    if (dto.serviceType === 'SMARTPHONE') {
+    // Un client anonyme (clientId === null) est traité comme un particulier.
+    if (dto.serviceType === 'SMARTPHONE' && clientId !== null) {
       const client = await this.prisma.user.findUnique({
         where: { id: clientId },
         select: { clientType: true },
@@ -91,6 +92,45 @@ export class DemandesService {
         );
       }
     }
+
+    /* Résolution du client pour une demande anonyme (pas de JWT) :
+     * - rechercher un utilisateur existant avec ce numéro de téléphone ;
+     * - sinon, créer un utilisateur "fantôme" (CLIENT, B2C, sans mot de passe,
+     *   isActive: true) lié au numéro WhatsApp.
+     * Un client authentifié (clientId !== null) est utilisé tel quel. */
+    let resolvedClientId: string;
+    if (clientId !== null) {
+      resolvedClientId = clientId;
+    } else if (dto.contactPhone) {
+      const existing = await this.prisma.user.findFirst({
+        where: { phone: dto.contactPhone },
+        select: { id: true },
+      });
+      if (existing) {
+        resolvedClientId = existing.id;
+      } else {
+        const ghost = await this.prisma.user.create({
+          data: {
+            role: 'CLIENT',
+            clientType: 'CLIENT',
+            firstName: 'Client',
+            lastName: 'Invité',
+            phone: dto.contactPhone,
+            email: `guest-${randomUUID()}@relio.local`,
+            passwordHash: null,
+            emailVerified: true,
+            isActive: true,
+          },
+          select: { id: true },
+        });
+        resolvedClientId = ghost.id;
+      }
+    } else {
+      throw new BadRequestException(
+        'Un numéro de téléphone WhatsApp est requis pour déposer une demande sans compte.',
+      );
+    }
+
     const medias = dto.medias ?? [];
     /* Le DTO impose déjà une description de 10 caractères minimum. Ce garde
      * reste une SECONDE LIGNE DE DÉFENSE, à deux titres :
@@ -138,6 +178,8 @@ export class DemandesService {
     // résolu AVANT la transaction : ville non bloquante + validation zone.
     const geo = await this.resolveDemandeGeo(dto);
 
+    const trackingToken = randomUUID();
+
     for (let attempt = 0; attempt < REFERENCE_MAX_ATTEMPTS; attempt += 1) {
       const reference = generateReference();
       try {
@@ -159,13 +201,14 @@ export class DemandesService {
               // GPS V1 — transmis tel quel si fourni, sinon null.
               latitude: dto.latitude ?? null,
               longitude: dto.longitude ?? null,
-              clientId,
+              clientId: resolvedClientId,
               requestedMode,
               requestedAt,
               domainId: device.domainId,
               brandId: device.brandId,
               modelId: device.modelId,
               problemId: device.problemId,
+              trackingToken,
               medias:
                 medias.length > 0
                   ? {
@@ -190,14 +233,14 @@ export class DemandesService {
           await recordEvent(tx, {
             demandeId: created.id,
             type: 'CREATED',
-            actorUserId: clientId,
+            actorUserId: resolvedClientId,
             toStatus: 'SUBMITTED',
           });
 
           return created;
         });
 
-        return toApiDemande(demande);
+        return { ...toApiDemande(demande), trackingToken: demande.trackingToken };
       } catch (error) {
         // Collision sur la référence générée : on regénère une nouvelle référence.
         if ((error as { code?: string }).code === 'P2002') continue;

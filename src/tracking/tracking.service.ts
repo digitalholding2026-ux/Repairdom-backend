@@ -30,6 +30,31 @@ export class TrackingService {
     return this.buildPublicTracking(demande);
   }
 
+  /* Suivi public par token (client invité). Retourne la même structure
+   * publique que `trackByReference` mais indexé par `trackingToken`. */
+  async trackByToken(token: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { trackingToken: token },
+      include: {
+        domain: { select: { name: true, slug: true } },
+        brand: { select: { name: true, slug: true } },
+        model: { select: { name: true, slug: true } },
+        problem: { select: { name: true, slug: true } },
+        events: {
+          orderBy: { createdAt: 'asc' },
+          take: 50,
+          select: { type: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!demande) {
+      throw new NotFoundException('Aucune intervention ne correspond à ce lien de suivi.');
+    }
+
+    return this.buildPublicTracking(demande);
+  }
+
   private buildPublicTracking(demande: {
     reference: string;
     status: string;

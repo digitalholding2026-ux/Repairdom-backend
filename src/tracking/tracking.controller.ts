@@ -21,4 +21,14 @@ export class TrackingController {
     }
     return this.trackingService.trackByReference(reference.trim().toUpperCase());
   }
+
+  /* Suivi public par token (client invité, pas de compte) : le token
+   * `trackingToken` (UUID v4) est retourné à la création d'une demande
+   * anonyme. Aucune authentification requise. */
+  @Get('token/:token')
+  @UseGuards(TrackingThrottleGuard)
+  async trackByToken(@Param('token') token: string) {
+    const demande = await this.trackingService.trackByToken(token);
+    return demande;
+  }
 }

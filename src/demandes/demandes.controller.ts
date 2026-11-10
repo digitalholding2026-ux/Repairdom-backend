@@ -13,8 +13,6 @@ import { DisputesService } from '../disputes/disputes.service.js';
 import { OpenDisputeDto } from '../disputes/dto/open-dispute.dto.js';
 
 @Controller('demandes')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('CLIENT')
 export class DemandesController {
   constructor(
     private readonly demandesService: DemandesService,
@@ -27,6 +25,8 @@ export class DemandesController {
    * formats image/vidéo/audio validés côté service. */
   @Post('medias/upload')
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { files: 1, fileSize: DEMANDE_MEDIA_MAX_BYTES },
@@ -43,6 +43,8 @@ export class DemandesController {
   /* Nettoyage best-effort d'un upload abandonné (demande non créée). */
   @Delete('medias/upload')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   deleteUploadedMedia(@CurrentUser() user: RequestUser, @Body('storagePath') storagePath?: string) {
     if (!storagePath) throw new BadRequestException('Chemin de fichier manquant.');
     return this.mediaService.deleteUploadedMedia(user.id, storagePath);
@@ -51,6 +53,8 @@ export class DemandesController {
   /* Lecture d'une pièce jointe (URL signée éphémère, client propriétaire
    * uniquement — 404 sinon). Lazy côté UI : jamais préchargée en masse. */
   @Get(':id/medias/:mediaId/file')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   mediaFileUrl(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -62,27 +66,35 @@ export class DemandesController {
   }
 
   @Post()
-  create(@CurrentUser() user: RequestUser, @Body() dto: CreateDemandeDto) {
-    return this.demandesService.create(user.id, dto);
+  create(@CurrentUser() user: RequestUser | null, @Body() dto: CreateDemandeDto) {
+    return this.demandesService.create(user?.id ?? null, dto);
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   list(@CurrentUser() user: RequestUser) {
     return this.demandesService.listForClient(user.id);
   }
 
   @Get('my/history')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   listHistory(@CurrentUser() user: RequestUser) {
     return this.demandesService.listForClientHistory(user.id);
   }
 
   @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   findOne(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.demandesService.findForClient(user.id, id);
   }
 
   @Patch(':id/status')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   updateStatus(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: UpdateDemandeStatusDto) {
     return this.demandesService.updateStatus(user.id, id, dto);
   }
@@ -92,12 +104,16 @@ export class DemandesController {
    * et donc le règlement tant qu'il n'est pas tranché. */
   @Post(':id/dispute')
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   openDispute(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: OpenDisputeDto) {
     return this.disputesService.openDispute(user.id, id, dto);
   }
 
   /* Lecture du litige de la mission (client propriétaire, null si aucun). */
   @Get(':id/dispute')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('CLIENT')
   getDispute(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.disputesService.getForParty(user, id);
   }
