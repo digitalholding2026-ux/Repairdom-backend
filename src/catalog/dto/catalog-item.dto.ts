@@ -1,4 +1,5 @@
 import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { PaymentType } from '../../generated/prisma/enums.js';
 
 /* M1 — items du catalogue v2, côté administration. */
 
@@ -41,6 +42,9 @@ export class CreateCatalogItemDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @IsOptional()
+  paymentType?: PaymentType;
 }
 
 export class UpdateCatalogItemDto {
@@ -71,6 +75,9 @@ export class UpdateCatalogItemDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @IsOptional()
+  paymentType?: PaymentType;
 }
 
 /**
@@ -97,4 +104,7 @@ export class UpdateCatalogItemPricesDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @IsOptional()
+  paymentType?: PaymentType;
 }

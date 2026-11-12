@@ -32,4 +32,5 @@ export interface CatalogItemView {
   androidVersion: string | null;
   order: number;
   price: number | null;
+  paymentType: string;
 }

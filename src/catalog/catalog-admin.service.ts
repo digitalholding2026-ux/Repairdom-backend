@@ -25,6 +25,7 @@ type ItemRow = {
   pricePublic: number | null;
   pricePro: number | null;
   travelFee: number | null;
+  paymentType: string;
 };
 
 /**
@@ -73,6 +74,7 @@ export class CatalogAdminService {
         pricePro: dto.pricePro ?? null,
         order: dto.order ?? 0,
         active,
+        paymentType: dto.paymentType ?? 'END_OF_SERVICE',
       },
     });
     return toItemView(created);
@@ -104,6 +106,7 @@ export class CatalogAdminService {
         ...(dto.androidVersion !== undefined ? { androidVersion: dto.androidVersion } : {}),
         ...(dto.order !== undefined ? { order: dto.order } : {}),
         ...(dto.active !== undefined ? { active: dto.active } : {}),
+        ...(dto.paymentType !== undefined ? { paymentType: dto.paymentType } : {}),
       },
     });
     return toItemView(updated);
@@ -236,5 +239,6 @@ function toItemView(item: ItemRow): CatalogItemView {
     androidVersion: item.androidVersion,
     order: item.order,
     ...projectPrice(item),
+    paymentType: item.paymentType,
   };
 }

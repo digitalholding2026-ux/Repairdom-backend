@@ -513,6 +513,10 @@ export class AdminService {
         firstName: true,
         lastName: true,
         email: true,
+        phone: true,
+        clientType: true,
+        companyName: true,
+        codePro: true,
       },
       orderBy: { firstName: 'asc' },
       take: ADMIN_CLIENT_SEARCH_LIMIT,
@@ -524,6 +528,10 @@ export class AdminService {
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,
+        phone: user.phone,
+        clientType: user.clientType,
+        companyName: user.companyName,
+        codePro: user.codePro,
       })),
     };
   }

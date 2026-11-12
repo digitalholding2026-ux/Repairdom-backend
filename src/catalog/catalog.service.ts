@@ -109,6 +109,7 @@ export class CatalogV2Service {
       androidVersion: item.androidVersion,
       order: item.order,
       price: projectPrice(item, clientType).price,
+      paymentType: item.paymentType,
     }));
   }
 
