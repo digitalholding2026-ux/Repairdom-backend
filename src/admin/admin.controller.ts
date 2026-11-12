@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import type { RequestUser } from '../auth/auth.types.js';
 import { DisputesService } from '../disputes/disputes.service.js';
 import { ReviewDisputeDto } from '../disputes/dto/review-dispute.dto.js';
 import { UpdateAdminDemandeStatusDto } from './dto/update-admin-demande-status.dto.js';
+import { CreateB2BClientDto } from './dto/create-b2b-client.dto.js';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -80,6 +82,19 @@ export class AdminController {
   @Get('users/clients')
   searchClients(@Query('q') q?: string) {
     return this.adminService.searchClientUsers(q ?? '');
+  }
+
+  /* Crée un compte B2B (mot de passe aléatoire + proCode unique générés).
+   * Les identifiants sont renvoyés à l'admin pour communication au client. */
+  @Post('clients/b2b')
+  createB2BClient(@Body() dto: CreateB2BClientDto) {
+    return this.adminService.createB2BClient({
+      email: dto.email,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      companyName: dto.companyName,
+      phone: dto.phone,
+    });
   }
 
   /* Gestion des comptes : détail (dépendances) + suppression administrative

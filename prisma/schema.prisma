@@ -21,6 +21,15 @@ enum ClientType {
   B2B
 }
 
+// V2.2 — mode de paiement applicable à un article du catalogue :
+// END_OF_SERVICE = règlement complet après intervention (pas de paiement en
+// ligne), DEPOSIT_50 = acompte de 50 % en ligne via SasPay, le solde en
+// présentiel.
+enum PaymentType {
+  END_OF_SERVICE
+  DEPOSIT_50
+}
+
 // M1 — les trois prestations vendues par Relio v2.
 enum ServiceCode {
   SYSTEME
@@ -610,6 +619,8 @@ model Demande {
   // pour FRP / Système (ex. 1 000 XAF). Le reste est payé après la réparation.
   depositAmount           Int?
   depositPaid             Boolean   @default(false)
+  // V2.2 — code de réduction / parrainage appliqué à cette demande (futur).
+  discountCodeUsed        String?
   // Client absent au rendez-vous (no-signal) : marque acquise à Relio.
   isNoShow                Boolean   @default(false)
   medias                  DemandeMedia[]
@@ -1678,6 +1689,10 @@ model CatalogItem {
   // pour le déblocage FRP/Système). Payés à la validation, le reste après la
   // réparation. NULL = aucun frais de déplacement.
   travelFee      Int?
+  // V2.2 — mode de paiement de l'article. END_OF_SERVICE = pas de paiement en
+  // ligne (règlement après intervention). DEPOSIT_50 = acompte 50 % en ligne
+  // via SasPay avant l'intervention, le solde en présentiel.
+  paymentType    PaymentType @default(END_OF_SERVICE)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

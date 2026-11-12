@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   BadRequestException,
   ForbiddenException,
@@ -6,7 +7,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { Role, DemandeStatus, ConfirmationStatus, FinancialTransactionStatus, FundsHoldStatus } from '../generated/prisma/enums.js';
+import { Role, DemandeStatus, ConfirmationStatus, FinancialTransactionStatus, FundsHoldStatus, ClientType } from '../generated/prisma/enums.js';
+import { hashPassword } from '../auth/password-hash.js';
 import { toApiEvent } from '../mission-events/mission-events.js';
 import { V2_TO_DEMANDE_STATUS, V2_TO_EVENT_TYPE, type AdminDemandeStatus } from './dto/update-admin-demande-status.dto.js';
 
@@ -524,6 +526,71 @@ export class AdminService {
         email: user.email,
       })),
     };
+  }
+
+  /* ── Création d'un compte B2B par l'admin ───────────────────────────────── */
+  /* POST /api/admin/clients/b2b — réservé ADMIN. Génère un mot de passe
+   * aléatoire et un proCode unique, crée le compte (role CLIENT,
+   * clientType B2B) et renvoie les identifiants à l'admin pour qu'il les
+   * communique au client. Le mot de passe en clair n'est JAMAIS stocké. */
+  async createB2BClient(input: {
+    email: string;
+    firstName: string;
+    lastName?: string;
+    companyName: string;
+    phone?: string;
+  }) {
+    const existing = await this.prisma.user.findUnique({
+      where: { email: input.email.toLowerCase().trim() },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new BadRequestException('Un compte existe déjà avec cette adresse e-mail.');
+    }
+
+    /* Mot de passe aléatoire 12 caractères (lettre + chiffre + symbole). */
+    const plainPassword = randomBytes(6).toString('base64url');
+    const passwordHash = await hashPassword(plainPassword);
+
+    /* proCode unique : RELIO-XXXXX (5 hex octets). Retentative en cas de
+     * collision sur l'index unique @unique(codePro). */
+    let proCode: string;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      proCode = `RELIO-${randomBytes(3).toString('hex').toUpperCase()}`;
+      try {
+        const user = await this.prisma.user.create({
+          data: {
+            email: input.email.toLowerCase().trim(),
+            firstName: input.firstName.trim(),
+            lastName: input.lastName?.trim() || null,
+            phone: input.phone?.trim() || null,
+            companyName: input.companyName.trim(),
+            role: Role.CLIENT,
+            clientType: ClientType.B2B,
+            codePro: proCode,
+            passwordHash,
+            emailVerified: true,
+          },
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            companyName: true,
+            codePro: true,
+            clientType: true,
+            createdAt: true,
+          },
+        });
+        return { user, plainPassword };
+      } catch (error) {
+        if ((error as { code?: string }).code === 'P2002') {
+          continue; // codePro collision : regénérer
+        }
+        throw error;
+      }
+    }
+    throw new BadRequestException('Impossible de générer un proCode unique. Réessayez.');
   }
 
   /* Détail d'un compte pour l'admin : identité, rôle, état, dates, et
