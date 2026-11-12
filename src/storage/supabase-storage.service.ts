@@ -146,6 +146,18 @@ export class SupabaseStorageService {
   }
 
   /**
+   * Extrait le chemin d’objet d’une URL publique générée par `publicUrl`.
+   * Retourne null si l’URL ne correspond pas au format attendu.
+   */
+  extractObjectPath(publicUrl: string): string | null {
+    const prefix = `${this.baseUrl}/storage/v1/object/public/${AVATAR_BUCKET}/`;
+    if (publicUrl.startsWith(prefix)) {
+      return publicUrl.slice(prefix.length);
+    }
+    return null;
+  }
+
+  /**
    * Génère une URL temporaire signée pour un objet d'un bucket PRIVÉ.
    * L'URL expire après `expiresInSeconds` et n'est stockée nulle part :
    * elle ne sert qu'à permettre à un admin de consulter un document KYC.
