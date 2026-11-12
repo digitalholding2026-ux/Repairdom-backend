@@ -38,14 +38,16 @@ export class SettingsController {
   constructor(private readonly settings: SettingsService) {}
 
   /* Lecture publique : paramètres exposés au frontend client.
-   * Aucun secret n'est retourné (supportEmail, createdAt, updatedAt exclus). */
+   * supportEmail n'est pas un secret : il est affiché publiquement
+   * pour que les clients puissent contacter le support. */
   @Get('public')
-  async getPublicSettings(): Promise<Pick<PlatformSettingDto, 'adminName' | 'adminWhatsApp' | 'adminAvatarUrl'>> {
+  async getPublicSettings(): Promise<Pick<PlatformSettingDto, 'adminName' | 'adminWhatsApp' | 'adminAvatarUrl' | 'supportEmail'>> {
     const s = await this.settings.getSettings();
     return {
       adminName: s.adminName,
       adminWhatsApp: s.adminWhatsApp,
       adminAvatarUrl: s.adminAvatarUrl,
+      supportEmail: s.supportEmail,
     };
   }
 
