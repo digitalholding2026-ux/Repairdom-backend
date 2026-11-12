@@ -609,7 +609,11 @@ model Demande {
   model                   DeviceModel?           @relation(fields: [modelId], references: [id], onDelete: SetNull)
   modelId                 String?
   problem                 Problem?               @relation(fields: [problemId], references: [id], onDelete: SetNull)
-  problemId               String?
+  problemId                 String?
+  // Item du catalogue sélectionné (Sprint 8.1 référentiel) — libellé affiché
+  // au client sur la page de succès et de suivi (ex: "Infinix Hot 30").
+  catalogItem               CatalogItem?   @relation("DemandeCatalogItem", fields: [catalogItemId], references: [id], onDelete: SetNull)
+  catalogItemId             String?
   // Négociation (Sprint 8.1) : le chat de négociation n'est ouvert qu'après
   // la demande explicite du client (negotiationRequestedAt).
   negotiationRequestedAt  DateTime?
@@ -1697,6 +1701,8 @@ model CatalogItem {
   updatedAt      DateTime @updatedAt
 
   category CatalogCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  demandes Demande[] @relation("DemandeCatalogItem")
 
   @@unique([categoryId, code])
   @@index([categoryId, active, order])
