@@ -19,6 +19,44 @@ export const ADMIN_DEMANDE_PAGE_LIMIT = 50;
 
 const logger = new Logger('AdminService');
 
+/* Génère un mot de passe aléatoire robuste qui respecte les règles de
+ * validation `assertPasswordStrong()` :
+ * - longueur 12 caractères ;
+ * - au moins 1 majuscule (A-Z) ;
+ * - au moins 1 minuscule (a-z) ;
+ * - au moins 1 chiffre (0-9) ;
+ * - au moins 1 caractère spécial (! @ # $ % *).
+ */
+function generateRandomPassword(): string {
+  const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const LOWER = 'abcdefghijklmnopqrstuvwxyz';
+  const DIGIT = '0123456789';
+  const SPECIAL = '!@#$%*';
+  const ALL = UPPER + LOWER + DIGIT + SPECIAL;
+
+  const bytes = randomBytes(12);
+  const pick = (pool: string): string => pool[bytes[0] % pool.length];
+
+  /* Position fixe pour garantir chaque catégorie, le reste est aléatoire. */
+  const chars = [
+    pick(UPPER),
+    pick(LOWER),
+    pick(DIGIT),
+    pick(SPECIAL),
+  ];
+  for (let i = 4; i < 12; i += 1) {
+    chars.push(ALL[bytes[i] % ALL.length]);
+  }
+
+  /* Mélange pour ne pas laisser les catégories en tête. */
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = bytes[i % bytes.length] % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+
+  return chars.join('');
+}
+
 @Injectable()
 export class AdminService {
   constructor(private readonly prisma: PrismaService) {}
@@ -556,8 +594,9 @@ export class AdminService {
       throw new BadRequestException('Un compte existe déjà avec cette adresse e-mail.');
     }
 
-    /* Mot de passe aléatoire 12 caractères (lettre + chiffre + symbole). */
-    const plainPassword = randomBytes(6).toString('base64url');
+    /* Mot de passe aléatoire 12 caractères : garantit au moins 1 majuscule,
+     * 1 minuscule, 1 chiffre et 1 caractère spécial. Passe assertPasswordStrong(). */
+    const plainPassword = generateRandomPassword();
     const passwordHash = await hashPassword(plainPassword);
 
     /* proCode unique : RELIO-XXXXX (5 hex octets). Retentative en cas de
