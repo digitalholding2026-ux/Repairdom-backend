@@ -145,10 +145,6 @@ export class DemandesService {
           city: dto.address,
           clientId: resolvedClientId,
           trackingToken,
-          ...(dto.brandId ? { brandId: dto.brandId } : {}),
-          ...(dto.modelId ? { modelId: dto.modelId } : {}),
-          ...(dto.problemId ? { problemId: dto.problemId } : {}),
-          ...(dto.finalAmount !== undefined ? { finalAmount: dto.finalAmount } : {}),
         },
         include: this.clientInclude(),
       });
