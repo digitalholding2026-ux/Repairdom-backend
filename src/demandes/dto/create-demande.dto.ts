@@ -60,4 +60,21 @@ export class CreateDemandeDto {
   @IsString()
   @MaxLength(50)
   discountCode?: string;
+
+  @IsOptional()
+  @IsString()
+  brandId?: string;
+
+  @IsOptional()
+  @IsString()
+  modelId?: string;
+
+  @IsOptional()
+  @IsString()
+  problemId?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  finalAmount?: number;
 }

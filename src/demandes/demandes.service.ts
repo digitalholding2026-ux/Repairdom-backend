@@ -134,6 +134,15 @@ export class DemandesService {
     const trackingToken = randomUUID();
     const reference = await generateReference(this.prisma, dto.serviceCode);
 
+    /* Vérifier l'existence des clés étrangères optionnelles avant inclusion.
+     * Si un ID est invalide, on l'ignore plutôt que de faire échouer toute la
+     * demande avec une contrainte de clé étrangère. */
+    const [brand, model, problem] = await Promise.all([
+      dto.brandId ? this.prisma.deviceBrand.findUnique({ where: { id: dto.brandId }, select: { id: true } }) : null,
+      dto.modelId ? this.prisma.deviceModel.findUnique({ where: { id: dto.modelId }, select: { id: true } }) : null,
+      dto.problemId ? this.prisma.problem.findUnique({ where: { id: dto.problemId }, select: { id: true } }) : null,
+    ]);
+
     const demande = await this.prisma.$transaction(async (tx) => {
       const created = await tx.demande.create({
         data: {
@@ -145,6 +154,10 @@ export class DemandesService {
           city: dto.address,
           clientId: resolvedClientId,
           trackingToken,
+          ...(brand ? { brandId: dto.brandId } : {}),
+          ...(model ? { modelId: dto.modelId } : {}),
+          ...(problem ? { problemId: dto.problemId } : {}),
+          ...(dto.finalAmount !== undefined ? { finalAmount: dto.finalAmount } : {}),
         },
         include: this.clientInclude(),
       });
