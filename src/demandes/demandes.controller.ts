@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { DemandesService } from './demandes.service.js';
 import { DemandeMediaService, DEMANDE_MEDIA_MAX_BYTES } from './demande-media.service.js';
@@ -123,10 +123,11 @@ export class DemandesController {
 
   /* Suivi public anonyme par référence lisible (ex: FRP-023) :
    * Renvoie le statut, l'historique des événements et les infos de base.
-   * Aucune authentification requise. */
+   * Exige le numéro de téléphone associé à la demande (query param `phone`).
+   * Retourne 403 si le numéro est absent ou incorrect. */
   @Get('tracking/reference/:reference')
-  async trackByReference(@Param('reference') reference: string) {
-    return this.demandesService.findByReference(reference);
+  async trackByReference(@Param('reference') reference: string, @Query('phone') phone?: string) {
+    return this.demandesService.findByReference(reference, phone);
   }
 
   /* Suivi public anonyme par token (client invité, pas de compte) :

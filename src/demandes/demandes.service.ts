@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
@@ -178,8 +178,10 @@ export class DemandesService {
   }
 
   /* Recherche publique d'une demande par sa référence lisible (ex: FRP-023).
-   * Aucune authentification requise. Utilisée par l'URL de suivi /suivi/:reference. */
-  async findByReference(reference: string) {
+   * Exige le numéro de téléphone associé (query param `phone`) pour
+   * verrouiller l'accès aux données personnelles (adresse, téléphone).
+   * Retourne 403 si le numéro est absent ou incorrect. */
+  async findByReference(reference: string, phone?: string) {
     const demande = await this.prisma.demande.findUnique({
       where: { reference: reference.trim().toUpperCase() },
       include: {
@@ -198,6 +200,16 @@ export class DemandesService {
 
     if (!demande) {
       throw new NotFoundException('Aucune demande ne correspond à cette référence.');
+    }
+
+    /* Vérifier le numéro de téléphone fourni contre celui de la demande.
+     * Normalisation : garder uniquement les chiffres. */
+    const normalize = (value: string | null | undefined) => (value ?? '').replace(/\D/g, '');
+    const demandePhone = normalize(demande.contactPhone);
+    const providedPhone = normalize(phone);
+
+    if (!demandePhone || !providedPhone || demandePhone !== providedPhone) {
+      throw new ForbiddenException('Numéro de téléphone incorrect.');
     }
 
     return {
