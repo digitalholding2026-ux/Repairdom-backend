@@ -121,6 +121,14 @@ export class DemandesController {
     return this.disputesService.getForParty(user, id);
   }
 
+  /* Suivi public anonyme par référence lisible (ex: FRP-023) :
+   * Renvoie le statut, l'historique des événements et les infos de base.
+   * Aucune authentification requise. */
+  @Get('tracking/reference/:reference')
+  async trackByReference(@Param('reference') reference: string) {
+    return this.demandesService.findByReference(reference);
+  }
+
   /* Suivi public anonyme par token (client invité, pas de compte) :
    * Renvoie le statut, l'historique des événements et les infos de base.
    * Aucune authentification requise. */

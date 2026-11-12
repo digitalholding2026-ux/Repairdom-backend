@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from './../prisma/prisma.service.js';
 import type { CreateDemandeDto } from './dto/create-demande.dto.js';
 import type { UpdateDemandeStatusDto } from './dto/update-demande-status.dto.js';
@@ -40,16 +40,36 @@ import {
   recordEvent,
 } from '../mission-events/mission-events.js';
 
-export const REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
-export const REFERENCE_LENGTH = 6;
-export const REFERENCE_MAX_ATTEMPTS = 5;
+export const REFERENCE_PREFIXES: Record<string, string> = {
+  FRP: 'FRP',
+  SYSTEME: 'SYS',
+  SMARTPHONE: 'SMA',
+};
 
-export function generateReference(): string {
-  let reference = 'RD-';
-  for (let i = 0; i < REFERENCE_LENGTH; i += 1) {
-    reference += REFERENCE_ALPHABET[randomInt(REFERENCE_ALPHABET.length)];
+export function referencePrefixFor(serviceCode: string): string {
+  return REFERENCE_PREFIXES[serviceCode] ?? 'RD';
+}
+
+export async function generateReference(
+  prisma: PrismaService,
+  serviceCode: string,
+): Promise<string> {
+  const prefix = referencePrefixFor(serviceCode);
+  const latest = await prisma.demande.findFirst({
+    where: { reference: { startsWith: `${prefix}-` } },
+    orderBy: { createdAt: 'desc' },
+    select: { reference: true },
+  });
+
+  let next = 1;
+  if (latest?.reference) {
+    const match = latest.reference.match(/^([A-Z]+)-(\d+)$/);
+    if (match) {
+      next = Number(match[2]) + 1;
+    }
   }
-  return reference;
+
+  return `${prefix}-${String(next).padStart(3, '0')}`;
 }
 
 @Injectable()
@@ -112,7 +132,7 @@ export class DemandesService {
     }
 
     const trackingToken = randomUUID();
-    const reference = generateReference();
+    const reference = await generateReference(this.prisma, dto.serviceCode);
 
     const demande = await this.prisma.$transaction(async (tx) => {
       const created = await tx.demande.create({
@@ -141,6 +161,47 @@ export class DemandesService {
     });
 
     return { ...toApiDemande(demande), trackingToken: demande.trackingToken };
+  }
+
+  /* Recherche publique d'une demande par sa référence lisible (ex: FRP-023).
+   * Aucune authentification requise. Utilisée par l'URL de suivi /suivi/:reference. */
+  async findByReference(reference: string) {
+    const demande = await this.prisma.demande.findUnique({
+      where: { reference: reference.trim().toUpperCase() },
+      include: {
+        domain: { select: { name: true } },
+        brand: { select: { name: true } },
+        model: { select: { name: true } },
+        problem: { select: { name: true } },
+        events: {
+          orderBy: { createdAt: 'asc' },
+          take: 200,
+          select: { type: true, createdAt: true },
+        },
+      },
+    });
+
+    if (!demande) {
+      throw new NotFoundException('Aucune demande ne correspond à cette référence.');
+    }
+
+    return {
+      reference: demande.reference,
+      status: demande.status,
+      category: demande.domain ? demande.domain.name : demande.category,
+      model: demande.model ? demande.model.name : null,
+      problem: demande.problem ? demande.problem.name : null,
+      price: demande.finalAmount ?? null,
+      createdAt: demande.createdAt.toISOString(),
+      address: demande.address ?? null,
+      city: demande.city,
+      contactPhone: demande.contactPhone ?? null,
+      timeline: demande.events.map((e) => ({
+        type: e.type,
+        label: e.type,
+        date: e.createdAt.toISOString(),
+      })),
+    };
   }
 
   /* Missions actives : tout sauf le terminal (confirmé / annulé).
