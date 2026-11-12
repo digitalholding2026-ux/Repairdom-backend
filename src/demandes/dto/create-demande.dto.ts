@@ -55,4 +55,9 @@ export class CreateDemandeDto {
   @IsString()
   @MaxLength(1000)
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  discountCode?: string;
 }
