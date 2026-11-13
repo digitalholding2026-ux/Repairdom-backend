@@ -26,6 +26,10 @@ export class CreateCatalogItemDto {
   androidVersion?: string;
 
   @IsOptional()
+  @IsString()
+  targetDevice?: string;
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   pricePublic?: number | null;
@@ -69,6 +73,10 @@ export class UpdateCatalogItemDto {
   androidVersion?: string | null;
 
   @IsOptional()
+  @IsString()
+  targetDevice?: string | null;
+
+  @IsOptional()
   @IsInt()
   order?: number;
 
@@ -107,4 +115,8 @@ export class UpdateCatalogItemPricesDto {
 
   @IsOptional()
   paymentType?: PaymentType;
+
+  @IsOptional()
+  @IsString()
+  targetDevice?: string | null;
 }

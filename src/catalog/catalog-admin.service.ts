@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { projectPrice } from './catalog.service.js';
 import type { CatalogItemView } from './catalog.types.js';
+import type { TargetDevice } from '../generated/prisma/enums.js';
 import type {
   CreateCatalogItemDto,
   UpdateCatalogItemDto,
@@ -71,6 +72,7 @@ export class CatalogAdminService {
         label: dto.label,
         description: dto.description ?? null,
         androidVersion: dto.androidVersion ?? null,
+        targetDevice: (dto.targetDevice ?? 'ALL') as TargetDevice,
         pricePublic: dto.pricePublic ?? null,
         pricePro: dto.pricePro ?? null,
         order: dto.order ?? 0,
@@ -105,6 +107,7 @@ export class CatalogAdminService {
         ...(dto.label !== undefined ? { label: dto.label } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.androidVersion !== undefined ? { androidVersion: dto.androidVersion } : {}),
+        ...(dto.targetDevice !== undefined && dto.targetDevice !== null ? { targetDevice: dto.targetDevice as TargetDevice } : {}),
         ...(dto.order !== undefined ? { order: dto.order } : {}),
         ...(dto.active !== undefined ? { active: dto.active } : {}),
         ...(dto.paymentType !== undefined ? { paymentType: dto.paymentType } : {}),
@@ -126,7 +129,7 @@ export class CatalogAdminService {
   async updatePrices(
     id: string,
     dto: UpdateCatalogItemPricesDto,
-  ): Promise<{ pricePublic: number | null; pricePro: number | null; travelFee: number | null }> {
+  ): Promise<{ pricePublic: number | null; pricePro: number | null; travelFee: number | null; targetDevice: string | null }> {
     if (
       dto.pricePublic === undefined &&
       dto.pricePro === undefined &&
@@ -141,6 +144,7 @@ export class CatalogAdminService {
     const pricePro = dto.pricePro !== undefined ? dto.pricePro : existing.pricePro;
     const travelFee = dto.travelFee !== undefined ? dto.travelFee : existing.travelFee;
     const active = dto.active !== undefined ? dto.active : existing.active;
+    const targetDevice = (dto.targetDevice ?? existing.targetDevice) as TargetDevice;
     const proAvailable = await this.categoryProAvailable(existing.categoryId);
     assertItemPrices(active, pricePublic, pricePro, proAvailable);
 
@@ -150,10 +154,11 @@ export class CatalogAdminService {
         pricePublic,
         pricePro,
         travelFee,
+        targetDevice,
         ...(dto.active !== undefined ? { active: dto.active } : {}),
       },
     });
-    return { pricePublic: updated.pricePublic, pricePro: updated.pricePro, travelFee: updated.travelFee };
+    return { pricePublic: updated.pricePublic, pricePro: updated.pricePro, travelFee: updated.travelFee, targetDevice: updated.targetDevice };
   }
 
   /**

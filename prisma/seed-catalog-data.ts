@@ -25,6 +25,7 @@ export type SeedItem = {
   pricePublic: number | null;
   pricePro: number | null;
   active: boolean;
+  targetDevice?: 'MAC' | 'PC' | 'ALL';
 };
 
 export type SeedCategory = {
@@ -152,11 +153,67 @@ export const SERVICES: SeedService[] = [
         label: 'Réinstallation OS + drivers',
         items: [
           {
-            code: 'REINSTALL_OS',
-            label: 'Réinstallation OS + drivers',
+            code: 'REINSTALL_OS_WIN10',
+            label: 'Windows 10',
+            description: 'Réinstallation de Windows 10',
             pricePublic: 5000,
             pricePro: 2500,
             active: true,
+            targetDevice: 'PC',
+          },
+          {
+            code: 'REINSTALL_OS_WIN11',
+            label: 'Windows 11',
+            description: 'Réinstallation de Windows 11',
+            pricePublic: 6000,
+            pricePro: 3000,
+            active: true,
+            targetDevice: 'PC',
+          },
+          {
+            code: 'REINSTALL_OS_UBUNTU',
+            label: 'Ubuntu',
+            description: 'Installation d\'Ubuntu Linux',
+            pricePublic: 4000,
+            pricePro: 2000,
+            active: true,
+            targetDevice: 'PC',
+          },
+          {
+            code: 'REINSTALL_OS_LINUX',
+            label: 'Linux (autre)',
+            description: 'Installation d\'une autre distribution Linux',
+            pricePublic: 4500,
+            pricePro: 2250,
+            active: true,
+            targetDevice: 'PC',
+          },
+          {
+            code: 'REINSTALL_OS_MAC_VENTURA',
+            label: 'macOS Ventura',
+            description: 'Réinstallation de macOS Ventura',
+            pricePublic: 7000,
+            pricePro: 3500,
+            active: true,
+            targetDevice: 'MAC',
+          },
+          {
+            code: 'REINSTALL_OS_MAC_SONOMA',
+            label: 'macOS Sonoma',
+            description: 'Réinstallation de macOS Sonoma',
+            pricePublic: 7000,
+            pricePro: 3500,
+            active: true,
+            targetDevice: 'MAC',
+          },
+          {
+            code: 'REINSTALL_OS_MAC_MONTEREY',
+            label: 'macOS Monterey',
+            description: 'Réinstallation de macOS Monterey',
+            pricePublic: 6500,
+            pricePro: 3250,
+            active: true,
+            targetDevice: 'MAC',
           },
         ],
       },
@@ -339,6 +396,7 @@ export async function seedCatalogV2(
             label: item.label,
             description: item.description ?? null,
             androidVersion: item.androidVersion ?? null,
+            targetDevice: item.targetDevice ?? 'ALL',
             pricePublic: item.pricePublic,
             pricePro: item.pricePro,
             order: (itemIndex + 1) * 10,
@@ -350,6 +408,7 @@ export async function seedCatalogV2(
             label: item.label,
             description: item.description ?? null,
             androidVersion: item.androidVersion ?? null,
+            targetDevice: item.targetDevice ?? 'ALL',
             pricePublic: item.pricePublic,
             pricePro: item.pricePro,
             order: (itemIndex + 1) * 10,
