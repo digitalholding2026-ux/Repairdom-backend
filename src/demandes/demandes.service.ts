@@ -159,6 +159,7 @@ export class DemandesService {
           ...(problem ? { problemId: dto.problemId } : {}),
           ...(dto.catalogItemId ? { catalogItemId: dto.catalogItemId } : {}),
           ...(dto.finalAmount !== undefined ? { finalAmount: dto.finalAmount } : {}),
+          ...(dto.extraRequirements ? { extraRequirements: dto.extraRequirements } : {}),
         },
         include: this.clientInclude(),
       });

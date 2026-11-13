@@ -30,6 +30,13 @@ enum PaymentType {
   DEPOSIT_50
 }
 
+// Cible de matériel pour un item de catalogue (OS, etc.).
+enum TargetDevice {
+  MAC
+  PC
+  ALL
+}
+
 // M1 — les trois prestations vendues par Relio v2.
 enum ServiceCode {
   SYSTEME
@@ -534,6 +541,9 @@ model Demande {
   // gardent leur texte ; les nouvelles demandes multimédia ont NULL (le
   // technicien lit les pièces jointes). Colonne conservée (compatibilité).
   description             String?
+  // Texte libre "Autres exigences" saisi par le client (parcours Système,
+  // Réinstallation OS). Peut faire l'objet d'un devis manuel par l'admin.
+  extraRequirements       String?
   // IA-4.1 — équipement déclaré par le client en texte libre (« réfrigérateur »,
   // « portail électrique »…), obligatoire quand `category` vaut `autre`
   // (validation backend). Identifie L'OBJET à réparer, pas la panne (les
@@ -1697,6 +1707,9 @@ model CatalogItem {
   // ligne (règlement après intervention). DEPOSIT_50 = acompte 50 % en ligne
   // via SasPay avant l'intervention, le solde en présentiel.
   paymentType    PaymentType @default(END_OF_SERVICE)
+  // Cible de matériel de l'item (MAC / PC / ALL). Permet de filtrer les OS
+  // selon le type de machine choisi par le client (parcours Système).
+  targetDevice   TargetDevice @default(ALL)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

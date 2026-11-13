@@ -77,11 +77,15 @@ export class CatalogV2Service {
    * Les items tarifés d'une catégorie, dans la monnaie du visiteur.
    * `categoryId` est vérifié rattaché à `serviceCode` : une URL croquant une
    * catégorie d'une autre prestation ne rend rien.
+   * Quand `targetDevice` est fourni (MAC/PC/ALL), seuls les items dont la
+   * cible correspond (ou ALL) sont retournés — utilisé pour filtrer les OS
+   * selon le type de machine choisi (parcours Système).
    */
   async listItems(
     serviceCode: string,
     categoryId: string,
     clientType?: string,
+    targetDevice?: string,
   ): Promise<CatalogItemView[]> {
     const service = await this.readService(serviceCode);
     const category = await this.prisma.catalogCategory.findFirst({
@@ -91,12 +95,17 @@ export class CatalogV2Service {
       throw new NotFoundException('Catégorie introuvable.');
     }
 
+    const where: Record<string, unknown> = {
+      categoryId: category.id,
+      active: true,
+      [priceColumn(clientType)]: { not: null },
+    };
+    if (targetDevice && targetDevice !== 'ALL') {
+      where.targetDevice = targetDevice as never;
+    }
+
     const items = await this.prisma.catalogItem.findMany({
-      where: {
-        categoryId: category.id,
-        active: true,
-        [priceColumn(clientType)]: { not: null },
-      },
+      where,
       orderBy: { order: 'asc' },
     });
 
@@ -110,6 +119,7 @@ export class CatalogV2Service {
       order: item.order,
       price: projectPrice(item, clientType).price,
       paymentType: item.paymentType,
+      targetDevice: item.targetDevice,
     }));
   }
 

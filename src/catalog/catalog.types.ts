@@ -33,4 +33,5 @@ export interface CatalogItemView {
   order: number;
   price: number | null;
   paymentType: string;
+  targetDevice: string;
 }

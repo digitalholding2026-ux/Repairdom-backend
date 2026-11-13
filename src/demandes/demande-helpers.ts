@@ -100,6 +100,9 @@ export interface DemandeRecord {
   problemId: string | null;
   negotiationRequestedAt: Date | null;
   finalAmount: number | null;
+  // Parcours Système — cible de matériel (MAC/PC/ALL) et exigences libres.
+  extraRequirements?: string | null;
+  targetDevice?: string | null;
   // M2 — escrow smartphone : horaire de mise sous séquestre et statut du hold.
   escrowStartedAt: Date | null;
   fundsHoldStatus?: string | null;
@@ -157,6 +160,9 @@ export function toApiDemande(demande: DemandeRecord) {
       ? demande.negotiationRequestedAt.toISOString()
       : null,
     finalAmount: demande.finalAmount,
+    // Parcours Système — cible de matériel et exigences libres.
+    extraRequirements: demande.extraRequirements ?? null,
+    targetDevice: demande.targetDevice ?? null,
     // M2 — escrow smartphone.
     escrowStartedAt: demande.escrowStartedAt ?? null,
     escrowEndsAt: demande.escrowStartedAt

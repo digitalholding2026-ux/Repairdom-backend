@@ -26,6 +26,7 @@ type ItemRow = {
   pricePro: number | null;
   travelFee: number | null;
   paymentType: string;
+  targetDevice: string;
 };
 
 /**
@@ -240,5 +241,6 @@ function toItemView(item: ItemRow): CatalogItemView {
     order: item.order,
     ...projectPrice(item),
     paymentType: item.paymentType,
+    targetDevice: item.targetDevice,
   };
 }

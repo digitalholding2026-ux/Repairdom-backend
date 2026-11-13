@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard.js';
 import type { RequestUser } from '../auth/auth.types.js';
@@ -26,8 +26,13 @@ export class CatalogController {
   }
 
   @Get(':code/categories/:catId/items')
-  listItems(@Param('code') code: string, @Param('catId') catId: string, @Req() request: Request) {
-    return this.catalog.listItems(code, catId, clientTypeOf(request));
+  listItems(
+    @Param('code') code: string,
+    @Param('catId') catId: string,
+    @Req() request: Request,
+    @Query('targetDevice') targetDevice?: string,
+  ) {
+    return this.catalog.listItems(code, catId, clientTypeOf(request), targetDevice);
   }
 }
 

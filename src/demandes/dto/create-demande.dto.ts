@@ -77,4 +77,9 @@ export class CreateDemandeDto {
   @IsInt()
   @Min(0)
   finalAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  extraRequirements?: string;
 }
